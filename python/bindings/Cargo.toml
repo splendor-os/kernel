@@ -1,0 +1,15 @@
+[package]
+name = "splendor-bindings"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "splendor_bindings"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+python = ["pyo3"]
+
+[dependencies]
+splendor-kernel = { path = "../../crates/splendor-kernel" }
+pyo3 = { version = "0.21", optional = true, features = ["extension-module"] }

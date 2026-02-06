@@ -1,0 +1,12 @@
+[package]
+name = "splendor-gateway"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+splendor-types = { path = "../splendor-types" }

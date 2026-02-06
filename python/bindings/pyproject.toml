@@ -1,0 +1,12 @@
+[build-system]
+requires = ["maturin>=1.5"]
+build-backend = "maturin"
+
+[project]
+name = "splendor-bindings"
+dynamic = ["version"]
+requires-python = ">=3.9"
+
+[tool.maturin]
+features = ["python"]
+module-name = "splendor_bindings"

@@ -1,0 +1,13 @@
+[package]
+name = "splendor-adapter-http"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+ureq = { version = "2", features = ["tls"] }
+url = "2.5"
+time = { workspace = true }
+splendor-gateway = { path = "../../crates/splendor-gateway" }
+splendor-types = { path = "../../crates/splendor-types" }

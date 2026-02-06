@@ -1,0 +1,18 @@
+[package]
+name = "splendor-kernel"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+splendor-gateway = { path = "../splendor-gateway" }
+splendor-types = { path = "../splendor-types" }
+splendor-store = { path = "../splendor-store" }
+
+[dev-dependencies]
+serde = { workspace = true }
+splendor-adapter-filesystem = { path = "../../adapters/filesystem" }
+splendor-adapter-http = { path = "../../adapters/http" }
+tempfile = "3"

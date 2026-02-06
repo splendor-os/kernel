@@ -1,0 +1,14 @@
+[package]
+name = "splendor-adapter-filesystem"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+splendor-gateway = { path = "../../crates/splendor-gateway" }
+splendor-types = { path = "../../crates/splendor-types" }
+
+[dev-dependencies]
+tempfile = "3"

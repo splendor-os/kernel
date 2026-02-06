@@ -1,0 +1,13 @@
+/target/
+/target-local/
+**/__pycache__/
+*.py[cod]
+*.so
+*.dylib
+*.dll
+python/.venv/
+python/.pytest_cache/
+python/build/
+python/dist/
+python/*.egg-info/
+.coverage

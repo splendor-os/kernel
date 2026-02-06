@@ -1,0 +1,13 @@
+services:
+  splendor:
+    build: .
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    command: bash
+  splendor-tests:
+    build: .
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    command: bash -lc "./scripts/container-tests.sh"

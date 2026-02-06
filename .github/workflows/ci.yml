@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust fmt
+        run: cargo fmt --all -- --check
+      - name: Rust clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Rust tests
+        run: cargo test --workspace
+      - name: Install LLVM tools
+        run: rustup component add llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Rust coverage
+        run: cargo llvm-cov --workspace --all-targets --fail-under-lines 95
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Python deps
+        run: python -m pip install --upgrade pip
+      - name: Install Splendor SDK
+        run: python -m pip install -e python/ pytest pytest-cov
+      - name: Python tests
+        run: pytest python/tests --cov=splendor --cov-fail-under=95
