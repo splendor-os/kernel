@@ -10,7 +10,7 @@ Implemented in Rust as `splendor_types::{Message, MessageEnvelope}`.
 
 ## Functional scope
 
-0.02-S1 defines only the schema contract:
+0.02-S1 defines the schema contract:
 
 - canonical `MessageId` identity distinct from tenant, agent, run, trace, action,
   and state IDs;
@@ -19,8 +19,11 @@ Implemented in Rust as `splendor_types::{Message, MessageEnvelope}`.
 - schema-version validation that fails closed before routing;
 - message lifecycle trace event payloads.
 
-No message router, inbox/outbox, broker, remote transport, delivery guarantee,
-or shared mutable state channel is implemented in this sprint.
+0.02-S2 adds the in-process local router, inbox/outbox APIs, delivery state
+transitions, and trace emission documented in
+[`local-message-router.md`](local-message-router.md). The message schema remains
+transport-neutral: no broker, remote transport, distributed delivery guarantee,
+or shared mutable state channel is part of the message object.
 
 ## Message
 
@@ -68,8 +71,8 @@ transport-neutral.
 | `trace_links` | `MessageTraceLinks` | Optional trace IDs for queued, delivered, rejected, expired, and consumed events. |
 
 `MessageDeliveryStatus` values are `pending`, `queued`, `delivered`, `rejected`,
-`expired`, and `consumed`. S1 defines the status vocabulary only; S2 will attach
-router behavior to these statuses.
+`expired`, and `consumed`. The local router updates these statuses for accepted,
+delivered, expired, and consumed envelopes while preserving trace links.
 
 ## Schema versioning
 
