@@ -214,7 +214,7 @@ Splendor0.01-dev:
 
 Splendor0.02-dev:
   Local multi-agent runtime + daemon control:
-  typed local messages + per-agent isolation + scoped local delegation + runtime daemon API + @splendor/types + @splendor/client.
+  daemon security boundary + typed local messages + per-agent isolation + scoped local delegation + runtime daemon API + @splendor/types + @splendor/client.
 
 Splendor0.03-dev:
   Resident nodes + fleet execution foundation:
@@ -323,6 +323,7 @@ Multiple local agent runtime contexts can coordinate safely inside one Splendor 
 
 | Sprint  | Scope                   | Deliverables                                                                                      | Exit gate                                                                 |
 | ------- | ----------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| 0.02-S0 | Daemon Security Boundary | App/client identity, local secure defaults, endpoint scopes, signed work-order requirement, audit attribution | Daemon/client surfaces cannot stabilize with insecure defaults.           |
 | 0.02-S1 | Message schema contract | `Message`, envelope, delivery status, schema version, causal parent, trace IDs                    | Messages are typed, versioned, and serializable across Rust/Python/TS.    |
 | 0.02-S2 | Local message router    | In-memory router, inbox/outbox, delivery states, failure states, trace hooks                      | Two local agents exchange trace-linked typed messages.                    |
 | 0.02-S3 | Agent isolation ledger  | Per-agent quota ledger, permissions, allowed message schemas, allowed recipients                  | One local agent cannot inherit another agent's broad permissions.         |
@@ -330,6 +331,82 @@ Multiple local agent runtime contexts can coordinate safely inside one Splendor 
 | 0.02-S5 | Runtime daemon API      | `/runs`, `/percepts`, `/state-head`, `/traces`, `/replay`, `/actions`, `/health`, `/capabilities` | External client can create, start, inspect, replay, and stop a local run. |
 | 0.02-S6 | TypeScript surface      | `@splendor/types`, `@splendor/client`, generated schemas, compatibility tests                     | TypeScript client can control daemon without native binding.              |
 | 0.02-S7 | Replay and test harness | Multi-agent replay, message causal graph inspection, denial tests                                 | Replay reconstructs local multi-agent causality.                          |
+
+### 0.02-S0 — Daemon Security Boundary
+
+#### Goal
+
+Define the security boundary for all communication between external apps and Splendor daemons before daemon APIs and SDK clients become stable.
+
+External apps include:
+
+- SDK clients
+- CLIs
+- control planes
+- operator consoles
+- adapters
+- sidecars
+- test clients
+- central managers
+- Harmony or other product integrations
+
+#### Functional Requirements
+
+| ID | Requirement |
+|---|---|
+| FR-0.02-S0-01 | Define `AppPrincipal` / `ClientPrincipal` as caller identities distinct from tenant, agent, run, node, and instance identities. |
+| FR-0.02-S0-02 | Require authentication for every non-dev daemon API request. |
+| FR-0.02-S0-03 | Define endpoint-level scopes for daemon APIs. |
+| FR-0.02-S0-04 | Bind caller credentials to tenant or fleet context. |
+| FR-0.02-S0-05 | Bind caller credentials to intended audience: daemon, instance, fleet, or central manager. |
+| FR-0.02-S0-06 | Require expiry on caller credentials. |
+| FR-0.02-S0-07 | Define a revocation path for caller credentials and work-order credentials. |
+| FR-0.02-S0-08 | Require signed, scoped work orders for run creation. |
+| FR-0.02-S0-09 | Require caller attribution in trace/audit metadata for mutating operations. |
+| FR-0.02-S0-10 | Define local dev insecure mode as explicit, local-only, and visibly warned. |
+| FR-0.02-S0-11 | Require SDKs and clients to refuse silent fallback to insecure unauthenticated communication. |
+
+#### Required Scope
+
+Define:
+
+- secure local transport defaults;
+- secure production transport expectations;
+- daemon API auth layers;
+- app/caller identity;
+- endpoint scopes;
+- signed work-order interaction;
+- expired or revoked work-order rejection for run creation and resume;
+- revocation source expectations, such as a revocation list, introspection endpoint, or signing-key invalidation;
+- trace/audit attribution;
+- dev-only insecure mode constraints.
+
+#### Non-goals
+
+Do not implement:
+
+- full OAuth server;
+- full PKI management;
+- fleet mTLS rollout;
+- node bootstrap protocol;
+- remote fleet auth;
+- governance approval workflows;
+- runtime permission engine beyond documented criteria.
+
+Those belong to later 0.03 and 0.04 work.
+
+#### Exit Gate
+
+The docs must clearly state that:
+
+```text
+transport security authenticates the channel;
+caller identity authenticates the app;
+endpoint scopes authorize API access;
+signed work orders authorize runs;
+tenant/agent/run policy scopes runtime authority;
+the Action Gateway authorizes side effects.
+```
 
 ## 6.5 Exit Gate
 

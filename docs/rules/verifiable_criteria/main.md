@@ -237,6 +237,7 @@ criteria file. The split does not change the meaning of any acceptance criteria.
 | 0.01-H2 | Splendor0.01-dev | Trace and replay hardening | [sprints/0.01-H2-trace-and-replay-hardening.md](sprints/0.01-H2-trace-and-replay-hardening.md) |
 | 0.01-H3 | Splendor0.01-dev | Python SDK ergonomics | [sprints/0.01-H3-python-sdk-ergonomics.md](sprints/0.01-H3-python-sdk-ergonomics.md) |
 | 0.01-H4 | Splendor0.01-dev | Release hygiene | [sprints/0.01-H4-release-hygiene.md](sprints/0.01-H4-release-hygiene.md) |
+| 0.02-S0 | Splendor0.02-dev | Daemon Security Boundary | [sprints/0.02-S0-daemon-security-boundary.md](sprints/0.02-S0-daemon-security-boundary.md) |
 | 0.02-S1 | Splendor0.02-dev | Message schema contract | [sprints/0.02-S1-message-schema-contract.md](sprints/0.02-S1-message-schema-contract.md) |
 | 0.02-S2 | Splendor0.02-dev | Local message router | [sprints/0.02-S2-local-message-router.md](sprints/0.02-S2-local-message-router.md) |
 | 0.02-S3 | Splendor0.02-dev | Agent isolation ledger | [sprints/0.02-S3-agent-isolation-ledger.md](sprints/0.02-S3-agent-isolation-ledger.md) |

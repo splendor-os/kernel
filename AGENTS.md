@@ -271,6 +271,36 @@ Rust owns runtime enforcement:
 - adapter boundary;
 - fail-closed behavior.
 
+### 3.10 Secure App Communication
+
+Apps, SDKs, CLIs, control planes, adapters, and external services must not communicate with Splendor as anonymous callers.
+
+Every non-dev request to a Splendor daemon, sidecar, node, or central manager must have:
+
+1. authenticated caller identity;
+2. tenant or fleet binding;
+3. endpoint-level scope authorization;
+4. expiry;
+5. audience binding;
+6. revocation path;
+7. trace/audit attribution for mutating calls.
+
+A caller token authenticates the app.
+A signed work order authorizes a run.
+The Action Gateway authorizes side effects.
+
+Never treat a daemon API token as permission to execute arbitrary agent actions.
+Never allow expired or revoked work orders to create, resume, or authorize runs.
+Never allow SDKs to bypass daemon/gateway enforcement.
+Never expose unauthenticated TCP listeners except in explicit local dev mode.
+
+Local development may use an insecure mode only when all of the following are true:
+
+- the daemon is bound to a Unix domain socket or loopback-only address;
+- insecure mode is enabled by an explicit flag;
+- startup logs clearly warn that insecure mode is active;
+- the mode cannot be used for fleet, remote, resident-node, or production operation.
+
 ---
 
 ## 4. What to build now, and what not to build yet
@@ -493,6 +523,8 @@ Every pull request must include this checklist in the description.
 ```
 
 A PR that cannot complete this checklist should be split, redesigned, or moved behind an experimental feature flag.
+
+Block a PR if it adds or documents daemon/client communication without authenticated caller identity, scoped authorization, and signed work-order rules.
 
 ---
 
