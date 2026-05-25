@@ -22,6 +22,12 @@ impl AsUuid for RunId {
     }
 }
 
+impl AsUuid for MessageId {
+    fn as_uuid(&self) -> &Uuid {
+        MessageId::as_uuid(self)
+    }
+}
+
 impl AsUuid for TraceId {
     fn as_uuid(&self) -> &Uuid {
         TraceId::as_uuid(self)
@@ -46,6 +52,8 @@ fn id_round_trips() {
     assert_uuid(AgentId::default());
     assert_uuid(RunId::new());
     assert_uuid(RunId::default());
+    assert_uuid(MessageId::new());
+    assert_uuid(MessageId::default());
     assert_uuid(TraceId::new());
     assert_uuid(TraceId::default());
 }

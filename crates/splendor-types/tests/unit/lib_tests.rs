@@ -13,6 +13,19 @@ where
 fn round_trip_core_types() {
     let run_id = RunId::new();
     let trace_id = TraceId::from_run_sequence(&run_id, 1);
+    let message = Message::new(
+        MessageId::new(),
+        AgentId::new(),
+        AgentId::new(),
+        run_id.clone(),
+        "splendor.message.task_request.v1",
+        serde_json::json!({"task": "forecast revenue"}),
+        Some(trace_id.clone()),
+        true,
+        time::OffsetDateTime::now_utc(),
+    )
+    .expect("valid message");
+    let message_envelope = MessageEnvelope::new(message.clone()).expect("valid envelope");
     let percept = Percept {
         schema: "sensor".to_string(),
         payload: serde_json::json!({"value": 3}),
@@ -66,10 +79,14 @@ fn round_trip_core_types() {
     );
 
     round_trip(&run_id);
+    round_trip(&message.message_id);
     round_trip(&trace_id);
     round_trip(&SnapshotId::from_bytes(b"snapshot"));
     round_trip(&ContentHash::blake3(b"hash"));
     round_trip(&percept);
+    round_trip(&message);
+    round_trip(&message_envelope);
+    round_trip(&MessageTraceContext::from_message(&message));
     round_trip(&action);
     round_trip(&constraint);
     round_trip(&verification);

@@ -130,6 +130,43 @@ impl From<Uuid> for RunId {
     }
 }
 
+/// Unique identifier for an agent-to-agent message.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct MessageId(Uuid);
+
+impl MessageId {
+    /// Creates a new message identifier.
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    /// Returns the underlying UUID.
+    pub fn as_uuid(&self) -> &Uuid {
+        &self.0
+    }
+}
+
+impl Default for MessageId {
+    /// Creates a new message identifier using a random UUID.
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for MessageId {
+    /// Formats the message identifier as a UUID string.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl From<Uuid> for MessageId {
+    /// Wraps an existing UUID as a message identifier.
+    fn from(value: Uuid) -> Self {
+        Self(value)
+    }
+}
+
 /// Deterministic identifier for a trace event within a run.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct TraceId(Uuid);

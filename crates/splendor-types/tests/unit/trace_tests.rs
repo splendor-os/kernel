@@ -1,5 +1,7 @@
 use super::*;
-use crate::{Percept, PerceptProvenance, SideEffectClass};
+use crate::{
+    AgentId, Message, MessageId, MessageTraceContext, Percept, PerceptProvenance, SideEffectClass,
+};
 
 #[test]
 fn trace_event_uses_deterministic_trace_id() {
@@ -56,4 +58,89 @@ fn trace_event_round_trip() {
     let payload = serde_json::to_vec(&percept_event).expect("serialize");
     let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
     assert_eq!(decoded, percept_event);
+}
+
+#[test]
+fn message_rejection_trace_event_preserves_causal_parent() {
+    let run_id = RunId::new();
+    let causal_parent = TraceId::from_run_sequence(&run_id, 3);
+    let message = Message::new(
+        MessageId::new(),
+        AgentId::new(),
+        AgentId::new(),
+        run_id.clone(),
+        "splendor.message.task_request.v1",
+        serde_json::json!({"task": "forecast"}),
+        Some(causal_parent.clone()),
+        true,
+        OffsetDateTime::now_utc(),
+    )
+    .expect("valid message");
+
+    let event = TraceEvent::new(
+        run_id,
+        4,
+        OffsetDateTime::now_utc(),
+        TraceEventKind::MessageRejected {
+            message: MessageTraceContext::from_message(&message),
+            reason: message
+                .payload_validation_failed("missing input_ref")
+                .to_string(),
+        },
+    );
+
+    let payload = serde_json::to_vec(&event).expect("serialize");
+    let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+    assert_eq!(decoded, event);
+
+    match decoded.kind {
+        TraceEventKind::MessageRejected { message, reason } => {
+            assert_eq!(message.causal_parent, Some(causal_parent));
+            assert!(reason.contains("payload validation failed"));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn message_lifecycle_trace_events_round_trip() {
+    let run_id = RunId::new();
+    let message = Message::new(
+        MessageId::new(),
+        AgentId::new(),
+        AgentId::new(),
+        run_id.clone(),
+        "splendor.message.task_request.v1",
+        serde_json::json!({"task": "forecast"}),
+        None,
+        false,
+        OffsetDateTime::now_utc(),
+    )
+    .expect("valid message");
+    let context = MessageTraceContext::from_message(&message);
+    let events = vec![
+        TraceEventKind::MessageQueued {
+            message: context.clone(),
+        },
+        TraceEventKind::MessageDelivered {
+            message: context.clone(),
+        },
+        TraceEventKind::MessageExpired {
+            message: context.clone(),
+            reason: Some("ttl exceeded".to_string()),
+        },
+        TraceEventKind::MessageConsumed { message: context },
+    ];
+
+    for (sequence, kind) in events.into_iter().enumerate() {
+        let event = TraceEvent::new(
+            run_id.clone(),
+            sequence as u64,
+            OffsetDateTime::now_utc(),
+            kind,
+        );
+        let payload = serde_json::to_vec(&event).expect("serialize");
+        let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+        assert_eq!(decoded, event);
+    }
 }

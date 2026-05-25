@@ -10,6 +10,7 @@ This document describes the canonical data structures defined in
 | `TenantId` | UUID v4 | Tenant boundary identifier. | Random per instance. |
 | `AgentId` | UUID v4 | Agent identity within a tenant. | Random per instance. |
 | `RunId` | UUID v4 | Runtime execution session identifier. | Random per instance. |
+| `MessageId` | UUID v4 | Agent-to-agent message identifier. | Random per message. |
 | `TraceId` | UUID v5 | Trace event identifier derived from `RunId` + sequence. | Deterministic from inputs. |
 | `SnapshotId` | `ContentHash` | Identifier for snapshot bytes. | Deterministic from bytes. |
 
@@ -51,6 +52,22 @@ TraceId = uuid_v5(NAMESPACE_OID, "{run_id}:{sequence}")
 `CostEstimate` fields:
 - `units` (`String`): unit label (e.g., `ms`, `bytes`).
 - `amount` (`f64`): numeric estimate.
+
+## Message
+
+`Message` captures a typed, transport-neutral local agent-to-agent message. See
+[`messages.md`](messages.md) for the full 0.02-S1 contract.
+
+**Fields**
+- `message_id` (`MessageId`): distinct message identity.
+- `source_agent_id` (`AgentId`): sending agent.
+- `target_agent_id` (`AgentId`): intended receiving agent.
+- `run_id` (`RunId`): run scope.
+- `schema` (`String`): versioned payload schema such as `splendor.message.task_request.v1`.
+- `payload` (`serde_json::Value`): typed JSON payload.
+- `causal_parent` (`Option<TraceId>`): optional trace event that caused the message.
+- `requires_response` (`bool`): whether a response is expected.
+- `created_at` (`OffsetDateTime`): creation timestamp.
 
 ## QuotaUsage
 
