@@ -756,6 +756,11 @@ fn event_kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::ActionFailed { .. } => "ActionFailed",
         TraceEventKind::OutcomeRecorded { .. } => "OutcomeRecorded",
         TraceEventKind::StateCommitted { .. } => "StateCommitted",
+        TraceEventKind::MessageQueued { .. } => "MessageQueued",
+        TraceEventKind::MessageDelivered { .. } => "MessageDelivered",
+        TraceEventKind::MessageRejected { .. } => "MessageRejected",
+        TraceEventKind::MessageExpired { .. } => "MessageExpired",
+        TraceEventKind::MessageConsumed { .. } => "MessageConsumed",
         TraceEventKind::LoopTickCompleted { .. } => "LoopTickCompleted",
     }
 }

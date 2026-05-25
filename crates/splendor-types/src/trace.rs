@@ -20,8 +20,8 @@
 //! ```
 
 use crate::{
-    Action, Constraint, ContentHash, Feedback, Reward, RunId, SnapshotId, TraceId,
-    VerificationResult,
+    Action, Constraint, ContentHash, Feedback, MessageTraceContext, Reward, RunId, SnapshotId,
+    TraceId, VerificationResult,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -152,6 +152,35 @@ pub enum TraceEventKind {
         state_hash: ContentHash,
         /// Snapshot identifier when one was created.
         snapshot_id: Option<SnapshotId>,
+    },
+    /// Records a message accepted into a local delivery path.
+    MessageQueued {
+        /// Identity and causality context for the message.
+        message: MessageTraceContext,
+    },
+    /// Records a message reaching the target agent's delivery boundary.
+    MessageDelivered {
+        /// Identity and causality context for the message.
+        message: MessageTraceContext,
+    },
+    /// Records a message rejected before delivery.
+    MessageRejected {
+        /// Identity and causality context for the message.
+        message: MessageTraceContext,
+        /// Fail-closed rejection reason.
+        reason: String,
+    },
+    /// Records a message expiring before delivery or consumption.
+    MessageExpired {
+        /// Identity and causality context for the message.
+        message: MessageTraceContext,
+        /// Optional expiration reason.
+        reason: Option<String>,
+    },
+    /// Records a message consumed by the target agent runtime context.
+    MessageConsumed {
+        /// Identity and causality context for the message.
+        message: MessageTraceContext,
     },
     /// Marks the end of a loop tick.
     LoopTickCompleted {

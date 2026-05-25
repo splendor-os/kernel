@@ -33,6 +33,7 @@
 mod daemon_security;
 mod hash;
 mod ids;
+mod message;
 mod primitives;
 mod trace;
 
@@ -45,7 +46,11 @@ pub use daemon_security::{
     WorkOrderSignature,
 };
 pub use hash::{ContentHash, HashAlgorithm};
-pub use ids::{AgentId, RunId, SnapshotId, TenantId, TraceId};
+pub use ids::{AgentId, MessageId, RunId, SnapshotId, TenantId, TraceId};
+pub use message::{
+    Message, MessageDeliveryStatus, MessageEnvelope, MessageSchemaVersion, MessageTraceContext,
+    MessageTraceLinks, MessageValidationError,
+};
 pub use primitives::{
     Action, Constraint, ConstraintKind, ConstraintScope, CostEstimate, Feedback, Percept,
     PerceptProvenance, QuotaUsage, Reward, SideEffectClass, VerificationResult,
