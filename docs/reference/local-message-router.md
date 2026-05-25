@@ -127,7 +127,7 @@ It updates explicit router inbox/outbox queues only. Inbox and outbox reads retu
 snapshots and do not mutate unrelated agent state.
 
 Replay remains inspect-only. The router's trace events preserve message identity
-and causal parent data so later 0.02-S7 replay work can reconstruct local
+and causal parent data so 0.02-S7 multi-agent replay can reconstruct local
 multi-agent causality without re-delivering messages or executing adapters.
 
 ## Non-goals

@@ -103,9 +103,8 @@ event with the message trace context and reason.
 
 Messages carry an optional `causal_parent: TraceId`. The value identifies the
 trace event that caused the message to be proposed or produced. Serialization
-round trips preserve this field, allowing replay and future multi-agent causal
-graph inspection to reconstruct message lineage without re-executing side
-effects.
+round trips preserve this field. Multi-agent replay uses it to reconstruct
+message lineage without re-executing side effects.
 
 Message lifecycle trace events are documented in
 [`trace-events.md#message-events`](trace-events.md#message-events).

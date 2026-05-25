@@ -18,8 +18,8 @@ use splendor_kernel::{
 };
 use splendor_store::{SqliteStateStore, SqliteTraceStore, StateStore, TraceRecord, TraceStore};
 use splendor_types::{
-    Action, ContentHash, HashAlgorithm, Percept, PerceptProvenance, QuotaUsage, SideEffectClass,
-    SnapshotId, TraceEvent, TraceEventKind, TraceId,
+    Action, AgentId, ContentHash, HashAlgorithm, MessageId, Percept, PerceptProvenance, QuotaUsage,
+    RunId, SideEffectClass, SnapshotId, TraceEvent, TraceEventKind, TraceId,
 };
 use std::env;
 use std::fs;
@@ -395,13 +395,15 @@ fn state_head(db_path: &PathBuf, run_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ReplayOutput {
     ReplayStart {
         run_id: String,
         from_snapshot: Option<String>,
         snapshot_bytes_len: Option<usize>,
+        replay_mode: String,
+        side_effects_replayed: bool,
     },
     Tick {
         tick_id: u64,
@@ -417,15 +419,61 @@ enum ReplayOutput {
         snapshot_id: Option<SnapshotId>,
         snapshot_bytes_len: Option<usize>,
         snapshot_bytes: Box<Option<Vec<u8>>>,
+        messages: Vec<ReplayMessageEvent>,
+        parent_child_runs: Vec<ReplayParentChildRun>,
+        isolation_denials: Vec<ReplayIsolationDenial>,
+    },
+    CausalGraph {
+        run_id: String,
+        replay_mode: String,
+        side_effects_replayed: bool,
+        messages: Vec<ReplayMessageEvent>,
+        parent_child_runs: Vec<ReplayParentChildRun>,
+        isolation_denials: Vec<ReplayIsolationDenial>,
     },
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 struct ReplayAction {
     action: splendor_types::Action,
     status: String,
     outcome: Option<serde_json::Value>,
     result: Option<splendor_types::VerificationResult>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct ReplayMessageEvent {
+    lifecycle: String,
+    trace_event_id: TraceId,
+    message_id: MessageId,
+    source_agent_id: AgentId,
+    target_agent_id: AgentId,
+    run_id: RunId,
+    schema: String,
+    causal_parent: Option<TraceId>,
+    reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct ReplayParentChildRun {
+    trace_event_id: TraceId,
+    parent_run_id: RunId,
+    child_run_id: RunId,
+    parent_agent_id: AgentId,
+    child_agent_id: AgentId,
+    causal_parent: Option<TraceId>,
+    source_message_id: Option<MessageId>,
+    side_effects_replayed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct ReplayIsolationDenial {
+    trace_event_id: TraceId,
+    action: splendor_types::Action,
+    reasons: Vec<String>,
+    artifacts: serde_json::Value,
+    verifier: Option<String>,
+    ledger_reason: Option<String>,
 }
 
 #[derive(Default)]
@@ -443,6 +491,16 @@ struct ReplayTick {
     snapshot_id: Option<SnapshotId>,
     snapshot_bytes_len: Option<usize>,
     snapshot_bytes: Option<Vec<u8>>,
+    messages: Vec<ReplayMessageEvent>,
+    parent_child_runs: Vec<ReplayParentChildRun>,
+    isolation_denials: Vec<ReplayIsolationDenial>,
+}
+
+#[derive(Default)]
+struct ReplayCausalGraph {
+    messages: Vec<ReplayMessageEvent>,
+    parent_child_runs: Vec<ReplayParentChildRun>,
+    isolation_denials: Vec<ReplayIsolationDenial>,
 }
 
 /// Replays a run by reconstructing tick-by-tick outputs from trace + snapshots.
@@ -453,6 +511,25 @@ fn replay_run(
     from_snapshot: Option<&str>,
     include_state: bool,
 ) -> Result<(), String> {
+    for output in replay_outputs_from_stores(
+        trace_db_path,
+        state_db_path,
+        run_id,
+        from_snapshot,
+        include_state,
+    )? {
+        emit_replay_output(output)?;
+    }
+    Ok(())
+}
+
+fn replay_outputs_from_stores(
+    trace_db_path: &PathBuf,
+    state_db_path: &PathBuf,
+    run_id: &str,
+    from_snapshot: Option<&str>,
+    include_state: bool,
+) -> Result<Vec<ReplayOutput>, String> {
     if !trace_db_path.exists() {
         return Err(format!(
             "Trace database not found: {}",
@@ -493,14 +570,38 @@ fn replay_run(
     } else {
         None
     };
-    emit_replay_output(ReplayOutput::ReplayStart {
+
+    collect_replay_outputs(
+        &events,
+        &state_store,
+        run_id,
+        from_snapshot.map(str::to_string),
+        snapshot_len,
+        start_tick,
+        include_state,
+    )
+}
+
+fn collect_replay_outputs(
+    events: &[TraceEvent],
+    state_store: &SqliteStateStore,
+    run_id: &str,
+    from_snapshot: Option<String>,
+    snapshot_bytes_len: Option<usize>,
+    start_tick: Option<u64>,
+    include_state: bool,
+) -> Result<Vec<ReplayOutput>, String> {
+    let mut outputs = vec![ReplayOutput::ReplayStart {
         run_id: run_id.to_string(),
-        from_snapshot: from_snapshot.map(str::to_string),
-        snapshot_bytes_len: snapshot_len,
-    })?;
+        from_snapshot,
+        snapshot_bytes_len,
+        replay_mode: "inspect_only".to_string(),
+        side_effects_replayed: false,
+    }];
 
     let mut current_tick: Option<ReplayTick> = None;
     let mut current_tick_id = 0;
+    let mut causal_graph = ReplayCausalGraph::default();
     for event in events {
         match &event.kind {
             TraceEventKind::LoopTickStarted { tick_id } => {
@@ -519,7 +620,7 @@ fn replay_run(
                     continue;
                 }
                 if let Some(tick) = current_tick.take() {
-                    emit_replay_output(ReplayOutput::Tick {
+                    outputs.push(ReplayOutput::Tick {
                         tick_id: tick.tick_id,
                         policy: tick.policy,
                         percepts: tick.percepts,
@@ -533,7 +634,10 @@ fn replay_run(
                         snapshot_id: tick.snapshot_id,
                         snapshot_bytes_len: tick.snapshot_bytes_len,
                         snapshot_bytes: Box::new(tick.snapshot_bytes),
-                    })?;
+                        messages: tick.messages,
+                        parent_child_runs: tick.parent_child_runs,
+                        isolation_denials: tick.isolation_denials,
+                    });
                 }
             }
             _ => {
@@ -543,13 +647,44 @@ fn replay_run(
                 {
                     continue;
                 }
+                let message_event = replay_message_event(event)?;
+                let parent_child_run = replay_parent_child_run(event)?;
+                let isolation_denial = replay_isolation_denial(event);
+
                 if let Some(tick) = current_tick.as_mut() {
-                    apply_event_to_tick(tick, &event, &state_store, include_state)?;
+                    apply_event_to_tick(tick, event, state_store, include_state)?;
+                    if let Some(message_event) = message_event.clone() {
+                        tick.messages.push(message_event);
+                    }
+                    if let Some(parent_child_run) = parent_child_run.clone() {
+                        tick.parent_child_runs.push(parent_child_run);
+                    }
+                    if let Some(isolation_denial) = isolation_denial.clone() {
+                        tick.isolation_denials.push(isolation_denial);
+                    }
+                }
+
+                if let Some(message_event) = message_event {
+                    causal_graph.messages.push(message_event);
+                }
+                if let Some(parent_child_run) = parent_child_run {
+                    causal_graph.parent_child_runs.push(parent_child_run);
+                }
+                if let Some(isolation_denial) = isolation_denial {
+                    causal_graph.isolation_denials.push(isolation_denial);
                 }
             }
         }
     }
-    Ok(())
+    outputs.push(ReplayOutput::CausalGraph {
+        run_id: run_id.to_string(),
+        replay_mode: "inspect_only".to_string(),
+        side_effects_replayed: false,
+        messages: causal_graph.messages,
+        parent_child_runs: causal_graph.parent_child_runs,
+        isolation_denials: causal_graph.isolation_denials,
+    });
+    Ok(outputs)
 }
 
 fn decode_and_validate_trace_records(
@@ -605,6 +740,106 @@ fn decode_and_validate_trace_records(
         events.push(event);
     }
     Ok(events)
+}
+
+fn replay_message_event(event: &TraceEvent) -> Result<Option<ReplayMessageEvent>, String> {
+    let (lifecycle, message, reason) = match &event.kind {
+        TraceEventKind::MessageQueued { message } => ("queued", message, None),
+        TraceEventKind::MessageDelivered { message } => ("delivered", message, None),
+        TraceEventKind::MessageConsumed { message } => ("consumed", message, None),
+        TraceEventKind::MessageRejected { message, reason } => {
+            ("rejected", message, Some(reason.clone()))
+        }
+        TraceEventKind::MessageExpired { message, reason } => ("expired", message, reason.clone()),
+        _ => return Ok(None),
+    };
+    if message.run_id != event.run_id {
+        return Err(format!(
+            "Message trace run mismatch at sequence {}: event run '{}' but message run '{}'",
+            event.sequence, event.run_id, message.run_id
+        ));
+    }
+
+    Ok(Some(ReplayMessageEvent {
+        lifecycle: lifecycle.to_string(),
+        trace_event_id: event.trace_id.clone(),
+        message_id: message.message_id.clone(),
+        source_agent_id: message.source_agent_id.clone(),
+        target_agent_id: message.target_agent_id.clone(),
+        run_id: message.run_id.clone(),
+        schema: message.schema.clone(),
+        causal_parent: message.causal_parent.clone(),
+        reason,
+    }))
+}
+
+fn replay_parent_child_run(event: &TraceEvent) -> Result<Option<ReplayParentChildRun>, String> {
+    if let TraceEventKind::ChildRunLinked {
+        parent_run_id,
+        child_run_id,
+        parent_agent_id,
+        child_agent_id,
+        causal_parent,
+        source_message_id,
+    } = &event.kind
+    {
+        if parent_run_id != &event.run_id {
+            return Err(format!(
+                "Child run link parent run mismatch at sequence {}: event run '{}' but parent run '{}'",
+                event.sequence, event.run_id, parent_run_id
+            ));
+        }
+        return Ok(Some(ReplayParentChildRun {
+            trace_event_id: event.trace_id.clone(),
+            parent_run_id: parent_run_id.clone(),
+            child_run_id: child_run_id.clone(),
+            parent_agent_id: parent_agent_id.clone(),
+            child_agent_id: child_agent_id.clone(),
+            causal_parent: causal_parent.clone(),
+            source_message_id: source_message_id.clone(),
+            side_effects_replayed: false,
+        }));
+    }
+    Ok(None)
+}
+
+fn replay_isolation_denial(event: &TraceEvent) -> Option<ReplayIsolationDenial> {
+    if let TraceEventKind::ActionDenied { action, result } = &event.kind {
+        if !is_permission_laundering_denial(result) {
+            return None;
+        }
+        return Some(ReplayIsolationDenial {
+            trace_event_id: event.trace_id.clone(),
+            action: action.clone(),
+            reasons: result.reasons.clone(),
+            artifacts: result.artifacts.clone(),
+            verifier: string_artifact(&result.artifacts, "verifier"),
+            ledger_reason: string_artifact(&result.artifacts, "ledger_reason"),
+        });
+    }
+    None
+}
+
+fn is_permission_laundering_denial(result: &splendor_types::VerificationResult) -> bool {
+    if result.allowed {
+        return false;
+    }
+    let explicit_reason = result
+        .reasons
+        .iter()
+        .any(|reason| reason == "permission_laundering_denied");
+    let verifier_mentions_isolation = string_artifact(&result.artifacts, "verifier")
+        .map(|value| value.contains("isolation") || value.contains("ledger"))
+        .unwrap_or(false);
+    let has_ledger_reason = string_artifact(&result.artifacts, "ledger_reason").is_some();
+    explicit_reason || verifier_mentions_isolation || has_ledger_reason
+}
+
+fn string_artifact(artifacts: &serde_json::Value, key: &str) -> Option<String> {
+    artifacts
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
 }
 
 fn apply_event_to_tick(

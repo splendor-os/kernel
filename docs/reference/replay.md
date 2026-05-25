@@ -11,16 +11,30 @@ splendorctl replay --db <trace-path> --state-db <state-path> --run <run-id> [--f
 
 Replay emits JSON Lines:
 
-- `replay_start`: requested run and optional starting snapshot.
+- `replay_start`: requested run, optional starting snapshot, replay mode, and
+  `side_effects_replayed: false`.
 - `tick`: reconstructed policy name, percepts, candidate actions, verification
   result, action statuses, outcome payload, feedback/reward, state hash, and
-  snapshot metadata.
+  snapshot metadata. In 0.02-S7 it also includes message lifecycle events,
+  local parent/child run links, and replay-visible isolation denials observed
+  inside the tick.
+- `causal_graph`: inspectable local multi-agent graph built from trace events.
+  It includes message lifecycle entries with trace event IDs, message IDs,
+  source/target agents, run IDs, schemas, causal parents, and rejection/expiry
+  reasons. It also includes parent/child run links and permission-laundering
+  denials with verifier or ledger evidence when those are present in the trace.
 
 ## Side-effect suppression
 
 Replay does not invoke perceptors, policies, gateways, verifiers, or adapters.
 Filesystem, HTTP, network, database, webhook, shell, and external-service side
 effects are never repeated by default.
+
+Multi-agent replay is also inspect-only. `message.queued`, `message.delivered`,
+`message.consumed`, `message.rejected`, and `message.expired` events are
+reconstructed from stored traces; replay does not route, deliver, consume, or
+expire messages again. `ChildRunLinked` events are reported with
+`side_effects_replayed: false` and do not execute child run adapters.
 
 There is no side-effectful replay mode in 0.01-dev. Future safe simulation modes
 must be named explicitly, separately gated, and off by default.
@@ -35,6 +49,10 @@ Before reconstructing ticks, replay validates:
 - each `trace_id` matches the deterministic run/sequence derivation;
 - trace hash-chain continuity through `prev_event_hash`;
 - referenced snapshots can be loaded from the state store.
+- message trace event IDs still match the validated trace record sequence before
+  they are exposed in the causal graph.
+- embedded message contexts and parent/child run links remain scoped to the
+  enclosing trace event run.
 
 ## Failure modes
 

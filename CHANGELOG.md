@@ -11,12 +11,16 @@
 - Added a 0.02-S1 message schema contract in Rust for `MessageId`, `Message`,
   `MessageEnvelope`, schema-version validation, delivery status vocabulary,
   message trace links, and message lifecycle trace event definitions.
+- Added 0.02-S7 inspect-only multi-agent replay output for message lifecycle
+  causality, local parent/child run links, and permission-laundering denial
+  evidence without re-executing side effects.
 
 ### Explicitly not included
 
 - No daemon server, HTTP listener, OAuth/OIDC provider, PKI management, fleet
-  mTLS rollout, node bootstrap, governance workflow, message router, message
-  broker, remote transport, or TypeScript runtime enforcement.
+  mTLS rollout, node bootstrap, governance workflow, message broker, remote
+  transport, cross-instance replay, distributed trace sync, or TypeScript runtime
+  enforcement.
 
 ## 0.01-dev — Local kernel baseline
 
