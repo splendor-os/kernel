@@ -12,3 +12,6 @@ python/dist/
 python/*.egg-info/
 .coverage
 .PROMPTS.md
+examples/**/data/*.db
+examples/**/data/tick_*.txt
+examples/**/data/artifact.txt

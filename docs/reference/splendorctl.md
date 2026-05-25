@@ -1,7 +1,22 @@
 # splendorctl
 
 `splendorctl` is a minimal operational tool for running and inspecting local
-Splendor runs. It supports trace export, replay, and config-driven execution.
+Splendor runs. It supports version reporting, config-driven execution, trace
+export, state-head inspection, and replay.
+
+## version
+
+Prints package and baseline milestone identifiers.
+
+**Usage**
+```
+splendorctl --version
+```
+
+**Output shape**
+```
+splendorctl 0.1.0 (Splendor0.01-dev)
+```
 
 ## trace export
 
@@ -37,6 +52,27 @@ splendorctl replay --db <trace-path> --state-db <state-path> --run <run-id> [--f
 - `--from-snapshot`: optional snapshot id to start replay.
 - `--include-state`: include snapshot bytes in output.
 
+Before replaying, the CLI validates run scope, contiguous trace sequence,
+deterministic trace IDs, trace integrity-chain continuity, and referenced
+snapshots. Invalid traces fail closed with a clear error.
+
+## state head
+
+Prints the latest state head recorded by a run's `StateCommitted` trace event.
+
+**Usage**
+```
+splendorctl state head --db <trace-path> --run <run-id>
+```
+
+**Arguments**
+- `--db`: path to the SQLite trace database.
+- `--run`: run identifier to inspect.
+
+**Output**
+JSON containing `run_id`, `state_hash`, optional `snapshot_id`, and the trace
+sequence of the `StateCommitted` event used as the head.
+
 ## run
 
 Runs a local agent loop using a YAML/JSON config file.
@@ -60,9 +96,16 @@ See `docs/reference/run-config.md` for the config format.
 ```
 
 ```
+./target/debug/splendorctl state head --db ./trace.db --run run-1
+```
+
+```
 ./target/debug/splendorctl replay --db ./trace.db --state-db ./state.db --run run-1
 ```
 
 ```
 ./target/debug/splendorctl run --config ./examples/single_agent_loop/config.yaml --cycles 2
 ```
+
+For the 0.01-dev quickstart, use `examples/local-basic-loop` and
+`docs/getting-started/local-runtime.md`.

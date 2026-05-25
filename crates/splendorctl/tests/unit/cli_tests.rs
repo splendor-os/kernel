@@ -96,6 +96,32 @@ fn parse_args_accepts_run() {
 }
 
 #[test]
+fn parse_args_accepts_state_head() {
+    let command = parse_args(vec![
+        "state".to_string(),
+        "head".to_string(),
+        "--db".to_string(),
+        "/tmp/trace.db".to_string(),
+        "--run".to_string(),
+        "run-1".to_string(),
+    ])
+    .expect("parse args");
+    match command {
+        Command::StateHead { db_path, run_id } => {
+            assert_eq!(db_path, PathBuf::from("/tmp/trace.db"));
+            assert_eq!(run_id, "run-1");
+        }
+        _ => panic!("unexpected command"),
+    }
+}
+
+#[test]
+fn parse_args_accepts_version() {
+    let command = parse_args(vec!["--version".to_string()]).expect("parse args");
+    assert!(matches!(command, Command::Version));
+}
+
+#[test]
 fn parse_args_rejects_unknown_command() {
     let error = parse_args(vec!["unknown".to_string()]).expect_err("error");
     assert!(error.contains("Unknown command"));
@@ -105,6 +131,12 @@ fn parse_args_rejects_unknown_command() {
 fn parse_args_rejects_unknown_trace_subcommand() {
     let error = parse_args(vec!["trace".to_string(), "nope".to_string()]).expect_err("error");
     assert!(error.contains("Unknown trace subcommand"));
+}
+
+#[test]
+fn parse_args_rejects_unknown_state_subcommand() {
+    let error = parse_args(vec!["state".to_string(), "nope".to_string()]).expect_err("error");
+    assert!(error.contains("Unknown state subcommand"));
 }
 
 #[test]
@@ -284,11 +316,90 @@ fn replay_succeeds_with_snapshot() {
 }
 
 #[test]
+fn replay_errors_on_corrupted_trace_sequence() {
+    let trace_temp = NamedTempFile::new().expect("trace db");
+    let state_temp = NamedTempFile::new().expect("state db");
+    let trace_store = SqliteTraceStore::open(trace_temp.path()).expect("trace store");
+    let _state_store = SqliteStateStore::open(state_temp.path()).expect("state store");
+
+    let run_id = RunId::new();
+    let event = TraceEvent::new(
+        run_id.clone(),
+        9,
+        OffsetDateTime::now_utc(),
+        TraceEventKind::LoopTickStarted { tick_id: 1 },
+    );
+    TraceStore::append(
+        &trace_store,
+        &run_id.to_string(),
+        serde_json::to_value(event).unwrap(),
+    )
+    .expect("append");
+
+    let error = replay_run(
+        &trace_temp.path().to_path_buf(),
+        &state_temp.path().to_path_buf(),
+        &run_id.to_string(),
+        None,
+        false,
+    )
+    .expect_err("corruption error");
+    assert!(error.contains("Trace event sequence mismatch"));
+}
+
+#[test]
+fn state_head_succeeds_with_state_committed_trace() {
+    let trace_temp = NamedTempFile::new().expect("trace db");
+    let trace_store = SqliteTraceStore::open(trace_temp.path()).expect("trace store");
+    let run_id = RunId::new();
+    let timestamp = OffsetDateTime::now_utc();
+    let state_hash = ContentHash::blake3(b"state");
+    let events = vec![
+        TraceEvent::new(
+            run_id.clone(),
+            0,
+            timestamp,
+            TraceEventKind::LoopTickStarted { tick_id: 1 },
+        ),
+        TraceEvent::new(
+            run_id.clone(),
+            1,
+            timestamp,
+            TraceEventKind::StateCommitted {
+                state_hash,
+                snapshot_id: None,
+            },
+        ),
+        TraceEvent::new(
+            run_id.clone(),
+            2,
+            timestamp,
+            TraceEventKind::LoopTickCompleted {
+                tick_id: 1,
+                integrity: None,
+            },
+        ),
+    ];
+    for event in events {
+        TraceStore::append(
+            &trace_store,
+            &run_id.to_string(),
+            serde_json::to_value(event).unwrap(),
+        )
+        .expect("append");
+    }
+
+    state_head(&trace_temp.path().to_path_buf(), &run_id.to_string()).expect("state head");
+}
+
+#[test]
 fn usage_mentions_trace_export() {
     let text = usage();
     assert!(text.contains("trace export"));
+    assert!(text.contains("state head"));
     assert!(text.contains("replay"));
     assert!(text.contains("run"));
+    assert!(text.contains("--version"));
 }
 
 #[test]
@@ -942,6 +1053,11 @@ fn run_with_args_replay_succeeds() {
         run_id.to_string(),
     ])
     .expect("replay");
+}
+
+#[test]
+fn run_with_args_version_succeeds() {
+    run_with_args(vec!["--version".to_string()]).expect("version");
 }
 
 #[test]

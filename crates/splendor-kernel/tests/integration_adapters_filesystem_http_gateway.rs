@@ -271,11 +271,11 @@ fn filesystem_adapter_denies_traversal_attempts() {
     ));
 
     let events = read_events(trace_store.as_ref(), &run_id);
-    let denied = events
+    let failed = events
         .iter()
-        .find(|event| matches!(event.kind, TraceEventKind::ActionDenied { .. }))
-        .expect("denied");
-    if let TraceEventKind::ActionDenied { result, .. } = &denied.kind {
+        .find(|event| matches!(event.kind, TraceEventKind::ActionFailed { .. }))
+        .expect("failed");
+    if let TraceEventKind::ActionFailed { result, .. } = &failed.kind {
         assert!(result
             .reasons
             .iter()
@@ -427,11 +427,11 @@ fn http_adapter_denies_disallowed_domain() {
     ));
 
     let events = read_events(trace_store.as_ref(), &run_id);
-    let denied = events
+    let failed = events
         .iter()
-        .find(|event| matches!(event.kind, TraceEventKind::ActionDenied { .. }))
-        .expect("denied");
-    if let TraceEventKind::ActionDenied { result, .. } = &denied.kind {
+        .find(|event| matches!(event.kind, TraceEventKind::ActionFailed { .. }))
+        .expect("failed");
+    if let TraceEventKind::ActionFailed { result, .. } = &failed.kind {
         assert!(result
             .reasons
             .iter()

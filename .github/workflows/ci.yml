@@ -16,6 +16,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Rust tests
         run: cargo test --workspace
+      - name: 0.01 baseline local runtime conformance
+        run: bash scripts/verify-0.01-baseline.sh
       - name: Install LLVM tools
         run: rustup component add llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov

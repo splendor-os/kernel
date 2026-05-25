@@ -19,6 +19,8 @@ records. It owns a `RunId`, a monotonic sequence counter, and a trace sink.
 - Assign a `RunId` to the runtime instance.
 - Track event sequence numbers.
 - Emit `TraceEvent` payloads via the configured sink.
+- Expose the next trace sequence so new persisted runs can emit `RunStarted`
+  exactly once before the first tick.
 - Emit integrity metadata in `LoopTickCompleted` when available.
 
 **Methods**
@@ -120,12 +122,14 @@ permission and quota verification.
 ## Scheduler and Loop Engine
 
 `LoopEngine` executes a single agent tick and emits the ordered trace events for
-percepts, policy decisions, verification, outcomes, and state commits.
+run start, percepts, state load, policy decisions, verification, outcomes, and
+state commits.
 
 ### LoopEngine
 
 **Responsibilities**
 - Collect percepts from registered `Perceptor` implementations.
+- Record the loaded state hash before policy execution.
 - Invoke the `Policy` callback to propose actions and next state.
 - Evaluate constraints via the `ConstraintEngine`.
 - Verify actions via gateway verifiers (`TenantAccess` + invariants) and record quotas.

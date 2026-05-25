@@ -12,8 +12,8 @@ use splendor_gateway::{
 };
 use splendor_store::{StateData, StateMetadata, TraceStore, TraceStoreError};
 use splendor_types::{
-    Action, Constraint, Feedback, Percept, QuotaUsage, Reward, RunId, SnapshotId, TraceEvent,
-    TraceEventKind, VerificationResult,
+    Action, Constraint, ContentHash, Feedback, Percept, QuotaUsage, Reward, RunId, SnapshotId,
+    TraceEvent, TraceEventKind, VerificationResult,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -295,6 +295,9 @@ impl LoopEngine {
         run_id: Option<RunId>,
     ) -> Result<Self, LoopError> {
         let runtime = KernelRuntime::with_trace_store(trace_store, run_id)?;
+        if runtime.next_sequence() == 0 {
+            runtime.record_event(TraceEventKind::RunStarted)?;
+        }
         Ok(Self::with_runtime(
             agent,
             state_graph,
@@ -377,10 +380,18 @@ impl LoopEngine {
                 percepts: percepts.clone(),
             })?;
 
+        self.runtime.record_event(TraceEventKind::StateLoaded {
+            state_hash: Some(ContentHash::blake3(&self.state.bytes)),
+        })?;
+
+        let policy_name = self.policy.name().to_string();
         self.runtime.record_event(TraceEventKind::PolicyInvoked {
-            policy: self.policy.name().to_string(),
+            policy: policy_name.clone(),
         })?;
         let decision = self.policy.decide(&self.state, &percepts)?;
+        self.runtime.record_event(TraceEventKind::PolicyCompleted {
+            policy: policy_name,
+        })?;
 
         let candidate_actions = decision
             .actions
@@ -476,8 +487,12 @@ impl LoopEngine {
                                     .unwrap_or_else(|| "action_failed".to_string()),
                             )
                         });
-                    self.runtime.record_event(TraceEventKind::ActionDenied {
+                    self.runtime.record_event(TraceEventKind::ActionFailed {
                         action: action.clone(),
+                        error: outcome
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| "action_failed".to_string()),
                         result: denial,
                     })?;
                 }

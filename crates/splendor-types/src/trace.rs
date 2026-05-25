@@ -63,6 +63,8 @@ impl TraceEvent {
 /// Ordered event taxonomy for a kernel tick.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TraceEventKind {
+    /// Marks the start of a run trace stream.
+    RunStarted,
     /// Marks the start of a loop tick.
     LoopTickStarted {
         /// Tick counter within the run.
@@ -73,8 +75,18 @@ pub enum TraceEventKind {
         /// Percepts collected for this tick.
         percepts: Vec<crate::Percept>,
     },
+    /// Records the state snapshot/hash available to the policy for this tick.
+    StateLoaded {
+        /// Hash of the loaded state bytes when available.
+        state_hash: Option<ContentHash>,
+    },
     /// Signals that the policy callback has been invoked.
     PolicyInvoked {
+        /// Identifier for the policy implementation.
+        policy: String,
+    },
+    /// Signals that the policy callback completed successfully.
+    PolicyCompleted {
         /// Identifier for the policy implementation.
         policy: String,
     },
@@ -114,6 +126,15 @@ pub enum TraceEventKind {
         /// Action that was denied.
         action: Action,
         /// Verification result describing the denial.
+        result: VerificationResult,
+    },
+    /// Records an action that failed during or after adapter execution.
+    ActionFailed {
+        /// Action that failed.
+        action: Action,
+        /// Error message describing the failure.
+        error: String,
+        /// Verification or post-verification result associated with the failure.
         result: VerificationResult,
     },
     /// Captures final outcome, feedback, and reward signals.
