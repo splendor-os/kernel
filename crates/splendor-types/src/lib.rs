@@ -30,11 +30,20 @@
 //! assert_eq!(action.name, "http_get");
 //! ```
 
+mod daemon_security;
 mod hash;
 mod ids;
 mod primitives;
 mod trace;
 
+pub use daemon_security::{
+    validate_client_connection_policy, validate_daemon_request, validate_insecure_dev_mode,
+    AppPrincipal, AuditAttribution, CallerCredential, ClientConnectionPolicy, ClientPrincipal,
+    CredentialAudience, CredentialBinding, DaemonEndpoint, DaemonSecurityDecision,
+    DaemonSecurityError, DaemonSecurityRequest, EndpointScope, GatewayVerificationState,
+    InsecureDevMode, LocalTransportBinding, RevocationStatus, WorkOrderAuthorization,
+    WorkOrderSignature,
+};
 pub use hash::{ContentHash, HashAlgorithm};
 pub use ids::{AgentId, RunId, SnapshotId, TenantId, TraceId};
 pub use primitives::{
