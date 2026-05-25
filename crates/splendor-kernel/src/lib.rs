@@ -25,6 +25,7 @@
 //! ```
 
 mod loop_engine;
+mod message_router;
 mod runtime;
 mod scheduler;
 mod state;
@@ -36,12 +37,18 @@ pub use loop_engine::{
     LoopError, NoopOutcomeEvaluator, OutcomeEvaluator, OutcomeSignal, Perceptor, Policy,
     PolicyDecision, ResumeInfo, TickOutcome,
 };
+pub use message_router::{
+    AgentMailboxSnapshot, LocalMessageRouter, MessageRouter, MessageRouterConfig,
+    MessageRouterError, MessageTraceRecorder,
+};
 pub use runtime::{KernelRuntime, KernelRuntimeConfig};
 pub use scheduler::{Scheduler, SchedulerConfig, SchedulerError, SchedulerStep};
 pub use splendor_types::{
     Action, AgentId, Constraint, ConstraintKind, ConstraintScope, ContentHash, CostEstimate,
-    Feedback, HashAlgorithm, Percept, PerceptProvenance, QuotaUsage, Reward, RunId,
-    SideEffectClass, SnapshotId, TenantId, TraceEvent, TraceEventKind, TraceId, VerificationResult,
+    Feedback, HashAlgorithm, Message, MessageDeliveryStatus, MessageEnvelope, MessageId,
+    MessageSchemaVersion, MessageTraceContext, MessageTraceLinks, MessageValidationError, Percept,
+    PerceptProvenance, QuotaUsage, Reward, RunId, SideEffectClass, SnapshotId, TenantId,
+    TraceEvent, TraceEventKind, TraceId, VerificationResult,
 };
 pub use state::{SnapshotPolicy, StateCommit, StateGraph, StateGraphError};
 pub use tenancy::{
