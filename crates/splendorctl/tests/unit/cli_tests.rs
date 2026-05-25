@@ -2,11 +2,42 @@ use super::*;
 use splendor_store::{SqliteStateStore, StateData, StateMetadata, StateStore};
 use splendor_types::{
     Action, AgentId, ContentHash, Feedback, Percept, PerceptProvenance, Reward, RunId,
-    SideEffectClass, SnapshotId, TenantId, TraceEvent, TraceEventKind, VerificationResult,
+    SideEffectClass, SnapshotId, TenantId, TraceEvent, TraceEventKind, TraceId, VerificationResult,
 };
 use tempfile::NamedTempFile;
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+fn valid_trace_records_for(run_id: &RunId) -> Vec<splendor_store::TraceRecord> {
+    let store = splendor_store::InMemoryTraceStore::default();
+    let timestamp = OffsetDateTime::now_utc();
+    let events = vec![
+        TraceEvent::new(
+            run_id.clone(),
+            0,
+            timestamp,
+            TraceEventKind::LoopTickStarted { tick_id: 1 },
+        ),
+        TraceEvent::new(
+            run_id.clone(),
+            1,
+            timestamp,
+            TraceEventKind::LoopTickCompleted {
+                tick_id: 1,
+                integrity: None,
+            },
+        ),
+    ];
+    for event in events {
+        TraceStore::append(
+            &store,
+            &run_id.to_string(),
+            serde_json::to_value(event).unwrap(),
+        )
+        .expect("append");
+    }
+    TraceStore::read(&store, &run_id.to_string()).expect("records")
+}
 
 #[test]
 fn parse_args_accepts_trace_export() {
@@ -348,6 +379,69 @@ fn replay_errors_on_corrupted_trace_sequence() {
 }
 
 #[test]
+fn decode_trace_records_rejects_record_run_mismatch() {
+    let run_id = RunId::new();
+    let mut records = valid_trace_records_for(&run_id);
+    records[0].run_id = RunId::new().to_string();
+
+    let error =
+        decode_and_validate_trace_records(&records, &run_id.to_string()).expect_err("run mismatch");
+    assert!(error.contains("Trace record run mismatch"));
+}
+
+#[test]
+fn decode_trace_records_rejects_record_sequence_gap() {
+    let run_id = RunId::new();
+    let mut records = valid_trace_records_for(&run_id);
+    records[1].sequence = 7;
+
+    let error =
+        decode_and_validate_trace_records(&records, &run_id.to_string()).expect_err("sequence gap");
+    assert!(error.contains("Trace sequence gap"));
+}
+
+#[test]
+fn decode_trace_records_rejects_prev_hash_mismatch() {
+    let run_id = RunId::new();
+    let mut records = valid_trace_records_for(&run_id);
+    records[1].prev_event_hash = Some(ContentHash::blake3(b"wrong-previous-event"));
+
+    let error = decode_and_validate_trace_records(&records, &run_id.to_string())
+        .expect_err("prev hash mismatch");
+    assert!(error.contains("Trace integrity chain mismatch"));
+}
+
+#[test]
+fn decode_trace_records_rejects_event_run_mismatch() {
+    let run_id = RunId::new();
+    let mut records = valid_trace_records_for(&run_id);
+    let event = TraceEvent::new(
+        RunId::new(),
+        0,
+        OffsetDateTime::now_utc(),
+        TraceEventKind::LoopTickStarted { tick_id: 1 },
+    );
+    records[0].payload = serde_json::to_value(event).expect("event");
+
+    let error = decode_and_validate_trace_records(&records, &run_id.to_string())
+        .expect_err("event run mismatch");
+    assert!(error.contains("Trace event run mismatch"));
+}
+
+#[test]
+fn decode_trace_records_rejects_trace_id_mismatch() {
+    let run_id = RunId::new();
+    let mut records = valid_trace_records_for(&run_id);
+    let mut event: TraceEvent = serde_json::from_value(records[0].payload.clone()).unwrap();
+    event.trace_id = TraceId::new();
+    records[0].payload = serde_json::to_value(event).expect("event");
+
+    let error = decode_and_validate_trace_records(&records, &run_id.to_string())
+        .expect_err("trace id mismatch");
+    assert!(error.contains("Trace id mismatch"));
+}
+
+#[test]
 fn state_head_succeeds_with_state_committed_trace() {
     let trace_temp = NamedTempFile::new().expect("trace db");
     let trace_store = SqliteTraceStore::open(trace_temp.path()).expect("trace store");
@@ -393,6 +487,51 @@ fn state_head_succeeds_with_state_committed_trace() {
 }
 
 #[test]
+fn state_head_errors_when_trace_db_missing() {
+    let dir = tempfile::TempDir::new().expect("dir");
+    let missing = dir.path().join("missing-trace.db");
+    let error = state_head(&missing, "run-1").expect_err("missing db");
+    assert!(error.contains("Trace database not found"));
+}
+
+#[test]
+fn state_head_errors_without_state_commit() {
+    let trace_temp = NamedTempFile::new().expect("trace db");
+    let trace_store = SqliteTraceStore::open(trace_temp.path()).expect("trace store");
+    let run_id = RunId::new();
+    let timestamp = OffsetDateTime::now_utc();
+    let events = vec![
+        TraceEvent::new(
+            run_id.clone(),
+            0,
+            timestamp,
+            TraceEventKind::LoopTickStarted { tick_id: 1 },
+        ),
+        TraceEvent::new(
+            run_id.clone(),
+            1,
+            timestamp,
+            TraceEventKind::LoopTickCompleted {
+                tick_id: 1,
+                integrity: None,
+            },
+        ),
+    ];
+    for event in events {
+        TraceStore::append(
+            &trace_store,
+            &run_id.to_string(),
+            serde_json::to_value(event).unwrap(),
+        )
+        .expect("append");
+    }
+
+    let error = state_head(&trace_temp.path().to_path_buf(), &run_id.to_string())
+        .expect_err("missing state commit");
+    assert!(error.contains("No StateCommitted event"));
+}
+
+#[test]
 fn usage_mentions_trace_export() {
     let text = usage();
     assert!(text.contains("trace export"));
@@ -433,6 +572,60 @@ fn run_from_config_executes_cycle() {
     let store = SqliteTraceStore::open(trace_temp.path()).expect("trace store");
     let records = TraceStore::read(&store, &run_id.to_string()).expect("records");
     assert!(!records.is_empty());
+}
+
+#[test]
+fn run_from_config_increment_policy_collects_percepts_and_resumes() {
+    let dir = tempfile::TempDir::new().expect("dir");
+    let trace_path = dir.path().join("trace.db");
+    let state_path = dir.path().join("state.db");
+    let config_path = dir.path().join("config.yaml");
+    let fs_base = dir.path().join("fs");
+    let tenant_id = Uuid::new_v4();
+    let agent_id = Uuid::new_v4();
+    let run_id = Uuid::new_v4();
+
+    let write_config = |resume: bool| {
+        let config = format!(
+            "trace_db: {}\nstate_db: {}\nrun_id: {}\ncycles: 1\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\"]\n    allowed_adapters: [\"filesystem\"]\n    quotas:\n      max_actions_per_tick: 5\n      max_action_duration_ms: 1000\n      max_filesystem_read_bytes: 1024\n      max_filesystem_write_bytes: 1024\n      max_network_read_bytes: 2048\n      max_network_write_bytes: 2048\n      max_http_requests_per_minute: 10\nagents:\n  - id: {}\n    tenant_id: {}\n    run_id: {}\n    snapshot_interval: 1\n    initial_state: \"\"\n    resume: {}\n    percepts:\n      - schema: splendor.percept.unit\n        payload:\n          value: 1\n        source: unit-test\n        detail: increment-resume\n    policy:\n      type: increment\n      action:\n        name: write_file\n        adapter: filesystem\n        side_effect_class: filesystem\n        params:\n          path: \"tick_{{counter}}.txt\"\n          contents: \"counter-{{counter}}\"\n        usage:\n          actions: 1\n          filesystem_write_bytes: 16\nadapters:\n  filesystem:\n    base_dir: {}\n",
+            trace_path.display(),
+            state_path.display(),
+            run_id,
+            tenant_id,
+            agent_id,
+            tenant_id,
+            run_id,
+            resume,
+            fs_base.display(),
+        );
+        std::fs::write(&config_path, config).expect("write config");
+    };
+
+    write_config(false);
+    run_from_config(&config_path, None, false).expect("initial run");
+    let tenant_root = fs_base.join(tenant_id.to_string());
+    assert_eq!(
+        std::fs::read_to_string(tenant_root.join("tick_1.txt")).expect("tick 1"),
+        "counter-1"
+    );
+
+    write_config(true);
+    run_from_config(&config_path, None, false).expect("resume run");
+    assert_eq!(
+        std::fs::read_to_string(tenant_root.join("tick_2.txt")).expect("tick 2"),
+        "counter-2"
+    );
+
+    let store = SqliteTraceStore::open(&trace_path).expect("trace store");
+    let events = decode_and_validate_trace_records(
+        &TraceStore::read(&store, &run_id.to_string()).expect("records"),
+        &run_id.to_string(),
+    )
+    .expect("validated trace");
+    assert!(events.iter().any(|event| matches!(
+        event.kind,
+        TraceEventKind::PerceptsReceived { ref percepts } if percepts.len() == 1
+    )));
 }
 
 #[test]
@@ -844,13 +1037,21 @@ fn apply_event_to_tick_populates_fields() {
             run_id.clone(),
             2,
             timestamp,
+            TraceEventKind::PolicyCompleted {
+                policy: "policy-completed".to_string(),
+            },
+        ),
+        TraceEvent::new(
+            run_id.clone(),
+            3,
+            timestamp,
             TraceEventKind::CandidatesProposed {
                 actions: vec![action.clone()],
             },
         ),
         TraceEvent::new(
             run_id.clone(),
-            3,
+            4,
             timestamp,
             TraceEventKind::ConstraintsEvaluated {
                 constraints: Vec::new(),
@@ -859,7 +1060,7 @@ fn apply_event_to_tick_populates_fields() {
         ),
         TraceEvent::new(
             run_id.clone(),
-            4,
+            5,
             timestamp,
             TraceEventKind::ActionExecuted {
                 action: action.clone(),
@@ -868,7 +1069,7 @@ fn apply_event_to_tick_populates_fields() {
         ),
         TraceEvent::new(
             run_id.clone(),
-            5,
+            6,
             timestamp,
             TraceEventKind::ActionDenied {
                 action: action.clone(),
@@ -877,7 +1078,17 @@ fn apply_event_to_tick_populates_fields() {
         ),
         TraceEvent::new(
             run_id.clone(),
-            6,
+            7,
+            timestamp,
+            TraceEventKind::ActionFailed {
+                action: action.clone(),
+                error: "adapter failed".to_string(),
+                result: VerificationResult::deny("failed"),
+            },
+        ),
+        TraceEvent::new(
+            run_id.clone(),
+            8,
             timestamp,
             TraceEventKind::OutcomeRecorded {
                 outcome: outcome_value.clone(),
@@ -887,7 +1098,7 @@ fn apply_event_to_tick_populates_fields() {
         ),
         TraceEvent::new(
             run_id.clone(),
-            7,
+            9,
             timestamp,
             TraceEventKind::StateCommitted {
                 state_hash: node_id.hash().clone(),
@@ -905,14 +1116,17 @@ fn apply_event_to_tick_populates_fields() {
     }
 
     assert_eq!(tick.percepts.len(), 1);
-    assert_eq!(tick.policy.as_deref(), Some("policy"));
+    assert_eq!(tick.policy.as_deref(), Some("policy-completed"));
     assert_eq!(tick.candidates.len(), 1);
     assert!(tick
         .constraints
         .as_ref()
         .map(|value| value.allowed)
         .unwrap_or(false));
-    assert_eq!(tick.actions.len(), 2);
+    assert_eq!(tick.actions.len(), 3);
+    assert_eq!(tick.actions[0].status, "executed");
+    assert_eq!(tick.actions[1].status, "denied");
+    assert_eq!(tick.actions[2].status, "failed");
     assert_eq!(tick.outcome, Some(outcome_value));
     assert_eq!(tick.feedback.as_ref().unwrap().kind, "signal");
     assert_eq!(tick.reward.as_ref().unwrap().value, 1.0);
