@@ -1414,7 +1414,148 @@ Native Node binding is useful for:
 
 Native Node binding should not be the default production boundary for critical physical systems.
 
-### 11.5 N-API / napi-rs path
+### 11.5 Secure App-to-Splendor Communication
+
+Splendor daemon APIs are security boundaries.
+
+External apps, SDKs, CLIs, sidecars, adapters, operator consoles, central managers, and product integrations must not be treated as trusted merely because they can reach a daemon endpoint.
+
+#### Identity Separation
+
+Do not confuse:
+
+```text
+AppPrincipal / ClientPrincipal = caller identity
+Tenant = authority boundary
+Agent = autonomous runtime identity
+Run = execution instance
+Node = host identity
+Instance = Splendor runtime process identity
+WorkOrder = signed authorization to start or resume a run
+Action = proposed operation mediated by the gateway
+```
+
+#### Layered Authorization
+
+Splendor uses layered authorization:
+
+```text
+transport security
+  -> caller authentication
+  -> endpoint scope authorization
+  -> signed work-order authorization
+  -> tenant/agent/run policy checks
+  -> gateway verification
+  -> adapter execution
+```
+
+A caller token authenticates an app.
+A signed work order authorizes a run.
+The Action Gateway authorizes side effects.
+
+No layer replaces the others.
+
+Expired or revoked work orders must not create, resume, or authorize runs.
+Work-order revocation must be checkable through a documented revocation source, such as a revocation list, introspection endpoint, or invalidated signing key.
+
+#### Local Development Mode
+
+Local development may use an insecure mode only when it is:
+
+- explicit;
+- local-only;
+- visibly warned at startup;
+- impossible to use accidentally in production/fleet mode.
+
+Preferred local transport:
+
+```text
+Unix domain socket
+```
+
+Acceptable local fallback:
+
+```text
+loopback-only TCP with explicit auth
+```
+
+Forbidden default:
+
+```text
+unauthenticated TCP listener on 0.0.0.0
+```
+
+#### Production Mode
+
+Production communication should use one or more of:
+
+- mTLS;
+- signed service tokens;
+- OIDC/JWT access tokens;
+- workload identity;
+- signed work-order bearer for narrow run-scoped operations, without replacing caller authentication.
+
+Credentials must support:
+
+- tenant or fleet binding;
+- audience binding;
+- scopes;
+- expiry;
+- revocation;
+- audit attribution.
+
+#### Endpoint Scope Examples
+
+```text
+splendor.runs.create
+splendor.runs.start
+splendor.runs.stop
+splendor.percepts.append
+splendor.actions.submit
+splendor.traces.read
+splendor.state.read
+splendor.replay.create
+splendor.workorders.issue
+splendor.workorders.read
+splendor.nodes.register
+splendor.nodes.heartbeat
+splendor.policies.sync
+```
+
+#### Endpoint Rules
+
+```text
+POST /runs
+  requires authenticated caller
+  requires splendor.runs.create
+  requires signed work order
+  requires tenant and agent compatibility
+
+POST /runs/:run_id/percepts
+  requires authenticated caller
+  requires splendor.percepts.append
+  requires run binding
+  requires allowed percept schema/provenance
+
+POST /actions
+  requires authenticated caller or internal runtime principal
+  requires valid run/action identity
+  requires trace linkage
+  requires gateway verification
+
+GET /runs/:run_id/traces
+  requires authenticated caller
+  requires splendor.traces.read
+  requires tenant/run visibility
+  requires redaction policy
+
+POST /nodes/register
+  requires bootstrap credential or mTLS
+  requires fleet binding
+  requires node registration scope
+```
+
+### 11.6 N-API / napi-rs path
 
 When building `@splendor/native`, use the Node-API/N-API style boundary through Rust tooling such as napi-rs.
 
