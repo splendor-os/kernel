@@ -6,14 +6,14 @@ graph.
 
 ## Data Types
 
-| Type | Purpose |
-| --- | --- |
-| `StateData` | Serialized state bytes with an optional `content_type`. |
-| `StateDataRef` | UUID reference for stored state bytes. |
-| `StateNodeId` | Content hash identifying a state graph node. |
-| `StateMetadata` | Metadata stored with each state node. |
-| `StateNode` | Node payload containing parents, data reference, and hashes. |
-| `StateSnapshot` | Snapshot payload containing node ID and `StateData`. |
+| Type            | Purpose                                                      |
+| --------------- | ------------------------------------------------------------ |
+| `StateData`     | Serialized state bytes with an optional `content_type`.      |
+| `StateDataRef`  | UUID reference for stored state bytes.                       |
+| `StateNodeId`   | Content hash identifying a state graph node.                 |
+| `StateMetadata` | Metadata stored with each state node.                        |
+| `StateNode`     | Node payload containing parents, data reference, and hashes. |
+| `StateSnapshot` | Snapshot payload containing node ID and `StateData`.         |
 
 ## StateStore
 
@@ -47,7 +47,7 @@ contains:
 
 ## Example
 
-```rust,no_run
+```rust
 use splendor_store::{SqliteStateStore, StateData, StateMetadata, StateStore};
 use tempfile::NamedTempFile;
 use time::OffsetDateTime;

@@ -6,6 +6,7 @@ sequence number within a `RunId` and must be emitted in strict tick order.
 ## TraceEvent
 
 **Fields**
+
 - `trace_id` (`TraceId`): deterministic identifier derived from `RunId` + sequence.
 - `run_id` (`RunId`): owning run.
 - `sequence` (`u64`): monotonic per-run sequence number.
@@ -18,6 +19,7 @@ The store records additional integrity hashes for audit validation.
 ## Ordering Rules
 
 Events MUST be emitted in the following order for each tick:
+
 1. `LoopTickStarted`
 2. `PerceptsReceived`
 3. `PolicyInvoked`
@@ -58,7 +60,7 @@ If post-verification fails after an action executes, the kernel records
 
 ## Example
 
-```rust,no_run
+```rust
 use splendor_types::{RunId, TraceEvent, TraceEventKind};
 use time::OffsetDateTime;
 

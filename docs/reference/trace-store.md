@@ -59,7 +59,7 @@ run. Each line is a serialized `TraceRecord`.
 
 ## Example
 
-```rust,no_run
+```rust
 use splendor_store::{InMemoryTraceStore, TraceStore};
 
 let store = InMemoryTraceStore::default();
