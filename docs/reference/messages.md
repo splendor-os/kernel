@@ -25,6 +25,9 @@ transitions, and trace emission documented in
 transport-neutral: no broker, remote transport, distributed delivery guarantee,
 or shared mutable state channel is part of the message object.
 
+0.02-S3 adds agent-isolation checks around local routing: a source agent must be
+explicitly allowed to send the message schema to the target recipient.
+
 ## Message
 
 | Field | Rust type | Required | Purpose |
