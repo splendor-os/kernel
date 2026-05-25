@@ -11,12 +11,16 @@
 - Added a 0.02-S1 message schema contract in Rust for `MessageId`, `Message`,
   `MessageEnvelope`, schema-version validation, delivery status vocabulary,
   message trace links, and message lifecycle trace event definitions.
+- Added the 0.02-S6 TypeScript surface with `@splendor/types`, a thin
+  authenticated `@splendor/client`, schema parity tests, SDK docs, and a minimal
+  daemon-client example.
 
 ### Explicitly not included
 
 - No daemon server, HTTP listener, OAuth/OIDC provider, PKI management, fleet
   mTLS rollout, node bootstrap, governance workflow, message router, message
-  broker, remote transport, or TypeScript runtime enforcement.
+  broker, remote transport, native Node binding, browser runtime, or TypeScript
+  runtime enforcement.
 
 ## 0.01-dev — Local kernel baseline
 

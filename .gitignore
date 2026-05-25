@@ -17,3 +17,8 @@ examples/**/data/tick_*.txt
 examples/**/data/**/tick_*.txt
 examples/**/data/artifact.txt
 examples/**/data/**/artifact.txt
+node_modules/
+typescript/**/dist/
+typescript/tests/dist/
+typescript/**/*.tsbuildinfo
+coverage/
