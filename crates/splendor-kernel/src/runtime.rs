@@ -105,6 +105,11 @@ impl KernelRuntime {
         &self.run_id
     }
 
+    /// Returns the next trace sequence that will be assigned.
+    pub fn next_sequence(&self) -> u64 {
+        self.sequence.load(Ordering::SeqCst)
+    }
+
     /// Records a `TraceEventKind` and returns the emitted `TraceEvent`.
     pub fn record_event(&self, kind: TraceEventKind) -> Result<TraceEvent, TraceError> {
         let sequence = self.sequence.fetch_add(1, Ordering::SeqCst);
@@ -138,14 +143,15 @@ fn compute_event_hash(
     prev_hash: Option<&ContentHash>,
     event: &TraceEvent,
 ) -> Result<ContentHash, TraceError> {
-    let mut event_for_hash = event.clone();
-    if let TraceEventKind::LoopTickCompleted { tick_id, .. } = event_for_hash.kind {
-        event_for_hash.kind = TraceEventKind::LoopTickCompleted {
-            tick_id,
-            integrity: None,
-        };
+    let mut payload = serde_json::to_value(event)?;
+    if let Some(kind) = payload.get_mut("kind") {
+        if let Some(loop_tick) = kind.get_mut("LoopTickCompleted") {
+            if let Some(object) = loop_tick.as_object_mut() {
+                object.remove("integrity");
+            }
+        }
     }
-    let payload = serde_json::to_vec(&event_for_hash)?;
+    let payload = serde_json::to_vec(&payload)?;
     let mut bytes = Vec::new();
     if let Some(prev_hash) = prev_hash {
         bytes.extend_from_slice(prev_hash.to_string().as_bytes());

@@ -1,9 +1,13 @@
 use super::*;
 use crate::SnapshotPolicy;
-use splendor_store::{InMemoryStateStore, InMemoryTraceStore, StateData};
+use splendor_store::{
+    InMemoryStateStore, InMemoryTraceStore, StateData, StateDataRef, StateMetadata, StateNodeId,
+    StateSnapshot, StateStore, StateStoreError,
+};
 use splendor_types::{
     ConstraintKind, ConstraintScope, PerceptProvenance, QuotaUsage, RunId, TraceEvent,
 };
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -251,6 +255,41 @@ impl OutcomeEvaluator for RecordingOutcomeEvaluator {
     }
 }
 
+struct FailingStateStore;
+
+impl StateStore for FailingStateStore {
+    fn put_state(&self, _state: StateData) -> Result<StateDataRef, StateStoreError> {
+        Err(StateStoreError::MissingState)
+    }
+
+    fn get_state(&self, _data_ref: &StateDataRef) -> Result<StateData, StateStoreError> {
+        Err(StateStoreError::MissingState)
+    }
+
+    fn commit_node(
+        &self,
+        _parent_ids: Vec<StateNodeId>,
+        _data_ref: StateDataRef,
+        _metadata: StateMetadata,
+    ) -> Result<StateNodeId, StateStoreError> {
+        Err(StateStoreError::MissingState)
+    }
+
+    fn snapshot(
+        &self,
+        _node_id: &StateNodeId,
+    ) -> Result<splendor_types::SnapshotId, StateStoreError> {
+        Err(StateStoreError::MissingSnapshot)
+    }
+
+    fn load_snapshot(
+        &self,
+        _snapshot_id: &splendor_types::SnapshotId,
+    ) -> Result<StateSnapshot, StateStoreError> {
+        Err(StateStoreError::MissingSnapshot)
+    }
+}
+
 #[test]
 fn loop_engine_emits_ordered_trace_events() {
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -290,6 +329,18 @@ fn loop_engine_emits_ordered_trace_events() {
     assert_eq!(outcome.action_outcomes.len(), 1);
 
     let recorded = events.lock().expect("events lock");
+    let trace_ids = recorded
+        .iter()
+        .map(|event| event.trace_id.to_string())
+        .collect::<HashSet<_>>();
+    assert_eq!(trace_ids.len(), recorded.len());
+    for (sequence, event) in recorded.iter().enumerate() {
+        assert_eq!(event.sequence, sequence as u64);
+        assert_eq!(
+            event.trace_id,
+            splendor_types::TraceId::from_run_sequence(&event.run_id, event.sequence)
+        );
+    }
     let kinds = recorded
         .iter()
         .map(|event| event_kind_label(&event.kind))
@@ -299,7 +350,9 @@ fn loop_engine_emits_ordered_trace_events() {
         vec![
             "LoopTickStarted",
             "PerceptsReceived",
+            "StateLoaded",
             "PolicyInvoked",
+            "PolicyCompleted",
             "CandidatesProposed",
             "ConstraintsEvaluated",
             "ActionVerificationStarted",
@@ -317,6 +370,53 @@ fn loop_engine_emits_ordered_trace_events() {
     if let TraceEventKind::StateCommitted { state_hash, .. } = &state_event.kind {
         assert_eq!(state_hash, outcome.state_commit.node_id.hash());
     }
+}
+
+#[test]
+fn loop_engine_state_commit_failure_does_not_complete_tick() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = CapturingTraceSink {
+        events: Arc::clone(&events),
+    };
+    let runtime = KernelRuntime::new(KernelRuntimeConfig {
+        trace_sink: Arc::new(sink),
+        ..KernelRuntimeConfig::default()
+    });
+
+    let graph = StateGraph::new(Arc::new(FailingStateStore), SnapshotPolicy::default());
+    let initial_state = StateData {
+        bytes: vec![1],
+        content_type: None,
+    };
+    let agent = AgentContext::new(
+        splendor_types::AgentId::new(),
+        splendor_types::TenantId::new(),
+        crate::AgentRuntimeConfig::default(),
+    );
+    let mut engine = LoopEngine::with_runtime(
+        agent,
+        graph,
+        initial_state,
+        Box::new(StaticPolicy),
+        Arc::new(StubGateway),
+        runtime,
+    );
+
+    let error = engine.tick(1).expect_err("state commit failure");
+    assert!(matches!(error, LoopError::StateGraph(_)));
+    assert_eq!(engine.state_graph.tick(), 0);
+    assert!(engine.agent.state_head.is_none());
+
+    let recorded = events.lock().expect("events lock");
+    assert!(recorded
+        .iter()
+        .any(|event| matches!(event.kind, TraceEventKind::LoopTickStarted { tick_id: 1 })));
+    assert!(!recorded
+        .iter()
+        .any(|event| matches!(event.kind, TraceEventKind::StateCommitted { .. })));
+    assert!(!recorded
+        .iter()
+        .any(|event| matches!(event.kind, TraceEventKind::LoopTickCompleted { .. })));
 }
 
 #[test]
@@ -457,11 +557,11 @@ fn loop_engine_records_gateway_errors_as_failed() {
     assert!(!recorded
         .iter()
         .any(|event| matches!(event.kind, TraceEventKind::ActionExecuted { .. })));
-    let denied = recorded
+    let failed = recorded
         .iter()
-        .find(|event| matches!(event.kind, TraceEventKind::ActionDenied { .. }))
-        .expect("denied");
-    if let TraceEventKind::ActionDenied { result, .. } = &denied.kind {
+        .find(|event| matches!(event.kind, TraceEventKind::ActionFailed { .. }))
+        .expect("failed");
+    if let TraceEventKind::ActionFailed { result, .. } = &failed.kind {
         assert!(result
             .reasons
             .iter()
@@ -641,15 +741,19 @@ fn loop_engine_new_sets_head_from_graph() {
 
 fn event_kind_label(kind: &TraceEventKind) -> &'static str {
     match kind {
+        TraceEventKind::RunStarted => "RunStarted",
         TraceEventKind::LoopTickStarted { .. } => "LoopTickStarted",
         TraceEventKind::PerceptsReceived { .. } => "PerceptsReceived",
+        TraceEventKind::StateLoaded { .. } => "StateLoaded",
         TraceEventKind::PolicyInvoked { .. } => "PolicyInvoked",
+        TraceEventKind::PolicyCompleted { .. } => "PolicyCompleted",
         TraceEventKind::CandidatesProposed { .. } => "CandidatesProposed",
         TraceEventKind::ConstraintsEvaluated { .. } => "ConstraintsEvaluated",
         TraceEventKind::ActionVerificationStarted { .. } => "ActionVerificationStarted",
         TraceEventKind::ActionVerificationCompleted { .. } => "ActionVerificationCompleted",
         TraceEventKind::ActionExecuted { .. } => "ActionExecuted",
         TraceEventKind::ActionDenied { .. } => "ActionDenied",
+        TraceEventKind::ActionFailed { .. } => "ActionFailed",
         TraceEventKind::OutcomeRecorded { .. } => "OutcomeRecorded",
         TraceEventKind::StateCommitted { .. } => "StateCommitted",
         TraceEventKind::LoopTickCompleted { .. } => "LoopTickCompleted",

@@ -16,10 +16,10 @@ use splendor_kernel::{
     PolicyDecision, QuotaPolicy, Scheduler, SchedulerConfig, SnapshotPolicy, StateGraph,
     TenantContext, TenantPolicy, TenantRegistry,
 };
-use splendor_store::{SqliteStateStore, SqliteTraceStore, StateStore, TraceStore};
+use splendor_store::{SqliteStateStore, SqliteTraceStore, StateStore, TraceRecord, TraceStore};
 use splendor_types::{
     Action, ContentHash, HashAlgorithm, Percept, PerceptProvenance, QuotaUsage, SideEffectClass,
-    SnapshotId, TraceEvent, TraceEventKind,
+    SnapshotId, TraceEvent, TraceEventKind, TraceId,
 };
 use std::env;
 use std::fs;
@@ -28,6 +28,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use time::OffsetDateTime;
+
+const SPLENDOR_001_BASELINE: &str = "Splendor0.01-dev";
 
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
@@ -51,7 +53,9 @@ where
 {
     let command = parse_args(args)?;
     match command {
+        Command::Version => print_version(),
         Command::TraceExport { db_path, run_id } => export_trace(&db_path, &run_id)?,
+        Command::StateHead { db_path, run_id } => state_head(&db_path, &run_id)?,
         Command::Replay {
             trace_db_path,
             state_db_path,
@@ -91,8 +95,12 @@ fn collect_args() -> Vec<String> {
 /// Supported CLI commands.
 #[derive(Debug)]
 enum Command {
+    /// Print CLI and baseline version information.
+    Version,
     /// Export trace data from the SQLite store.
     TraceExport { db_path: PathBuf, run_id: String },
+    /// Return the latest state head observed in a trace stream.
+    StateHead { db_path: PathBuf, run_id: String },
     /// Replay a trace from the SQLite stores.
     Replay {
         trace_db_path: PathBuf,
@@ -119,8 +127,14 @@ where
     let Some(command) = args.next() else {
         return Err(usage());
     };
+    if command == "--version" || command == "-V" || command == "version" {
+        return Ok(Command::Version);
+    }
     if command == "trace" {
         return parse_trace_command(args);
+    }
+    if command == "state" {
+        return parse_state_command(args);
     }
     if command == "replay" {
         return parse_replay_command(args);
@@ -132,6 +146,45 @@ where
         return Err(usage());
     }
     Err(format!("Unknown command: {command}\n\n{}", usage()))
+}
+
+/// Parses `splendorctl state ...` subcommands.
+fn parse_state_command<I>(mut args: I) -> Result<Command, String>
+where
+    I: Iterator<Item = String>,
+{
+    let Some(subcommand) = args.next() else {
+        return Err(usage());
+    };
+    if subcommand != "head" {
+        return Err(format!(
+            "Unknown state subcommand: {subcommand}\n\n{}",
+            usage()
+        ));
+    }
+    let mut db_path: Option<PathBuf> = None;
+    let mut run_id: Option<String> = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--db" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "Missing value for --db".to_string())?;
+                db_path = Some(PathBuf::from(value));
+            }
+            "--run" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "Missing value for --run".to_string())?;
+                run_id = Some(value);
+            }
+            "--help" | "-h" => return Err(usage()),
+            _ => return Err(format!("Unknown argument: {arg}\n\n{}", usage())),
+        }
+    }
+    let db_path = db_path.ok_or_else(|| "Missing required --db".to_string())?;
+    let run_id = run_id.ok_or_else(|| "Missing required --run".to_string())?;
+    Ok(Command::StateHead { db_path, run_id })
 }
 
 /// Parses `splendorctl trace ...` subcommands.
@@ -290,6 +343,58 @@ fn export_trace(db_path: &PathBuf, run_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Prints CLI package and milestone baseline identifiers.
+fn print_version() {
+    println!(
+        "splendorctl {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        SPLENDOR_001_BASELINE
+    );
+}
+
+#[derive(Serialize)]
+struct StateHeadOutput {
+    run_id: String,
+    state_hash: ContentHash,
+    snapshot_id: Option<SnapshotId>,
+    trace_sequence: u64,
+}
+
+/// Emits the latest state head recorded by the run's StateCommitted trace event.
+fn state_head(db_path: &PathBuf, run_id: &str) -> Result<(), String> {
+    if !db_path.exists() {
+        return Err(format!("Trace database not found: {}", db_path.display()));
+    }
+    let store = SqliteTraceStore::open(db_path)
+        .map_err(|error| format!("Failed to open trace store: {error}"))?;
+    let records = TraceStore::read(&store, run_id)
+        .map_err(|error| format!("Failed to read run '{run_id}': {error}"))?;
+    let events = decode_and_validate_trace_records(&records, run_id)?;
+
+    let mut latest: Option<StateHeadOutput> = None;
+    for event in events {
+        if let TraceEventKind::StateCommitted {
+            state_hash,
+            snapshot_id,
+        } = event.kind
+        {
+            latest = Some(StateHeadOutput {
+                run_id: run_id.to_string(),
+                state_hash,
+                snapshot_id,
+                trace_sequence: event.sequence,
+            });
+        }
+    }
+    let latest = latest.ok_or_else(|| {
+        format!("No StateCommitted event found in trace history for run '{run_id}'")
+    })?;
+    let line = serde_json::to_string(&latest)
+        .map_err(|error| format!("Failed to encode state head output: {error}"))?;
+    println!("{line}");
+    Ok(())
+}
+
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ReplayOutput {
@@ -366,11 +471,7 @@ fn replay_run(
         .map_err(|error| format!("Failed to open state store: {error}"))?;
     let records = TraceStore::read(&trace_store, run_id)
         .map_err(|error| format!("Failed to read run '{run_id}': {error}"))?;
-    let events: Vec<TraceEvent> = records
-        .into_iter()
-        .map(|record| serde_json::from_value(record.payload))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Failed to decode trace record: {error}"))?;
+    let events = decode_and_validate_trace_records(&records, run_id)?;
 
     let from_snapshot_id = match from_snapshot {
         Some(value) => Some(parse_snapshot_id(value)?),
@@ -451,6 +552,61 @@ fn replay_run(
     Ok(())
 }
 
+fn decode_and_validate_trace_records(
+    records: &[TraceRecord],
+    run_id: &str,
+) -> Result<Vec<TraceEvent>, String> {
+    let mut events = Vec::with_capacity(records.len());
+    let mut prev_hash: Option<ContentHash> = None;
+    for (expected_sequence, record) in records.iter().enumerate() {
+        let expected_sequence = expected_sequence as u64;
+        if record.run_id != run_id {
+            return Err(format!(
+                "Trace record run mismatch: expected '{run_id}' but found '{}'",
+                record.run_id
+            ));
+        }
+        if record.sequence != expected_sequence {
+            return Err(format!(
+                "Trace sequence gap or corruption for run '{run_id}': expected sequence {expected_sequence} but found {}",
+                record.sequence
+            ));
+        }
+        if record.prev_event_hash != prev_hash {
+            return Err(format!(
+                "Trace integrity chain mismatch at sequence {} for run '{run_id}'",
+                record.sequence
+            ));
+        }
+
+        let event: TraceEvent = serde_json::from_value(record.payload.clone())
+            .map_err(|error| format!("Failed to decode trace record: {error}"))?;
+        if event.run_id.to_string() != run_id {
+            return Err(format!(
+                "Trace event run mismatch at sequence {}: expected '{run_id}' but found '{}'",
+                record.sequence, event.run_id
+            ));
+        }
+        if event.sequence != record.sequence {
+            return Err(format!(
+                "Trace event sequence mismatch for run '{run_id}': record sequence {} but event sequence {}",
+                record.sequence, event.sequence
+            ));
+        }
+        let expected_trace_id = TraceId::from_run_sequence(&event.run_id, event.sequence);
+        if event.trace_id != expected_trace_id {
+            return Err(format!(
+                "Trace id mismatch at sequence {} for run '{run_id}'",
+                event.sequence
+            ));
+        }
+
+        prev_hash = Some(record.event_hash.clone());
+        events.push(event);
+    }
+    Ok(events)
+}
+
 fn apply_event_to_tick(
     tick: &mut ReplayTick,
     event: &TraceEvent,
@@ -460,6 +616,7 @@ fn apply_event_to_tick(
     match &event.kind {
         TraceEventKind::PerceptsReceived { percepts } => tick.percepts = percepts.clone(),
         TraceEventKind::PolicyInvoked { policy } => tick.policy = Some(policy.clone()),
+        TraceEventKind::PolicyCompleted { policy } => tick.policy = Some(policy.clone()),
         TraceEventKind::CandidatesProposed { actions } => tick.candidates = actions.clone(),
         TraceEventKind::ConstraintsEvaluated { result, .. } => {
             tick.constraints = Some(result.clone())
@@ -476,6 +633,14 @@ fn apply_event_to_tick(
             tick.actions.push(ReplayAction {
                 action: action.clone(),
                 status: "denied".to_string(),
+                outcome: None,
+                result: Some(result.clone()),
+            });
+        }
+        TraceEventKind::ActionFailed { action, result, .. } => {
+            tick.actions.push(ReplayAction {
+                action: action.clone(),
+                status: "failed".to_string(),
                 outcome: None,
                 result: Some(result.clone()),
             });
@@ -1098,13 +1263,17 @@ fn parse_run_id(value: &str) -> Result<splendor_types::RunId, String> {
 fn usage() -> String {
     [
         "splendorctl trace export --db <path> --run <run-id>",
+        "splendorctl state head --db <trace-path> --run <run-id>",
         "splendorctl replay --db <trace-path> --state-db <state-path> --run <run-id> [--from-snapshot <id>] [--include-state]",
         "splendorctl run --config <path> [--cycles <n> | --forever]",
+        "splendorctl --version",
         "",
         "Commands:",
         "  trace export   Export trace records as JSON lines.",
+        "  state head     Print the latest state head recorded in the trace.",
         "  replay         Replay a run from trace + state stores.",
         "  run            Run a local agent loop from config.",
+        "  --version      Print package and 0.01 baseline identifiers.",
         "",
         "Options:",
         "  --db <path>          Path to the SQLite trace database.",

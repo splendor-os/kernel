@@ -433,11 +433,11 @@ fn loop_engine_marks_needs_intervention_on_postcondition_failure() {
     assert!(events
         .iter()
         .any(|event| matches!(event.kind, TraceEventKind::ActionExecuted { .. })));
-    let denial = events
+    let failure = events
         .iter()
-        .find(|event| matches!(event.kind, TraceEventKind::ActionDenied { .. }))
-        .expect("action denied");
-    if let TraceEventKind::ActionDenied { result, .. } = &denial.kind {
+        .find(|event| matches!(event.kind, TraceEventKind::ActionFailed { .. }))
+        .expect("action failed");
+    if let TraceEventKind::ActionFailed { result, .. } = &failure.kind {
         assert!(result
             .reasons
             .contains(&"postcondition_missing".to_string()));

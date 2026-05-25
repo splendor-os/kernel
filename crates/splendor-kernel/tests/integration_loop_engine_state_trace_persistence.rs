@@ -154,8 +154,9 @@ fn loop_engine_persists_state_and_trace_records() {
 
     let first = events.first().expect("first event");
     let last = events.last().expect("last event");
+    assert!(matches!(first.kind, TraceEventKind::RunStarted));
     assert!(matches!(
-        first.kind,
+        events[1].kind,
         TraceEventKind::LoopTickStarted { tick_id: 1 }
     ));
     assert!(matches!(

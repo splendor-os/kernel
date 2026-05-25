@@ -168,6 +168,44 @@ def test_trace_subscription_and_tail() -> None:
     assert tail[0]["run_id"] == run_id
 
 
+def test_replay_run_does_not_repeat_adapter_side_effects() -> None:
+    runtime = KernelRuntime()
+    tenant_id = runtime.create_tenant(
+        allowed_actions=["write"],
+        allowed_adapters=["filesystem"],
+    )
+    agent_id = runtime.create_agent(tenant_id)
+    run_id = runtime.agent_run_id(agent_id)
+    calls = {"count": 0}
+
+    def adapter(action: Action) -> dict[str, object]:
+        calls["count"] += 1
+        return {"output": {"written": action.params["path"]}}
+
+    runtime.register_adapter("filesystem", adapter)
+    runtime.register_perceptor(agent_id, lambda agent: [])
+
+    def policy(state: bytes, percepts: list[dict[str, object]]):
+        return [
+            {
+                "name": "write",
+                "adapter": "filesystem",
+                "side_effect_class": "filesystem",
+                "params": {"path": "artifact.txt"},
+            }
+        ]
+
+    runtime.register_policy(agent_id, policy)
+    runtime.run_once(agent_id)
+    assert calls["count"] == 1
+
+    replay = runtime.replay_run(run_id)
+
+    assert calls["count"] == 1
+    assert any(event["kind"] == "ActionExecuted" for event in replay)
+    assert any(event["kind"] == "StateCommitted" for event in replay)
+
+
 def test_quota_denial_is_recorded() -> None:
     runtime = KernelRuntime()
     tenant_id = runtime.create_tenant(
@@ -219,6 +257,16 @@ def test_missing_adapter_is_failure() -> None:
     outcome = runtime.run_once(agent_id)
     assert outcome.action_outcomes[0].status == "failed"
     assert outcome.action_outcomes[0].error == "adapter not registered"
+
+
+def test_replay_run_rejects_missing_run() -> None:
+    runtime = KernelRuntime()
+    try:
+        runtime.replay_run("missing")
+    except ValueError as exc:
+        assert "run not found" in str(exc)
+    else:
+        raise AssertionError("expected error")
 
 
 def test_create_agent_requires_tenant() -> None:
@@ -490,3 +538,4 @@ def test_package_exports() -> None:
     assert "QuotaUsage" in splendor.__all__
     assert isinstance(splendor.__version__, str)
     assert splendor.__version__
+    assert splendor.__baseline__ == "Splendor0.01-dev"

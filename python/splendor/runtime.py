@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
+import copy
 import hashlib
 import threading
 import time
@@ -416,6 +417,8 @@ class KernelRuntime:
         tenant.ledger.begin_tick(tick_id)
         start = time.time()
 
+        if self._sequence_by_run.get(agent.run_id, 0) == 0:
+            self._record_trace(agent.run_id, "RunStarted", {})
         self._record_trace(agent.run_id, "LoopTickStarted", {"tick_id": tick_id})
 
         percepts = self._collect_percepts(agent)
@@ -425,12 +428,23 @@ class KernelRuntime:
             {"tick_id": tick_id, "count": len(percepts), "percepts": percepts},
         )
 
+        self._record_trace(
+            agent.run_id,
+            "StateLoaded",
+            {"tick_id": tick_id, "state_hash": hashlib.sha256(agent.state).hexdigest()},
+        )
+        policy_name = getattr(agent.policy, "__name__", "policy")
+        self._record_trace(
+            agent.run_id,
+            "PolicyInvoked",
+            {"tick_id": tick_id, "policy": policy_name},
+        )
         policy_output = agent.policy(agent.state, percepts)
         actions, next_state = self._normalize_policy_output(policy_output, agent.state)
         self._record_trace(
             agent.run_id,
-            "PolicyInvoked",
-            {"tick_id": tick_id, "policy": getattr(agent.policy, "__name__", "policy")},
+            "PolicyCompleted",
+            {"tick_id": tick_id, "policy": policy_name},
         )
         self._record_trace(
             agent.run_id,
@@ -619,7 +633,20 @@ class KernelRuntime:
                         "output": outcome.output,
                     },
                 )
-            if outcome.status != "executed" or (post is not None and not post.allowed):
+            if outcome.status == "failed" or (post is not None and not post.allowed):
+                self._record_trace(
+                    agent.run_id,
+                    "ActionFailed",
+                    {
+                        "tick_id": tick_id,
+                        "action": candidate.action.name,
+                        "error": outcome.error or "action_failed",
+                        "result": (
+                            post or VerificationResult.deny("action_failed")
+                        ).__dict__,
+                    },
+                )
+            elif outcome.status != "executed":
                 self._record_trace(
                     agent.run_id,
                     "ActionDenied",
@@ -683,6 +710,26 @@ class KernelRuntime:
 
     def tail_traces(self, run_id: str) -> Iterable[dict[str, Any]]:
         return iter(self._trace_by_run.get(run_id, []))
+
+    def replay_run(self, run_id: str) -> list[dict[str, Any]]:
+        """Return a read-only replay view of stored trace events for a run.
+
+        The Python SDK replay path reconstructs behavior from in-memory trace
+        events only. It does not invoke policies, constraints, or adapters, so
+        side effects recorded in the trace are never repeated during replay.
+        """
+        events = self._trace_by_run.get(run_id)
+        if not events:
+            raise ValueError("run not found")
+        for expected, event in enumerate(events):
+            if event.get("sequence") != expected:
+                raise ValueError(
+                    f"trace sequence gap or corruption: expected {expected} "
+                    f"but found {event.get('sequence')}"
+                )
+            if event.get("run_id") != run_id:
+                raise ValueError("trace run mismatch")
+        return copy.deepcopy(events)
 
     def _agent_or_raise(self, agent_id: str) -> AgentContext:
         agent = self._agents.get(agent_id)

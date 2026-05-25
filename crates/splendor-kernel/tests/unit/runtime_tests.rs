@@ -98,3 +98,37 @@ fn runtime_resumes_sequence_with_trace_store() {
         panic!("unexpected event kind");
     }
 }
+
+#[test]
+fn loop_tick_completed_integrity_matches_trace_store_record() {
+    let store = Arc::new(InMemoryTraceStore::default());
+    let run_id = RunId::new();
+    let runtime =
+        KernelRuntime::with_trace_store(store.clone(), Some(run_id.clone())).expect("runtime");
+    runtime
+        .record_event(TraceEventKind::PolicyInvoked {
+            policy: "unit".to_string(),
+        })
+        .expect("policy event");
+    runtime
+        .record_event(TraceEventKind::LoopTickCompleted {
+            tick_id: 1,
+            integrity: None,
+        })
+        .expect("completed event");
+
+    let records = TraceStore::read(store.as_ref(), &run_id.to_string()).expect("records");
+    let completed_record = records.last().expect("completed record");
+    let completed: TraceEvent =
+        serde_json::from_value(completed_record.payload.clone()).expect("completed event payload");
+    if let TraceEventKind::LoopTickCompleted {
+        integrity: Some(integrity),
+        ..
+    } = completed.kind
+    {
+        assert_eq!(integrity.prev_event_hash, completed_record.prev_event_hash);
+        assert_eq!(integrity.event_hash, completed_record.event_hash);
+    } else {
+        panic!("missing completion integrity");
+    }
+}

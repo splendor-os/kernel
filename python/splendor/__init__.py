@@ -22,3 +22,4 @@ __all__ = [
     "VerificationResult",
 ]
 __version__ = "0.1.0"
+__baseline__ = "Splendor0.01-dev"
