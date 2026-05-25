@@ -7,22 +7,26 @@ metadata. A `SnapshotPolicy` determines when snapshots are created.
 ## SnapshotPolicy
 
 **Fields**
+
 - `interval` (`Option<u64>`): snapshot every N ticks when set.
 - `important_labels` (`Vec<String>`): labels that always trigger snapshots.
 
 **Behavior**
+
 - Snapshot when `tick % interval == 0` (for `interval > 0`).
 - Snapshot when `StateMetadata.label` matches any `important_labels` entry.
 
 ## StateGraph
 
 **Fields**
+
 - `store` (`Arc<dyn StateStore>`): backing persistence layer.
 - `head` (`Option<StateNodeId>`): current head node.
 - `tick` (`u64`): commit counter.
 - `policy` (`SnapshotPolicy`): snapshot policy applied at commit time.
 
 **Commit sequence**
+
 1. Persist `StateData` via `StateStore::put_state`.
 2. Record node using `StateStore::commit_node` with the current head as parent.
 3. Increment `tick` and evaluate `SnapshotPolicy`.
@@ -31,6 +35,7 @@ metadata. A `SnapshotPolicy` determines when snapshots are created.
 ## StateCommit
 
 **Fields**
+
 - `node_id` (`StateNodeId`): identifier of the committed node.
 - `snapshot_id` (`Option<SnapshotId>`): snapshot identifier when created.
 
@@ -40,7 +45,7 @@ metadata. A `SnapshotPolicy` determines when snapshots are created.
 
 ## Example
 
-```rust,no_run
+```rust
 use splendor_kernel::{SnapshotPolicy, StateGraph};
 use splendor_store::{InMemoryStateStore, StateData, StateMetadata};
 use std::sync::Arc;

@@ -86,7 +86,7 @@ Placeholder gateway that always returns `GatewayError::Unimplemented`.
 
 ## Example
 
-```rust,no_run
+```rust
 use splendor_gateway::{ActionGateway, ActionRequest, UnimplementedGateway};
 use splendor_types::{Action, SideEffectClass};
 use time::OffsetDateTime;

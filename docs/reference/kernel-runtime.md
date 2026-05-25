@@ -173,7 +173,7 @@ start of each scheduler cycle.
 
 ## Example
 
-```rust,no_run
+```rust
 use splendor_kernel::{KernelRuntime, KernelRuntimeConfig, TraceEventKind};
 
 let runtime = KernelRuntime::new(KernelRuntimeConfig::default());

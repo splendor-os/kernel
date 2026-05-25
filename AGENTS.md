@@ -1,399 +1,842 @@
-# Splendor — Core Project Model (Kernel-Grade Agent Runtime)
+# AGENTS.md — Splendor Implementation Agent Contract
 
-**Tagline:** _TO KEPLER AND BEYOND_  
-**Product:** **Splendor** — _An AI Kernel for Self-Managed Neuro-Symbolic Agents_  
-**One-liner:** A kernel-grade runtime (**Rust core + Python interfaces**) that runs **persistent, governable agent loops** with explicit state, constrained reasoning, verified action boundaries, feedback/reward channels, and fleet-ready coordination.
+This file is the first instruction document for implementation agents working on Splendor.
+It exists to prevent architectural drift, keep work sprint-scoped, and make every contribution verifiable.
 
-> Splendor runs **on top of Unix-based systems** (Linux/macOS and other Unix-like environments).  
-> It is **not** a bare-metal OS kernel.
-
----
-
-## Why
-
-### The problem
-
-Modern OSs standardized primitives (processes, threads, memory, IPC, permissions, scheduling), enabling reliable software at scale.
-
-Autonomous AI systems **lack an equivalent foundation**. “Agents” are commonly assembled as ad-hoc user-space glue:
-
-- model + prompt + tool wrappers
-- planner + retry loops
-- vector store + memory strategies
-- bespoke safety + logging + evaluation
-
-This results in agent systems that are:
-
-- fragmented and inconsistent across teams and machines,
-- difficult to verify, reproduce, and debug,
-- risky at execution edges (tools/services/devices),
-- brittle to scale into **persistent autonomy**.
-
-### Splendor’s thesis
-
-The next “kernel” won’t primarily schedule OS processes. It will schedule **agent loops**:
-
-- **Perceiving** (normalized percepts from sensors/tools)
-- **Deciding** (neural generalization + symbolic control)
-- **Acting** (verified execution boundaries)
-- **Learning** (feedback/reward channels)
-- **Coordinating** (messaging, multi-tenancy, fleet scheduling)
-- **Remaining constrained** by explicit rules and guarantees
-
-Splendor provides the missing **kernel-level primitives for agents**, so autonomy becomes **stable, auditable, and governable**.
+Splendor is a **kernel-grade AI runtime for governed agent loops**.
+It runs **on top of Unix-like systems**. It is **not** a bare-metal OS, not a chat-agent framework, not an enterprise SaaS product, and not a robot real-time controller.
 
 ---
 
-## What
+## 1. Mission
 
-### What Splendor is
+Build Splendor as a runtime substrate for persistent autonomous agents.
 
-A systems layer that augments modern neural AI systems by enforcing primitives for autonomy, coordination, and long-term evolution.
+The runtime must standardize and enforce:
 
-- **Kernel-grade runtime primitives** for autonomous agents
-- **Rust runtime core** for tenancy, state graphs, scheduling, messaging, action verification, and audit/observability
-- **Managed interpreters** as first-class compute (e.g., sandboxed Python instances per agent/tenant)
-- **Closed-loop autonomy**: percepts → policies → (constraints) → verified actions, with feedback routed back into state/learning
-- **Distributed by design**: agents can run across machines while identity and constraints remain enforceable
-- **Boundary-aware safety**: actions are mediated at execution edges before side effects occur
+- tenant, agent, run, tick, action, state, trace, and message identity;
+- explicit state graph commits;
+- append-only trace events;
+- verified action boundaries;
+- quotas, permissions, policies, constraints, and verifier chains;
+- replay without accidental side effects;
+- local first, then distributed, then governed fleet execution.
 
-### What Splendor is not
+The core loop is:
 
-- Not a replacement for Unix / your OS
-- Not a bare-metal kernel
-- Not a new neural architecture (bring your models)
-- Not a single agent framework that dictates how you build (bring your stack)
+```text
+Percepts
+  -> Policy
+  -> Constraints
+  -> Action Gateway
+  -> Verifiers
+  -> Adapter
+  -> Outcome
+  -> State Commit
+  -> Trace
+```
 
-Splendor **complements** existing agent frameworks and tools by providing the runtime substrate beneath them.
-
----
-
-## Core idea: neuro-symbolic by construction
-
-Splendor treats “neuro-symbolic” as a **runtime property**, not an architecture bolt-on.
-
-An agent loop is built from four cooperating parts, each with explicit interfaces and enforcement points:
-
-1. **Neural policies**  
-   Decide under uncertainty: map structured percepts to candidate actions using learned representations.
-
-2. **Symbolic structure**  
-   Constrain and compose behavior: planners/solvers/rules express allowed actions, invariants, and task decomposition.
-
-3. **Verification at the boundary**  
-   Mediate execution: before actions reach tools/services/devices, verification checks enforce safety, permissions, resources, and invariants.
-
-4. **Feedback and rewards**  
-   Close the loop: outcomes and evaluations are captured as first-class signals routed back into state and learning interfaces.
-
-**Learning provides generalization. Symbolic structure provides control. Verification provides guarantees. Feedback provides adaptation.**
-
-Splendor’s job is to make these pieces **interoperable and enforceable at runtime** without prescribing a single model, planner, or training method.
+All work must strengthen this loop.
 
 ---
 
-## Vision: agents as first-class compute
+## 2. Required reading before implementation
 
-Operating systems separate **kernel space** (enforced invariants) from **user space** (fast-changing applications).  
-Splendor applies this separation to autonomy:
+Before changing code, implementation agents must read the files relevant to their sprint.
+Do not skip large files; read them in chunks when needed.
 
-### System space (stable + enforceable)
+Required for all implementation work:
 
-- Tenancy/isolation
-- Resource limits and scheduling
-- Action gating + verification and constraint enforcement
-- Messaging, audit/observability, governance
+```text
+AGENTS.md
+/docs/rules/splendor_dev_model.md
+/docs/rules/sprints_frs_milestones.md
+/docs/rules/verifiable_criteria.md
+```
 
-### AI space (iterable + experimental)
+Required for primitive or API changes:
 
-- Models, policies, planners/solvers, tools
-- Reward/evaluation logic
-- Memory strategies and domain code
-- Rapid iteration without breaking system invariants
+```text
+/docs/rfc/
+/docs/reference/
+/docs/concepts/
+```
 
-**Adapters** sit at the boundary to translate environments into structured percepts, expose actuators/actions, and attach constraints and verification.
+Required for adapter, verifier, gateway, state, trace, replay, or distributed work:
 
----
+```text
+/docs/guides/
+/docs/reference/
+/examples/
+```
 
-## Architecture
+If a required document conflicts with another document, follow this priority order:
 
-### Runs on top of Unix-based systems
+```text
+1. AGENTS.md
+2. /docs/rules/splendor_dev_model.md
+3. /docs/rules/verifiable_criteria.md
+4. /docs/rules/sprints_frs_milestones.md
+5. /docs/reference/*
+6. /docs/guides/*
+7. examples and comments
+```
 
-Splendor runs in user space and relies on the host OS for:
-
-- drivers and hardware access
-- filesystems and process isolation primitives
-- networking
-
-### Kernel runtime (Rust core)
-
-Responsibilities:
-
-- **Tenancy** and isolation contexts per agent/tenant
-- **State graphs** (explicit state; versioned snapshots; replay)
-- **Scheduling** (agent-loop execution policies; fairness; quotas)
-- **Messaging** (typed, traceable message passing)
-- **Governance & audit** (append-only traces; reproducibility primitives)
-- **Action verification** (pre/post gates; invariants; budgets; permissions)
-
-### Managed compute (Python interfaces)
-
-- Sandboxed Python interpreter instances as managed compute per agent/tenant
-- Hosts: model calls, tools, planners, domain code
-- Kernel enforces limits and records traces
-
-### Distributed by default
-
-- Multi-device identity and trust boundaries
-- Structured messaging across machines
-- Fleet telemetry aggregation (feedback/reward/traces)
-- Constraints and action gates remain enforceable across fleet boundaries
+Open a docs issue or RFC if the conflict affects a primitive, schema, runtime invariant, or public API.
 
 ---
 
-## Core Domain Model (Kernel Objects)
+## 3. Non-negotiable invariants
 
-### Entities (nouns Splendor standardizes)
+These are blocking requirements. A pull request that violates any of them must not merge.
 
-- **Tenant**: administrative boundary (quotas, policies, permissions)
-- **Agent**: persistent identity + configuration + ownership (tenant)
-- **RuntimeContext**: isolated execution container for an agent (limits, interpreter handles)
-- **StateGraph**: explicit, versioned state nodes/edges + snapshots
-- **Percept**: structured observation/event (schema + payload + provenance)
-- **Policy**: maps (state, percept) → candidate actions
-- **Constraint**: hard/soft rules/invariants; obligations; allowable sets
-- **Plan**: optional decomposition artifact (steps + constraint justification)
-- **Action**: proposed side-effectful operation (tool/device/service)
-- **Verifier**: gatekeeper enforcing pre/postconditions, permissions, budgets, invariants
-- **Feedback**: evaluation outcome (human/automated/env), routed into state/learning
-- **Reward**: numeric/structured learning signal (often derived from feedback)
-- **Trace**: append-only record of loop decisions, constraint checks, verifications, I/O
-- **Message**: typed inter-agent communication artifact (trace-linked)
+### 3.1 Gateway enforcement
 
-### Core invariants (non-negotiables)
+No side-effectful action may bypass the action gateway.
 
-1. **No side effects without passing a verifier.**
-2. **Every loop step emits trace artifacts** (inputs, decisions, constraints, actions, outcomes).
-3. **State is explicit and versioned** (snapshot/replay support within allowed nondeterminism).
-4. **Tenant quotas and policies apply everywhere** (local + distributed).
-5. **Adapters are the only execution boundary** (side effects go through gateways, not bypassed).
+Side effects include:
 
----
+- filesystem writes;
+- network calls;
+- database mutations;
+- shell commands;
+- ticket creation;
+- email sending;
+- webhook calls;
+- artifact publishing;
+- robot/device commands;
+- credential use;
+- external service mutation.
 
-## Primitives to Standardize
+Read-only actions may still require gateway mediation when they touch protected data, credentials, network, filesystem, tenant resources, or external systems.
 
-Splendor’s goal is to make agent-building look less like glue code and more like building on an OS.
+### 3.2 Verification before execution
 
-### 01 — Perception
+Before an adapter executes an action, required verifiers must run.
 
-- **Perceptors** (sensor + tool observation interfaces)
-- **Environment schemas** (what the agent can see)
-- Representation/embedding stores (optional module hooks)
-- Multi-modal encoder hooks (optional)
+Minimum verifier categories:
 
-### 02 — Policy & Learning
+- tenant verifier;
+- agent permission verifier;
+- adapter verifier;
+- quota verifier;
+- precondition verifier;
+- data-scope verifier;
+- network/filesystem verifier where applicable;
+- approval verifier where applicable;
+- safety verifier where applicable;
+- policy TTL verifier where applicable;
+- postcondition verifier after execution where applicable.
 
-- Pluggable **policy networks** / decision modules
-- **Reward functions** + evaluators
-- Value estimators / critics (optional)
-- **Feedback channels** (human, automated, environment-derived)
+If a required verifier cannot run, fail closed: deny, pause, or request intervention.
 
-### 03 — Reasoning & Constraints
+### 3.3 Trace is runtime contract, not logging
 
-- Constraint solvers (hard/soft constraints)
-- Planners (symbolic / hybrid)
-- Rules and invariants (“never do X”, “always require Y”)
-- Proof/trace artifacts where feasible
+Every meaningful transition must emit trace events.
 
-### 04 — Execution
+At minimum, a tick must trace:
 
-- Actuators / tool interfaces (structured)
-- State machines (structured control)
-- Action verifiers (pre/post-conditions)
-- Rollback / compensation patterns
+```text
+tick.started
+percepts.received
+state.loaded
+policy.invoked
+policy.completed
+actions.proposed
+constraints.evaluated
+verification.started
+verification.completed
+action.executed | action.denied | action.failed | action.needs_approval
+outcome.recorded
+state.committed
+tick.completed
+```
 
-### 05 — Safety & Governance
+Distributed, migration, approval, denial, circuit-breaker, and replay events must also be trace-linked.
 
-- Guardrails as enforceable runtime objects (not just prompts)
-- Alignment signals (telemetry + reward shaping hooks)
-- Kill switches / circuit breakers
-- Audit logs and reproducibility primitives
+### 3.4 State is explicit and versioned
 
-### 06 — Coordination & Distributed Systems
+Agent state must be represented through state graph nodes.
+Do not introduce hidden mutable state that affects runtime behavior without a state commit or state reference.
 
-- Typed, traceable message passing
-- Shared-state and consensus mechanisms (optional modules)
-- Resource allocation / scheduling (agent-aware)
-- Multi-device identity, permissions, and trust boundaries
+Every state commit must identify:
 
----
+- state node ID;
+- tenant ID;
+- agent ID;
+- run ID;
+- parent state node(s);
+- snapshot or patch reference;
+- state hash or equivalent integrity field;
+- trace linkage;
+- timestamp.
 
-## Interfaces
+### 3.5 Replay must not cause real side effects
 
-### Design rule
+Replay is for reconstruction, debugging, audit, comparison, and simulation.
+Replay must not blindly re-execute side effects.
 
-**Python can propose; Rust enforces.**
+Allowed replay modes:
 
-### Rust kernel API (internal stability surface)
+- inspect only;
+- read-only re-evaluation;
+- safe simulation;
+- policy comparison;
+- verifier explanation.
 
-Stable traits/interfaces for:
+Any replay mode that can touch an external system must be explicitly marked, separately gated, and off by default.
 
-- `Perceptor`
-- `PolicyHost` / `DecisionProvider`
-- `ConstraintEngine`
-- `ActionGateway`
-- `Verifier`
-- `StateStore` (state graph + snapshots)
-- `TraceStore` (append-only)
-- `MessageBus`
-- `Scheduler`
-- `GovernancePolicy` (tenancy, quotas, permissions, kill switch)
+### 3.6 Identity separation is mandatory
 
-### Python SDK (public ergonomics surface)
+Do not overload IDs.
 
-Expose:
+Keep these concepts distinct:
 
-- Define agent loops and policies (callbacks/plugins)
-- Register perceptors, actions, constraints, verifiers
-- Launch/stop/restart persistent agents
-- Subscribe to trace/feedback streams
-- Provide adapter authoring kits (safe defaults)
+```text
+fleet_id
+node_id
+instance_id
+tenant_id
+agent_id
+runtime_context_id
+run_id
+tick_id
+action_id
+state_node_id
+trace_event_id
+message_id
+work_order_id
+approval_id
+artifact_id
+```
 
----
+### 3.7 No permission laundering
 
-## Repository Blueprint (Monorepo)
+Shared agents, specialist agents, tools, adapters, or services must not inherit broad caller permissions by default.
 
-Suggested layout:
+Delegation must be scoped through:
 
-- `crates/`
-  - `splendor-kernel/` — scheduler, tenancy, state graph, tracing, governance hooks
-  - `splendor-gateway/` — action mediation, verifier pipeline, compensation hooks
-  - `splendor-store/` — state/trace stores (traits + implementations)
-  - `splendor-net/` — distributed messaging, identity, transport backends
-  - `splendor-policy/` — constraints model + evaluation integration points
-- `python/`
-  - `splendor/` — Python SDK
-  - `bindings/` — Rust↔Python bridge
-- `adapters/`
-  - `filesystem/`, `http/`, `shell/`, `db/` — example gated actuators
-  - `llm/` — model connectors as adapters (not “in-kernel logic”)
-- `examples/`
-  - `single_agent_loop/`
-  - `multi_agent_coordination/`
-  - `verified_tools/`
-- `docs/`
-  - `concepts/` — system space vs AI space, primitives, neuro-symbolic runtime property
-  - `reference/` — schemas, APIs, versioning
-  - `guides/` — adapters, verifiers, constraints, operations
-  - `rfc/` — design proposals and primitive evolution
-- `.github/` — CI, issue templates, PR templates
-- `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `GOVERNANCE.md`
+- work order;
+- allowed action list;
+- allowed adapter list;
+- allowed permission list;
+- data references;
+- quotas;
+- expiry;
+- trace linkage.
 
----
+### 3.8 Physical systems boundary
 
-## MVP Definition
+Splendor may govern physical autonomy, but it must not replace real-time controllers.
 
-**Goal:** prove the thesis with the smallest coherent system: persistent local agent loops with verified execution and reproducible traces.
+Allowed physical actions are high-level and bounded, such as:
 
-### MVP scope
+```text
+read_battery
+read_sensor_summary
+inspect_zone
+move_to_waypoint
+return_to_base
+dock
+pause_mission
+request_operator_override
+upload_trace_summary
+```
 
-1. **Single-machine kernel runtime**
-   - Agent loop scheduler
-   - Tenant isolation (logical contexts + quotas)
-   - Explicit state graph + snapshots
-   - Trace/audit log (append-only)
+Forbidden as direct Splendor actions:
 
-2. **Action gateway with verification**
-   - Minimal verifier chain:
-     - permission checks
-     - budget/quota checks
-     - invariant checks
-   - Example safe adapters:
-     - filesystem (restricted sandboxed ops)
-     - HTTP client (allowlist + rate limits)
+```text
+raw motor writes
+set_motor_pwm
+bypass collision avoidance
+disable firmware safety
+modify flight-controller internals
+hard real-time stabilization
+```
 
-3. **Python SDK**
-   - Define agent loop (policy callback)
-   - Register perceptors/actions/verifiers/constraints
-   - Run agent persistently (restartable)
+### 3.9 Python can propose; Rust enforces
 
-4. **Reproducibility**
-   - Replay mode from traces + state snapshots (best-effort determinism)
-   - Deterministic serialization of percept/action/constraint objects
+Python is for policies, model calls, domain logic, data science, planning, simulation, and adapter ergonomics.
+Rust owns runtime enforcement:
 
-### MVP non-goals
-
-- Full fleet orchestration across hosts
-- Complex consensus/shared-state systems
-- End-to-end RL training pipelines inside the kernel
-- A single mandated agent framework
-
----
-
-## Roadmap
-
-- **Splendor0.01-dev:** local runtime + gateway + Python SDK + trace + state graph + replay
-- **Splendor0.02-dev:** multi-agent local messaging; typed messages; stronger isolation primitives
-- **Splendor0.03-dev:** multi-host distributed execution; identity continuity; fleet telemetry aggregation
-- **Splendor0.04-dev:** governance workflows (approval gates, escalation policies, circuit breakers)
-- **Splendor0.1-dev:** stable primitives spec + compatibility guarantees + adapter ecosystem maturity
+- scheduler;
+- gateway;
+- verifier chain;
+- state graph;
+- trace store;
+- quotas;
+- runtime identity;
+- message routing;
+- adapter boundary;
+- fail-closed behavior.
 
 ---
 
-## Docs Model
+## 4. What to build now, and what not to build yet
 
-Docs should mirror the mental model and keep the primitive surface stable.
+### Build primitives first
 
-1. **Concepts**
-   - What Splendor is (runtime kernel for agent loops)
-   - System space vs AI space
-   - Neuro-symbolic “runtime property”
-2. **Primitives Reference**
-   - Percept schema
-   - Action schema
-   - Constraint schema
-   - Trace schema
-   - Message schema
-3. **Guides**
-   - Build a perceptor
-   - Build a verifier
-   - Build an adapter
-   - Run persistent agents
-   - Replay, debugging, and audit
-4. **Operations**
-   - Tenancy, quotas, governance, kill switches
-   - Deploying on one machine vs fleet
-5. **RFC process**
-   - Any primitive change requires RFC + migration plan + versioning rules
+Prefer small, enforceable runtime primitives over broad product features.
 
----
+Prioritize:
 
-## Community & Governance
+- local runtime correctness;
+- state/trace/replay correctness;
+- gateway and verifier correctness;
+- typed messages;
+- scoped delegation;
+- daemon/API contracts;
+- fleet identity and work orders;
+- governance gates;
+- physical/edge safety boundaries;
+- compatibility tests.
 
-### Contribution shape
+### Do not build first
 
-- RFCs for primitives: keep the “kernel contract” stable
-- Working groups:
-  - Runtime + scheduling
-  - Verification + policy
-  - Distributed coordination
-  - Python SDK + developer experience
-  - Adapters ecosystem
+Do not build these before the primitive layer is stable:
 
-### Governance baseline
-
-- Maintainer model (core maintainers + WG leads)
-- Security response policy (`SECURITY.md`)
-- Compatibility promise: primitive versioning + deprecation windows
-
-### Desired community outcomes
-
-- Shared adapter ecosystem: perceptors/actuators/verifiers that interoperate
-- Reusable constraint packs (e.g., safe filesystem ops, PII handling, prod DB gates)
-- Trace-based reproducibility as the default debugging and review workflow
+- full enterprise admin SaaS;
+- general marketplace;
+- broad low-code app builder;
+- unbounded browser computer;
+- arbitrary shared mutable distributed memory;
+- full consensus system;
+- per-agent Docker image factory as the default;
+- real-time robotics controller;
+- hidden tool execution outside the gateway;
+- chat-first architecture;
+- broad integration surface without stable schemas.
 
 ---
 
-## Core Contract (the rule that guides all design decisions)
+## 5. Roadmap discipline
 
-**Splendor must make autonomy auditable, governable, and safely executable—without dictating the AI stack.**
+Implementation must follow the active sprint and milestone documents.
+
+Current milestone shape:
+
+```text
+0.01-dev: local kernel baseline
+0.02-dev: local multi-agent runtime + daemon control
+0.03-dev: resident nodes + fleet execution foundation
+0.04-dev: governance workflows
+0.05-dev: physical/edge orchestration
+0.1-dev: stable primitive spec + compatibility line
+```
+
+Do not pull later-milestone features into earlier sprints unless they are required to complete the sprint acceptance criteria.
+
+A sprint is complete only when:
+
+- all functional requirements for the sprint are implemented;
+- verifiable criteria pass;
+- documentation is updated;
+- examples or fixtures demonstrate the behavior;
+- regressions are covered;
+- non-goals were not accidentally implemented;
+- review checklist passes.
+
+---
+
+## 6. Implementation workflow
+
+Use this workflow for every issue or pull request.
+
+### Step 1 — Identify the primitive
+
+Every change must name the primitive it strengthens:
+
+```text
+percept
+policy
+constraint
+action gateway
+verifier
+adapter
+quota
+state graph
+trace store
+message
+replay
+work order
+approval
+fleet identity
+node registry
+runtime context
+SDK/API
+docs/tests
+```
+
+If the change does not strengthen a primitive, reconsider it.
+
+### Step 2 — Identify the boundary
+
+State whether the change affects:
+
+```text
+local runtime
+Python SDK
+Rust core
+daemon API
+TypeScript client
+adapter boundary
+state store
+trace store
+message router
+fleet manager
+governance layer
+physical/edge layer
+docs only
+```
+
+Boundary changes require tests and documentation.
+
+### Step 3 — Write the smallest maintainable implementation
+
+Prefer:
+
+- explicit structs and typed schemas;
+- deterministic state transitions;
+- narrow traits;
+- simple storage contracts;
+- clear error types;
+- integration tests over clever abstractions;
+- feature flags for experimental surfaces;
+- stable defaults with extension points.
+
+Avoid:
+
+- global mutable state;
+- implicit permissions;
+- hidden background work;
+- magic transport behavior;
+- broad trait objects without real use cases;
+- premature plugin systems;
+- accidental public APIs;
+- complex distributed semantics before local semantics are stable.
+
+### Step 4 — Prove behavior
+
+Every non-trivial change must include one or more of:
+
+- unit tests;
+- integration tests;
+- replay tests;
+- trace assertion tests;
+- state graph integrity tests;
+- gateway denial tests;
+- quota tests;
+- permission tests;
+- compatibility tests;
+- example scenario.
+
+### Step 5 — Update docs
+
+A code change that changes behavior must update docs.
+
+At minimum:
+
+```text
+/docs/reference/*     for schemas, APIs, event names, and contracts
+/docs/guides/*        for implementation usage
+/docs/rules/*         for sprint or invariant changes
+/examples/*           for runnable behavior
+CHANGELOG.md          for user-visible changes
+```
+
+---
+
+## 7. Pull request contract
+
+Every pull request must include this checklist in the description.
+
+```md
+## Primitive strengthened
+
+- [ ] percept
+- [ ] policy
+- [ ] constraint
+- [ ] action gateway
+- [ ] verifier
+- [ ] adapter
+- [ ] quota
+- [ ] state graph
+- [ ] trace store
+- [ ] message
+- [ ] replay
+- [ ] work order
+- [ ] governance
+- [ ] fleet/node identity
+- [ ] SDK/API
+- [ ] docs/tests
+
+## Runtime invariants
+
+- [ ] No side-effect bypass was introduced.
+- [ ] Required verifiers fail closed.
+- [ ] Trace events are emitted for meaningful transitions.
+- [ ] State changes are explicit and versioned.
+- [ ] Replay does not re-execute side effects by default.
+- [ ] Tenant, agent, run, action, state, trace, and message IDs remain distinct.
+- [ ] Shared agents/tools cannot launder permissions.
+- [ ] Physical/device boundaries remain high-level and bounded, if relevant.
+
+## Sprint discipline
+
+- [ ] This belongs to the active milestone/sprint.
+- [ ] Acceptance criteria are linked.
+- [ ] Non-goals were respected.
+- [ ] Tests prove the behavior.
+- [ ] Docs/examples were updated.
+- [ ] Public API/schema changes include versioning or RFC notes.
+```
+
+A PR that cannot complete this checklist should be split, redesigned, or moved behind an experimental feature flag.
+
+---
+
+## 8. Code quality rules
+
+### Rust
+
+Rust code should favor correctness, explicitness, and composable boundaries.
+
+Required:
+
+- typed IDs or newtypes for core identities when practical;
+- structured errors;
+- deterministic serialization for trace/state objects;
+- tests for verifier/gateway/state/trace behavior;
+- no panics in runtime paths except unrecoverable programmer errors;
+- no unbounded retries for side-effectful actions;
+- no silent fallback from deny to allow.
+
+Preferred:
+
+- small traits with one responsibility;
+- clear module ownership;
+- feature flags for experimental integrations;
+- property tests for state/trace integrity where useful;
+- integration tests for loop behavior.
+
+### Python
+
+Python SDK code should be ergonomic but never bypass enforcement.
+
+Required:
+
+- Python policy code proposes actions; it does not execute privileged side effects directly;
+- SDK actions route through the gateway/daemon/runtime;
+- examples show safe defaults;
+- exceptions preserve enough context for trace/debugging;
+- tests cover policy callbacks, percept submission, action proposals, and trace subscriptions.
+
+### TypeScript
+
+TypeScript is primarily for schemas, clients, and control-plane integration.
+
+Required:
+
+- generated or schema-aligned types;
+- compatibility with daemon API contracts;
+- no independent runtime semantics that conflict with Rust core;
+- clear versioning for public packages.
+
+---
+
+## 9. Test expectations by subsystem
+
+### Gateway and adapters
+
+Must test:
+
+- allowed action executes only after verification;
+- denied action does not reach adapter execution;
+- verifier failure fails closed;
+- adapter failure creates traceable failure outcome;
+- postcondition failure is recorded;
+- quotas are consumed or rejected predictably;
+- replay does not call adapter by default.
+
+### State graph
+
+Must test:
+
+- state node creation;
+- parent linkage;
+- state hash/integrity field;
+- state-head update;
+- failed commit prevents next tick;
+- replay can reconstruct state transitions.
+
+### Trace store
+
+Must test:
+
+- append-only event behavior;
+- event ordering within a run;
+- required tick event coverage;
+- trace linkage for actions, messages, approvals, and state commits;
+- integrity chain if enabled;
+- export/import behavior if implemented.
+
+### Messaging
+
+Must test:
+
+- message schema validation;
+- local delivery;
+- target/source identity;
+- causal parent linkage;
+- delivery failure state;
+- per-agent permissions;
+- replay reconstruction of message causality.
+
+### Work orders and fleet
+
+Must test:
+
+- unsigned work orders rejected;
+- expired work orders rejected;
+- incompatible work orders rejected;
+- capabilities matched explicitly;
+- node/instance identity preserved;
+- trace continuity across dispatch/resume/migration.
+
+### Governance
+
+Must test:
+
+- approval-required action pauses instead of executing;
+- approval grant resumes correctly;
+- denial cancels or blocks correctly;
+- approval expiry is enforced;
+- circuit breaker denies within scope;
+- kill switch fails closed;
+- audit/replay explains decisions.
+
+### Physical/edge
+
+Must test:
+
+- low-level actuator actions are not accepted;
+- safety verifier denial prevents adapter execution;
+- offline policy cache honors TTL;
+- high-risk action is denied or requires local intervention while offline;
+- trace buffer syncs after reconnect;
+- cloud helper cannot gain direct actuator authority by default.
+
+---
+
+## 10. Documentation expectations
+
+Docs must keep the primitive surface stable and implementation-friendly.
+
+When adding or changing a primitive, update:
+
+```text
+/docs/concepts/<primitive>.md
+/docs/reference/<primitive>.md
+/docs/guides/<how-to>.md
+/examples/<scenario>/README.md
+```
+
+Reference docs must include:
+
+- purpose;
+- schema or trait/interface;
+- lifecycle;
+- trace events;
+- failure modes;
+- security notes;
+- compatibility/versioning notes;
+- minimal example.
+
+Guide docs must include:
+
+- a small runnable path;
+- expected trace/state behavior;
+- what is intentionally not allowed;
+- debugging/replay instructions.
+
+Docs must not describe aspirational behavior as implemented behavior.
+Clearly mark future, planned, experimental, and stable surfaces.
+
+---
+
+## 11. Design review questions
+
+Before implementing, answer these in the issue or PR:
+
+1. Which Splendor primitive does this strengthen?
+2. Which runtime invariant does this depend on?
+3. Does this preserve the loop model?
+4. Can any side effect bypass the gateway?
+5. What trace events prove this happened?
+6. What state is committed or referenced?
+7. What happens when verification fails?
+8. What happens when storage fails?
+9. What happens during replay?
+10. What is the tenant/agent/run boundary?
+11. Is this local-only, daemon-facing, or distributed?
+12. Does this require an RFC or schema version change?
+13. What is the smallest test that proves the behavior?
+14. What is explicitly out of scope?
+
+If the answer is unclear, implement the smallest primitive-aligned version or write an RFC before coding.
+
+---
+
+## 12. Error and failure policy
+
+Splendor should prefer safe, traceable failure over hidden continuation.
+
+Required behavior:
+
+- verifier unavailable -> deny, pause, or intervention;
+- policy unavailable -> fail closed for side-effectful work;
+- state commit fails -> do not advance to next tick;
+- trace write fails -> fail closed for side-effectful actions;
+- work order invalid -> reject before run starts;
+- quota exceeded -> deny or pause;
+- adapter error -> record outcome and trace failure;
+- replay unsafe -> refuse or simulate without side effect;
+- policy expired -> deny high-risk actions and request refresh/intervention.
+
+Never convert an enforcement error into an implicit allow.
+
+---
+
+## 13. Compatibility and RFC rules
+
+An RFC is required for:
+
+- new primitive;
+- renamed primitive;
+- public schema change;
+- trace event rename or semantic change;
+- state graph format change;
+- action gateway contract change;
+- verifier pipeline change;
+- daemon API breaking change;
+- SDK breaking change;
+- distributed identity change;
+- governance semantics change;
+- physical/device action model change.
+
+An RFC must include:
+
+- motivation;
+- primitive affected;
+- schema/API proposal;
+- migration plan;
+- compatibility impact;
+- security impact;
+- trace/replay impact;
+- tests required;
+- docs required.
+
+---
+
+## 14. Repository ownership guide
+
+Expected ownership by area:
+
+```text
+crates/splendor-kernel/     runtime loop, scheduler, tenancy, runtime context
+crates/splendor-gateway/    action gateway, verifier pipeline, action outcomes
+crates/splendor-store/      state graph, trace store, persistence traits
+crates/splendor-policy/     constraints, policy host contracts, rule evaluation hooks
+crates/splendor-net/        messaging, node identity, transport, fleet protocol
+python/splendor/            Python SDK, callbacks, local ergonomics
+python/bindings/            Rust/Python boundary
+typescript/                 generated types, client, control-plane packages
+adapters/                   gated adapter implementations
+examples/                   runnable scenarios that prove contracts
+docs/                       concepts, references, guides, rules, RFCs
+.github/                    CI, templates, checks
+```
+
+Keep runtime-critical enforcement in Rust core unless an RFC explicitly justifies otherwise.
+
+---
+
+## 15. Naming rules
+
+Use precise names.
+
+Preferred terms:
+
+```text
+tenant
+agent
+runtime context
+run
+tick
+percept
+policy
+constraint
+action request
+action outcome
+verifier
+adapter
+state node
+trace event
+message
+work order
+approval
+fleet
+node
+instance
+```
+
+Avoid vague names for runtime primitives:
+
+```text
+job        unless it is explicitly a scheduled host/container job
+task       unless scoped as a message payload or work-order objective
+log        when the object is actually a trace event
+memory     when the object is actually state graph data
+plugin     when the object is an adapter, verifier, perceptor, or policy host
+tool       when the object performs side effects through an adapter
+agent pod  because one agent is not necessarily one pod/container
+```
+
+---
+
+## 16. Security posture
+
+Assume autonomous systems fail at boundaries.
+
+Default stance:
+
+- least privilege;
+- scoped work orders;
+- explicit data references;
+- no broad inherited credentials;
+- no silent network or filesystem access;
+- no hidden shared mutable state;
+- no execution without trace;
+- no unsafe replay;
+- no direct physical low-level control;
+- deny on verifier uncertainty.
+
+Security-sensitive changes must include tests for denial paths, not just successful paths.
+
+---
+
+## 17. Final implementation rule
+
+When in doubt, choose the design that is:
+
+```text
+explicit over magical
+traceable over convenient
+fail-closed over permissive
+local-correct before distributed
+primitive-aligned over product-shaped
+schema-stable over fast-changing
+small and composable over broad and clever
+```
+
+Splendor must make autonomy auditable, governable, and safely executable without dictating the AI stack.
