@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.02-dev — Local multi-agent runtime + daemon control
+
+### Implemented primitives
+
+- Added a 0.02-S0 daemon security boundary reference contract in Rust for
+  caller principals, endpoint scopes, tenant/fleet binding, audience binding,
+  credential/work-order expiry and revocation, explicit insecure local dev mode,
+  and trace/audit attribution.
+
+### Explicitly not included
+
+- No daemon server, HTTP listener, OAuth/OIDC provider, PKI management, fleet
+  mTLS rollout, node bootstrap, governance workflow, or TypeScript runtime
+  enforcement.
+
 ## 0.01-dev — Local kernel baseline
 
 ### Implemented primitives
