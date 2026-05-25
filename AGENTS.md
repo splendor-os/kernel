@@ -51,7 +51,8 @@ Required for all implementation work:
 AGENTS.md
 /docs/rules/splendor_dev_model.md
 /docs/rules/sprints_frs_milestones.md
-/docs/rules/verifiable_criteria.md
+/docs/rules/verifiable_criteria/main.md
+/docs/rules/verifiable_criteria/sprints/<sprint-id>-<slug>.md
 ```
 
 Required for primitive or API changes:
@@ -75,7 +76,7 @@ If a required document conflicts with another document, follow this priority ord
 ```text
 1. AGENTS.md
 2. /docs/rules/splendor_dev_model.md
-3. /docs/rules/verifiable_criteria.md
+3. /docs/rules/verifiable_criteria/main.md and the applicable sprint criteria file
 4. /docs/rules/sprints_frs_milestones.md
 5. /docs/reference/*
 6. /docs/guides/*
