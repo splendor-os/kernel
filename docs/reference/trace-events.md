@@ -48,8 +48,8 @@ If post-verification fails after an action executes, the kernel records
 
 Message lifecycle events are also trace events. They are ordered by the same
 per-run sequence counter and do not replace the required tick event ordering.
-They may be emitted by later local routing work when a message is queued,
-delivered, rejected, expired, or consumed.
+The local message router emits them when a message is queued, delivered,
+rejected, expired, or consumed.
 
 ## TraceEventKind Payloads
 
@@ -98,10 +98,11 @@ All message events carry `MessageTraceContext`:
 | `schema` | Message payload schema. |
 | `causal_parent` | Optional trace event that causally produced the message. |
 
-0.02-S1 defines these event payloads and serialization behavior only. Local
-router emission rules are implemented in later 0.02 sprints. Replayed trace
-records preserve `causal_parent`, allowing future multi-agent replay to rebuild
-message causality without executing message side effects or adapter actions.
+0.02-S1 defines these event payloads and serialization behavior. 0.02-S2 local
+router behavior emits the lifecycle events for accepted, rejected, expired, and
+consumed local messages. Replayed trace records preserve `causal_parent`,
+allowing future multi-agent replay to rebuild message causality without executing
+message side effects or adapter actions.
 
 ### TraceIntegrity
 
