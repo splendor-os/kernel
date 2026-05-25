@@ -8,12 +8,15 @@
   caller principals, endpoint scopes, tenant/fleet binding, audience binding,
   credential/work-order expiry and revocation, explicit insecure local dev mode,
   and trace/audit attribution.
+- Added a 0.02-S1 message schema contract in Rust for `MessageId`, `Message`,
+  `MessageEnvelope`, schema-version validation, delivery status vocabulary,
+  message trace links, and message lifecycle trace event definitions.
 
 ### Explicitly not included
 
 - No daemon server, HTTP listener, OAuth/OIDC provider, PKI management, fleet
-  mTLS rollout, node bootstrap, governance workflow, or TypeScript runtime
-  enforcement.
+  mTLS rollout, node bootstrap, governance workflow, message router, message
+  broker, remote transport, or TypeScript runtime enforcement.
 
 ## 0.01-dev — Local kernel baseline
 

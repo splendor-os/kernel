@@ -46,6 +46,11 @@ the rule documents: `run.started`, `tick.started`, `percepts.received`, `state.l
 If post-verification fails after an action executes, the kernel records
 `ActionExecuted` followed by `ActionFailed` with the post-verification result.
 
+Message lifecycle events are also trace events. They are ordered by the same
+per-run sequence counter and do not replace the required tick event ordering.
+They may be emitted by later local routing work when a message is queued,
+delivered, rejected, expired, or consumed.
+
 ## TraceEventKind Payloads
 
 - `RunStarted`
@@ -63,7 +68,40 @@ If post-verification fails after an action executes, the kernel records
 - `ActionFailed { action: Action, error: String, result: VerificationResult }`
 - `OutcomeRecorded { outcome: serde_json::Value, feedback: Option<Feedback>, reward: Option<Reward> }`
 - `StateCommitted { state_hash: ContentHash, snapshot_id: Option<SnapshotId> }`
+- `MessageQueued { message: MessageTraceContext }`
+- `MessageDelivered { message: MessageTraceContext }`
+- `MessageRejected { message: MessageTraceContext, reason: String }`
+- `MessageExpired { message: MessageTraceContext, reason: Option<String> }`
+- `MessageConsumed { message: MessageTraceContext }`
 - `LoopTickCompleted { tick_id, integrity: Option<TraceIntegrity> }`
+
+## Message Events
+
+Message event variants correspond to these canonical event classes:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `MessageQueued` | `message.queued` | Message was accepted into a local delivery path. |
+| `MessageDelivered` | `message.delivered` | Message reached the target agent's delivery boundary. |
+| `MessageRejected` | `message.rejected` | Message was rejected before delivery. Payload validation failures must use this event with a reason. |
+| `MessageExpired` | `message.expired` | Message expired before delivery or consumption. |
+| `MessageConsumed` | `message.consumed` | Target agent runtime context consumed the message. |
+
+All message events carry `MessageTraceContext`:
+
+| Field | Purpose |
+| --- | --- |
+| `message_id` | Message identity distinct from trace, run, action, and state IDs. |
+| `source_agent_id` | Agent that authored the message. |
+| `target_agent_id` | Agent intended to consume the message. |
+| `run_id` | Run that scopes the message. |
+| `schema` | Message payload schema. |
+| `causal_parent` | Optional trace event that causally produced the message. |
+
+0.02-S1 defines these event payloads and serialization behavior only. Local
+router emission rules are implemented in later 0.02 sprints. Replayed trace
+records preserve `causal_parent`, allowing future multi-agent replay to rebuild
+message causality without executing message side effects or adapter actions.
 
 ### TraceIntegrity
 
