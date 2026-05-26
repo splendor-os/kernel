@@ -25,7 +25,7 @@ use std::sync::Mutex;
 use time::OffsetDateTime;
 
 /// Record stored for each trace event payload.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TraceRecord {
     /// Run identifier that scopes the event stream.
     pub run_id: String,
@@ -421,7 +421,7 @@ impl AsyncTraceStore for SqliteTraceStore {
 }
 
 /// Computes a deterministic event hash for a payload.
-fn compute_event_hash(
+pub(crate) fn compute_event_hash(
     prev_hash: Option<&ContentHash>,
     payload: &serde_json::Value,
 ) -> Result<ContentHash, TraceStoreError> {

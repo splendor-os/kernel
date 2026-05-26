@@ -31,6 +31,7 @@ mod scheduler;
 mod state;
 mod tenancy;
 mod trace;
+mod trace_durability;
 
 pub use loop_engine::{
     ActionCandidate, AllowAllConstraintEngine, ConstraintEngine, ConstraintEvaluation, LoopEngine,
@@ -56,3 +57,6 @@ pub use tenancy::{
     TenantPolicy, TenantRegistry,
 };
 pub use trace::{AsyncTraceSink, StdoutTraceSink, TraceError, TraceSink, TraceStoreSink};
+pub use trace_durability::{
+    TraceDurabilityGateway, TraceDurabilityPolicy, TraceDurabilityState, TraceDurabilityStatus,
+};

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.03-dev — Resident nodes + fleet execution foundation
+
+### Implemented primitives
+
+- Added the 0.03-S6 trace aggregation reference path: `TraceSyncBatch`,
+  `CentralTraceIndex`, `InMemoryCentralTraceIndex`, hash-chain validation,
+  duplicate sync idempotency, missing segment detection, corruption quarantine,
+  and central trace queries by available identity metadata.
+- Added `TraceDurabilityGateway` so local policy can fail closed before
+  side-effectful adapter execution when central trace sync durability is
+  required and stale or failed.
+
+### Explicitly not included
+
+- No analytics dashboard, long-term warehouse, governance audit product, remote
+  trace transport, fleet registry, placement engine, or telemetry dashboard.
+
 ## 0.02-dev — Local multi-agent runtime + daemon control
 
 ### Implemented primitives

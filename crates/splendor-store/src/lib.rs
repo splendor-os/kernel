@@ -16,6 +16,7 @@
 
 mod state;
 mod trace;
+mod trace_sync;
 
 pub use splendor_types::SnapshotId;
 pub use state::{
@@ -24,4 +25,8 @@ pub use state::{
 };
 pub use trace::{
     AsyncTraceStore, InMemoryTraceStore, SqliteTraceStore, TraceRecord, TraceStore, TraceStoreError,
+};
+pub use trace_sync::{
+    CentralTraceIndex, InMemoryCentralTraceIndex, TraceIndexQuery, TraceIndexRecord,
+    TraceQuarantineEntry, TraceSyncBatch, TraceSyncError, TraceSyncReport, TraceSyncScope,
 };
