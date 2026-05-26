@@ -1,8 +1,8 @@
 use super::*;
 use crate::SnapshotPolicy;
 use splendor_store::{
-    InMemoryStateStore, InMemoryTraceStore, StateData, StateDataRef, StateMetadata, StateNodeId,
-    StateSnapshot, StateStore, StateStoreError,
+    InMemoryStateStore, InMemoryTraceStore, StateData, StateDataRef, StateMetadata, StateNode,
+    StateNodeId, StateSnapshot, StateStore, StateStoreError,
 };
 use splendor_types::{
     ConstraintKind, ConstraintScope, PerceptProvenance, QuotaUsage, RunId, TraceEvent,
@@ -273,6 +273,10 @@ impl StateStore for FailingStateStore {
         _metadata: StateMetadata,
     ) -> Result<StateNodeId, StateStoreError> {
         Err(StateStoreError::MissingState)
+    }
+
+    fn get_node(&self, _node_id: &StateNodeId) -> Result<StateNode, StateStoreError> {
+        Err(StateStoreError::MissingNode)
     }
 
     fn snapshot(
@@ -756,6 +760,10 @@ fn event_kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::ActionFailed { .. } => "ActionFailed",
         TraceEventKind::OutcomeRecorded { .. } => "OutcomeRecorded",
         TraceEventKind::StateCommitted { .. } => "StateCommitted",
+        TraceEventKind::StateHandoffExported { .. } => "StateHandoffExported",
+        TraceEventKind::StateHandoffImported { .. } => "StateHandoffImported",
+        TraceEventKind::StateHandoffImportFailed { .. } => "StateHandoffImportFailed",
+        TraceEventKind::ReadOnlyStateReferenced { .. } => "ReadOnlyStateReferenced",
         TraceEventKind::MessageQueued { .. } => "MessageQueued",
         TraceEventKind::MessageDelivered { .. } => "MessageDelivered",
         TraceEventKind::MessageRejected { .. } => "MessageRejected",

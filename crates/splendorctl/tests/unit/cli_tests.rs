@@ -2,7 +2,8 @@ use super::*;
 use splendor_store::{SqliteStateStore, StateData, StateMetadata, StateStore};
 use splendor_types::{
     Action, AgentId, ContentHash, Feedback, Percept, PerceptProvenance, Reward, RunId,
-    SideEffectClass, SnapshotId, TenantId, TraceEvent, TraceEventKind, TraceId, VerificationResult,
+    SideEffectClass, SnapshotId, StateHandoffTraceContext, StateReferenceMode, TenantId,
+    TraceEvent, TraceEventKind, TraceId, VerificationResult,
 };
 use tempfile::NamedTempFile;
 use time::OffsetDateTime;
@@ -344,6 +345,86 @@ fn replay_succeeds_with_snapshot() {
         true,
     )
     .expect("replay");
+}
+
+#[test]
+fn replay_identifies_state_handoff_boundary() {
+    let trace_temp = NamedTempFile::new().expect("trace db");
+    let state_temp = NamedTempFile::new().expect("state db");
+    let trace_store = SqliteTraceStore::open(trace_temp.path()).expect("trace store");
+    let _state_store = SqliteStateStore::open(state_temp.path()).expect("state store");
+    let run_id = RunId::new();
+    let timestamp = OffsetDateTime::now_utc();
+    let handoff = StateHandoffTraceContext {
+        handoff_id: "handoff_replay".to_string(),
+        mode: StateReferenceMode::SnapshotImport,
+        tenant_id: TenantId::new(),
+        agent_id: AgentId::new(),
+        run_id: run_id.clone(),
+        work_order_id: "wo_replay".to_string(),
+        source_instance_id: Some("source".to_string()),
+        receiver_instance_id: Some("receiver".to_string()),
+        source_state_node_id: "blake3:source".to_string(),
+        previous_state_node_id: Some("blake3:previous".to_string()),
+        receiver_state_node_id: Some("blake3:receiver".to_string()),
+        snapshot_id: None,
+        source_trace_id: Some(TraceId::from_run_sequence(&run_id, 0)),
+    };
+    let event = TraceEvent::new(
+        run_id.clone(),
+        0,
+        timestamp,
+        TraceEventKind::StateHandoffImported { handoff },
+    );
+    TraceStore::append(
+        &trace_store,
+        &run_id.to_string(),
+        serde_json::to_value(event).unwrap(),
+    )
+    .expect("append");
+
+    replay_run(
+        &trace_temp.path().to_path_buf(),
+        &state_temp.path().to_path_buf(),
+        &run_id.to_string(),
+        None,
+        false,
+    )
+    .expect("replay");
+}
+
+#[test]
+fn handoff_boundary_output_contains_previous_head() {
+    let run_id = RunId::new();
+    let handoff = StateHandoffTraceContext {
+        handoff_id: "handoff_output".to_string(),
+        mode: StateReferenceMode::SnapshotImport,
+        tenant_id: TenantId::new(),
+        agent_id: AgentId::new(),
+        run_id,
+        work_order_id: "wo_output".to_string(),
+        source_instance_id: None,
+        receiver_instance_id: None,
+        source_state_node_id: "blake3:source".to_string(),
+        previous_state_node_id: Some("blake3:previous".to_string()),
+        receiver_state_node_id: Some("blake3:receiver".to_string()),
+        snapshot_id: None,
+        source_trace_id: None,
+    };
+    let output = ReplayOutput::HandoffBoundary {
+        event_kind: "state.handoff.imported".to_string(),
+        handoff: Box::new(handoff),
+        previous_state_node_id: Some("blake3:previous".to_string()),
+        receiver_state_node_id: Some("blake3:receiver".to_string()),
+        reason: None,
+        trace_sequence: 3,
+    };
+
+    let value = serde_json::to_value(output).expect("serialize");
+
+    assert_eq!(value["type"], "handoff_boundary");
+    assert_eq!(value["previous_state_node_id"], "blake3:previous");
+    assert_eq!(value["receiver_state_node_id"], "blake3:receiver");
 }
 
 #[test]

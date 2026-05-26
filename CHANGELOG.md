@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.03-dev — Resident nodes + fleet execution foundation
+
+### Implemented primitives
+
+- Added 0.03-S7 state handoff v0 schemas, snapshot export/import validation,
+  read-only state references, source/receiver handoff trace events, and replay
+  handoff boundary inspection.
+
+### Explicitly not included
+
+- No distributed mutable state, CRDTs, automatic conflict merge, full runtime
+  migration engine, fleet scheduler, governance workflow, or physical/edge
+  behavior.
+
 ## 0.02-dev — Local multi-agent runtime + daemon control
 
 ### Implemented primitives

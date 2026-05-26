@@ -19,7 +19,7 @@ use splendor_kernel::{
 use splendor_store::{SqliteStateStore, SqliteTraceStore, StateStore, TraceRecord, TraceStore};
 use splendor_types::{
     Action, ContentHash, HashAlgorithm, Percept, PerceptProvenance, QuotaUsage, SideEffectClass,
-    SnapshotId, TraceEvent, TraceEventKind, TraceId,
+    SnapshotId, StateHandoffTraceContext, TraceEvent, TraceEventKind, TraceId,
 };
 use std::env;
 use std::fs;
@@ -418,6 +418,14 @@ enum ReplayOutput {
         snapshot_bytes_len: Option<usize>,
         snapshot_bytes: Box<Option<Vec<u8>>>,
     },
+    HandoffBoundary {
+        event_kind: String,
+        handoff: Box<StateHandoffTraceContext>,
+        previous_state_node_id: Option<String>,
+        receiver_state_node_id: Option<String>,
+        reason: Option<String>,
+        trace_sequence: u64,
+    },
 }
 
 #[derive(Serialize)]
@@ -503,6 +511,23 @@ fn replay_run(
     let mut current_tick_id = 0;
     for event in events {
         match &event.kind {
+            TraceEventKind::StateHandoffExported { handoff } => {
+                emit_handoff_replay_output("state.handoff.exported", handoff, None, &event)?;
+            }
+            TraceEventKind::StateHandoffImported { handoff } => {
+                emit_handoff_replay_output("state.handoff.imported", handoff, None, &event)?;
+            }
+            TraceEventKind::StateHandoffImportFailed { handoff, reason } => {
+                emit_handoff_replay_output(
+                    "state.handoff.import_failed",
+                    handoff,
+                    Some(reason.clone()),
+                    &event,
+                )?;
+            }
+            TraceEventKind::ReadOnlyStateReferenced { handoff } => {
+                emit_handoff_replay_output("state.reference.read_only", handoff, None, &event)?;
+            }
             TraceEventKind::LoopTickStarted { tick_id } => {
                 current_tick_id = *tick_id;
                 if start_tick.map(|start| *tick_id < start).unwrap_or(false) {
@@ -673,6 +698,22 @@ fn apply_event_to_tick(
         _ => {}
     }
     Ok(())
+}
+
+fn emit_handoff_replay_output(
+    event_kind: &str,
+    handoff: &StateHandoffTraceContext,
+    reason: Option<String>,
+    event: &TraceEvent,
+) -> Result<(), String> {
+    emit_replay_output(ReplayOutput::HandoffBoundary {
+        event_kind: event_kind.to_string(),
+        handoff: Box::new(handoff.clone()),
+        previous_state_node_id: handoff.previous_state_node_id.clone(),
+        receiver_state_node_id: handoff.receiver_state_node_id.clone(),
+        reason,
+        trace_sequence: event.sequence,
+    })
 }
 
 fn emit_replay_output(output: ReplayOutput) -> Result<(), String> {

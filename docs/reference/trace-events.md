@@ -51,6 +51,9 @@ per-run sequence counter and do not replace the required tick event ordering.
 The local message router emits them when a message is queued, delivered,
 rejected, expired, or consumed.
 
+State handoff events are trace events too. They identify source and receiver
+handoff boundaries and preserve the previous receiver state head for replay.
+
 ## TraceEventKind Payloads
 
 - `RunStarted`
@@ -68,6 +71,10 @@ rejected, expired, or consumed.
 - `ActionFailed { action: Action, error: String, result: VerificationResult }`
 - `OutcomeRecorded { outcome: serde_json::Value, feedback: Option<Feedback>, reward: Option<Reward> }`
 - `StateCommitted { state_hash: ContentHash, snapshot_id: Option<SnapshotId> }`
+- `StateHandoffExported { handoff: StateHandoffTraceContext }`
+- `StateHandoffImported { handoff: StateHandoffTraceContext }`
+- `StateHandoffImportFailed { handoff: StateHandoffTraceContext, reason: String }`
+- `ReadOnlyStateReferenced { handoff: StateHandoffTraceContext }`
 - `MessageQueued { message: MessageTraceContext }`
 - `MessageDelivered { message: MessageTraceContext }`
 - `MessageRejected { message: MessageTraceContext, reason: String }`
@@ -103,6 +110,31 @@ router behavior emits the lifecycle events for accepted, rejected, expired, and
 consumed local messages. Replayed trace records preserve `causal_parent`,
 allowing future multi-agent replay to rebuild message causality without executing
 message side effects or adapter actions.
+
+## State Handoff Events
+
+State handoff event variants correspond to these canonical event classes:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `StateHandoffExported` | `state.handoff.exported` | Source exported a snapshot handoff. |
+| `StateHandoffImported` | `state.handoff.imported` | Receiver imported a validated snapshot. |
+| `StateHandoffImportFailed` | `state.handoff.import_failed` | Receiver failed closed before changing state head. |
+| `ReadOnlyStateReferenced` | `state.reference.read_only` | Receiver attached an immutable state reference. |
+
+All state handoff events carry `StateHandoffTraceContext`:
+
+| Field | Purpose |
+| --- | --- |
+| `handoff_id` | Links source and receiver handoff events. |
+| `mode` | `snapshot_import` or `read_only_reference`. |
+| `tenant_id`, `agent_id`, `run_id` | Authority scope for the state boundary. |
+| `work_order_id` | Signed work order authorizing import/reference. |
+| `source_state_node_id` | Source state node being transferred or referenced. |
+| `previous_state_node_id` | Receiver head expected before import/reference. |
+| `receiver_state_node_id` | Receiver-owned node after successful import. |
+| `snapshot_id` | Snapshot ID verified from state bytes. |
+| `source_trace_id` | Source event proving the export/reference boundary. |
 
 ### TraceIntegrity
 

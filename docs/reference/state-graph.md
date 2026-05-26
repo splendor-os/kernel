@@ -39,9 +39,33 @@ metadata. A `SnapshotPolicy` determines when snapshots are created.
 - `node_id` (`StateNodeId`): identifier of the committed node.
 - `snapshot_id` (`Option<SnapshotId>`): snapshot identifier when created.
 
+## State handoff v0
+
+0.03-S7 adds explicit handoff helpers to `StateGraph`:
+
+- `export_handoff(snapshot_id, request) -> StateHandoff` builds a versioned
+  snapshot handoff envelope from an existing snapshot.
+- `import_handoff(handoff, work_order, scope, now, metadata) -> StateCommit`
+  validates authority, source trace continuity, previous receiver head, snapshot
+  hash, and parent linkage before updating the receiver head.
+- `attach_read_only_reference(reference, work_order, scope, now)` records an
+  immutable state reference without changing the receiver state head.
+- `commit_from_read_only_reference(...)` always fails closed; read-only
+  references cannot become mutable parents.
+
+Successful snapshot import creates a receiver-owned state node with the same
+content-addressed node ID and snapshot ID as the exported source snapshot. A
+failed import leaves the receiver `head` unchanged.
+
+State handoff is documented in detail in
+[`state-handoff.md`](state-handoff.md).
+
 ## StateGraphError
 
-`StateGraphError::Store` wraps `StateStoreError` failures.
+`StateGraphError::Store` wraps `StateStoreError` failures. State handoff adds
+fail-closed errors for incompatible work orders, unsigned/expired/revoked work
+orders, stale previous heads, missing trace continuity, invalid modes, and
+read-only reference mutation attempts.
 
 ## Example
 

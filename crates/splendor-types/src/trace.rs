@@ -21,7 +21,7 @@
 
 use crate::{
     Action, Constraint, ContentHash, Feedback, MessageTraceContext, Reward, RunId, SnapshotId,
-    TraceId, VerificationResult,
+    StateHandoffTraceContext, TraceId, VerificationResult,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -152,6 +152,28 @@ pub enum TraceEventKind {
         state_hash: ContentHash,
         /// Snapshot identifier when one was created.
         snapshot_id: Option<SnapshotId>,
+    },
+    /// Records source-side export of a state handoff snapshot.
+    StateHandoffExported {
+        /// State handoff identity, ownership, and snapshot context.
+        handoff: StateHandoffTraceContext,
+    },
+    /// Records receiver-side import of a validated handoff snapshot.
+    StateHandoffImported {
+        /// State handoff identity, ownership, and snapshot context.
+        handoff: StateHandoffTraceContext,
+    },
+    /// Records receiver-side failure before a handoff snapshot changed state head.
+    StateHandoffImportFailed {
+        /// State handoff identity, ownership, and snapshot context.
+        handoff: StateHandoffTraceContext,
+        /// Fail-closed rejection reason.
+        reason: String,
+    },
+    /// Records attachment of a read-only state reference.
+    ReadOnlyStateReferenced {
+        /// Read-only reference identity and source context.
+        handoff: StateHandoffTraceContext,
     },
     /// Records a message accepted into a local delivery path.
     MessageQueued {

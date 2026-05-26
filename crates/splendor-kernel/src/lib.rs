@@ -47,10 +47,14 @@ pub use splendor_types::{
     Action, AgentId, Constraint, ConstraintKind, ConstraintScope, ContentHash, CostEstimate,
     Feedback, HashAlgorithm, Message, MessageDeliveryStatus, MessageEnvelope, MessageId,
     MessageSchemaVersion, MessageTraceContext, MessageTraceLinks, MessageValidationError, Percept,
-    PerceptProvenance, QuotaUsage, Reward, RunId, SideEffectClass, SnapshotId, TenantId,
-    TraceEvent, TraceEventKind, TraceId, VerificationResult,
+    PerceptProvenance, QuotaUsage, Reward, RunId, SideEffectClass, SnapshotId, StateHandoff,
+    StateHandoffAuthority, StateHandoffSnapshot, StateHandoffTraceContext, StateReference,
+    StateReferenceMode, TenantId, TraceEvent, TraceEventKind, TraceId, VerificationResult,
 };
-pub use state::{SnapshotPolicy, StateCommit, StateGraph, StateGraphError};
+pub use state::{
+    SnapshotPolicy, StateCommit, StateGraph, StateGraphError, StateHandoffExportRequest,
+    StateHandoffScope,
+};
 pub use tenancy::{
     AdapterQuota, AgentContext, AgentRuntimeConfig, QuotaLedger, QuotaPolicy, TenantContext,
     TenantPolicy, TenantRegistry,

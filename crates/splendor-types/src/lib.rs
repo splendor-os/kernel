@@ -35,6 +35,7 @@ mod hash;
 mod ids;
 mod message;
 mod primitives;
+mod state_handoff;
 mod trace;
 
 pub use daemon_security::{
@@ -54,6 +55,10 @@ pub use message::{
 pub use primitives::{
     Action, Constraint, ConstraintKind, ConstraintScope, CostEstimate, Feedback, Percept,
     PerceptProvenance, QuotaUsage, Reward, SideEffectClass, VerificationResult,
+};
+pub use state_handoff::{
+    StateHandoff, StateHandoffAuthority, StateHandoffSnapshot, StateHandoffTraceContext,
+    StateReference, StateReferenceMode,
 };
 pub use trace::{TraceEvent, TraceEventKind, TraceIntegrity};
 
