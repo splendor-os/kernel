@@ -26,6 +26,7 @@
 
 mod loop_engine;
 mod message_router;
+mod node_registry;
 mod runtime;
 mod scheduler;
 mod state;
@@ -41,16 +42,24 @@ pub use message_router::{
     AgentMailboxSnapshot, LocalMessageRouter, MessageRouter, MessageRouterConfig,
     MessageRouterError, MessageTraceRecorder,
 };
+pub use node_registry::{
+    HeartbeatFreshness, InMemoryManagementAuditSink, InMemoryNodeRegistry, InstanceRecord,
+    ManagementAuditError, ManagementAuditSink, NodeRecord, NodeRegistry, NodeRegistryConfig,
+    NodeRegistryError, RegistryHealthStatus,
+};
 pub use runtime::{KernelRuntime, KernelRuntimeConfig};
 pub use scheduler::{Scheduler, SchedulerConfig, SchedulerError, SchedulerStep};
 pub use splendor_types::{
-    Action, ActionId, AgentId, Constraint, ConstraintKind, ConstraintScope, ContentHash,
-    CostEstimate, Feedback, FleetId, HashAlgorithm, IdentityValidationError, InstanceId, Message,
+    Action, ActionId, AgentId, CapabilityDocument, CapabilityValidationError, Constraint,
+    ConstraintKind, ConstraintScope, ContentHash, CostEstimate, Feedback, FleetId, HashAlgorithm,
+    HealthStatus, IdentityValidationError, InstanceHealth, InstanceHeartbeat, InstanceId,
+    InstanceRegistration, ManagementAuditEvent, ManagementAuditEventKind, Message,
     MessageDeliveryStatus, MessageEnvelope, MessageId, MessageSchemaVersion, MessageTraceContext,
-    MessageTraceLinks, MessageValidationError, NodeId, Percept, PerceptProvenance, QuotaUsage,
-    Reward, RunId, RuntimeIdentityContext, SideEffectClass, SnapshotId, StateNodeId, TenantId,
-    TickId, TraceEvent, TraceEventId, TraceEventKind, TraceId, TraceIdentityContext,
-    VerificationResult,
+    MessageTraceLinks, MessageValidationError, NodeHealth, NodeHeartbeat, NodeId, NodeKind,
+    NodeRegistration, NodeRegistryValidationError, Percept, PerceptProvenance, QuotaUsage,
+    RegistryScope, Reward, RunId, RuntimeIdentityContext, RuntimeMode, SideEffectClass,
+    SnapshotId, StateNodeId, TenantId, TickId, TraceEvent, TraceEventId, TraceEventKind, TraceId,
+    TraceIdentityContext, VerificationResult,
 };
 pub use state::{SnapshotPolicy, StateCommit, StateGraph, StateGraphError};
 pub use tenancy::{

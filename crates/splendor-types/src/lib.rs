@@ -30,13 +30,19 @@
 //! assert_eq!(action.name, "http_get");
 //! ```
 
+mod capabilities;
 mod daemon_security;
 mod hash;
 mod ids;
 mod message;
+mod node_registry;
 mod primitives;
 mod trace;
 
+pub use capabilities::{
+    is_valid_capability_name, CapabilityDocument, CapabilityValidationError,
+    CAPABILITY_DOCUMENT_SCHEMA,
+};
 pub use daemon_security::{
     validate_client_connection_policy, validate_daemon_request, validate_insecure_dev_mode,
     AppPrincipal, AuditAttribution, CallerCredential, ClientConnectionPolicy, ClientPrincipal,
@@ -54,6 +60,11 @@ pub use ids::{
 pub use message::{
     Message, MessageDeliveryStatus, MessageEnvelope, MessageSchemaVersion, MessageTraceContext,
     MessageTraceLinks, MessageValidationError,
+};
+pub use node_registry::{
+    HealthStatus, InstanceHealth, InstanceHeartbeat, InstanceRegistration, ManagementAuditEvent,
+    ManagementAuditEventKind, NodeHealth, NodeHeartbeat, NodeKind, NodeRegistration,
+    NodeRegistryValidationError, RegistryScope, RuntimeMode,
 };
 pub use primitives::{
     Action, Constraint, ConstraintKind, ConstraintScope, CostEstimate, Feedback, Percept,

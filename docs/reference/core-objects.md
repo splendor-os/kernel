@@ -92,6 +92,26 @@ TraceEventId = uuid_v5(NAMESPACE_OID, "{run_id}:{sequence}")
 - `network_write_bytes` (`u64`): network bytes written.
 - `http_requests` (`u32`): HTTP requests issued.
 
+## Node and Instance Registry
+
+0.03-S2 adds resident node and runtime instance registry contracts. See
+[`node-registry.md`](node-registry.md) and [`capabilities.md`](capabilities.md)
+for the full contract.
+
+Core structs:
+
+- `CapabilityDocument`
+- `RegistryScope`
+- `NodeKind`
+- `NodeRegistration`
+- `InstanceRegistration`
+- `NodeHeartbeat`
+- `InstanceHeartbeat`
+- `ManagementAuditEvent`
+
+Registry data is management metadata. It does not grant runtime permissions,
+start runs, or authorize side effects.
+
 ## Constraint
 
 `Constraint` defines hard or soft invariants enforced during a loop.

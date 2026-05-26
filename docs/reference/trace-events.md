@@ -61,6 +61,11 @@ events include `action_id`; state commit events include `state_node_id`; message
 lifecycle events include `message_id`. Fleet, node, and instance IDs are optional
 until later 0.03 registry and transport sprints populate them.
 
+Node and instance registry lifecycle events introduced in 0.03-S2 are management
+audit events rather than run-scoped `TraceEventKind` variants. They are documented
+in [`node-registry.md`](node-registry.md) and remain suitable for later
+aggregation without inventing fake run IDs.
+
 ## TraceEventKind Payloads
 
 - `RunStarted`

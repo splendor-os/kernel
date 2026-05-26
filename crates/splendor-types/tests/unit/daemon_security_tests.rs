@@ -26,6 +26,22 @@ fn credential(
     }
 }
 
+fn fleet_credential(
+    fleet_id: FleetId,
+    scopes: Vec<EndpointScope>,
+    now: time::OffsetDateTime,
+) -> CallerCredential {
+    CallerCredential {
+        credential_id: "cred_test".to_string(),
+        principal: principal(),
+        scopes,
+        binding: CredentialBinding::Fleet { fleet_id },
+        audience: audience(),
+        expires_at: now + time::Duration::hours(1),
+        revocation: RevocationStatus::Active,
+    }
+}
+
 fn attribution(now: time::OffsetDateTime) -> AuditAttribution {
     AuditAttribution {
         principal: principal(),
@@ -624,6 +640,135 @@ fn action_submit_requires_trace_link_and_gateway_verification() {
     assert_eq!(
         validate_daemon_request(&self_attested_completed, now),
         Err(DaemonSecurityError::ActionGatewayBypassed)
+    );
+}
+
+#[test]
+fn node_registry_endpoints_require_scopes_binding_and_audit_attribution() {
+    let now = time::OffsetDateTime::now_utc();
+    let fleet_id = FleetId::new();
+    let tenant_id = TenantId::new();
+    let scope = RegistryScope::fleet_tenant(fleet_id.clone(), tenant_id.clone());
+    let request = DaemonSecurityRequest {
+        endpoint: DaemonEndpoint::NodeRegister {
+            scope: scope.clone(),
+        },
+        credential: Some(fleet_credential(
+            fleet_id.clone(),
+            vec![EndpointScope::NodesRegister],
+            now,
+        )),
+        expected_audience: audience(),
+        work_order: None,
+        audit_attribution: Some(attribution(now)),
+        insecure_dev_mode: None,
+    };
+
+    let decision = validate_daemon_request(&request, now).expect("authorized");
+    assert_eq!(decision.scope, EndpointScope::NodesRegister);
+    assert!(decision.audit_attribution.is_some());
+
+    let missing_scope = DaemonSecurityRequest {
+        credential: Some(fleet_credential(
+            fleet_id.clone(),
+            vec![EndpointScope::HealthRead],
+            now,
+        )),
+        ..request.clone()
+    };
+    assert_eq!(
+        validate_daemon_request(&missing_scope, now),
+        Err(DaemonSecurityError::MissingScope {
+            scope: EndpointScope::NodesRegister.as_str()
+        })
+    );
+
+    let wrong_binding = DaemonSecurityRequest {
+        credential: Some(fleet_credential(
+            FleetId::new(),
+            vec![EndpointScope::NodesRegister],
+            now,
+        )),
+        ..request.clone()
+    };
+    assert_eq!(
+        validate_daemon_request(&wrong_binding, now),
+        Err(DaemonSecurityError::WrongCredentialBinding)
+    );
+
+    let missing_attribution = DaemonSecurityRequest {
+        audit_attribution: None,
+        ..request
+    };
+    assert_eq!(
+        validate_daemon_request(&missing_attribution, now),
+        Err(DaemonSecurityError::MissingAuditAttribution)
+    );
+}
+
+#[test]
+fn heartbeat_and_instance_registry_endpoints_validate_identity_scope() {
+    let now = time::OffsetDateTime::now_utc();
+    let tenant_id = TenantId::new();
+    let node_id = NodeId::new();
+    let instance_id = InstanceId::new();
+    let scope = RegistryScope::tenant(tenant_id.clone());
+
+    for (endpoint, required_scope) in [
+        (
+            DaemonEndpoint::InstanceRegister {
+                node_id: node_id.clone(),
+                scope: scope.clone(),
+            },
+            EndpointScope::InstancesRegister,
+        ),
+        (
+            DaemonEndpoint::NodeHeartbeat {
+                node_id: node_id.clone(),
+                scope: scope.clone(),
+            },
+            EndpointScope::NodesHeartbeat,
+        ),
+        (
+            DaemonEndpoint::InstanceHeartbeat {
+                node_id: node_id.clone(),
+                instance_id: instance_id.clone(),
+                scope: scope.clone(),
+            },
+            EndpointScope::InstancesHeartbeat,
+        ),
+    ] {
+        let request = DaemonSecurityRequest {
+            endpoint,
+            credential: Some(credential(tenant_id.clone(), vec![required_scope], now)),
+            expected_audience: audience(),
+            work_order: None,
+            audit_attribution: Some(attribution(now)),
+            insecure_dev_mode: None,
+        };
+
+        assert!(validate_daemon_request(&request, now).is_ok());
+    }
+
+    let invalid = DaemonSecurityRequest {
+        endpoint: DaemonEndpoint::InstanceHeartbeat {
+            node_id: NodeId::from(uuid::Uuid::nil()),
+            instance_id,
+            scope,
+        },
+        credential: Some(credential(
+            tenant_id,
+            vec![EndpointScope::InstancesHeartbeat],
+            now,
+        )),
+        expected_audience: audience(),
+        work_order: None,
+        audit_attribution: Some(attribution(now)),
+        insecure_dev_mode: None,
+    };
+    assert_eq!(
+        validate_daemon_request(&invalid, now),
+        Err(DaemonSecurityError::InvalidRegistryEndpoint)
     );
 }
 
