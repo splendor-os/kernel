@@ -23,12 +23,17 @@
 - Hardened 0.02-S4 local delegation with duplicate child-run ID rejection and
   terminal child completion/failure guards that avoid duplicate response messages
   or terminal traces.
+- Added a 0.02-S5 local runtime daemon API crate with endpoints for run
+  lifecycle, percept append, ordered traces, state-head lookup, inspect-only
+  replay, gateway-mediated action submission, health, and capabilities.
+- Added state-node lookup through `StateStore::get_node` so daemon state-head
+  responses verify that returned nodes exist in the state graph.
 
 ### Explicitly not included
 
-- No daemon server, HTTP listener, OAuth/OIDC provider, PKI management, fleet
-  mTLS rollout, node bootstrap, governance workflow, message broker, remote
-  transport, fleet placement, long-lived child services, or TypeScript runtime
+- No production OAuth/OIDC provider, PKI management, fleet mTLS rollout, node
+  bootstrap, governance workflow, message broker, remote transport, fleet
+  scheduler, fleet placement, long-lived child services, or TypeScript runtime
   enforcement.
 
 ## 0.01-dev — Local kernel baseline

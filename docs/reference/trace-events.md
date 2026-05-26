@@ -55,9 +55,17 @@ Local delegation events are emitted outside the tick ordering when a parent run
 creates, completes, fails, cancels, or rejects local child work. They are ordered
 by each affected run's sequence counter and carry explicit parent/child IDs.
 
+0.02-S5 daemon lifecycle events are emitted outside the tick body but through the
+same run trace runtime, preserving monotonic sequence order before the next tick
+or replay inspection.
+
 ## TraceEventKind Payloads
 
 - `RunStarted`
+- `RunPaused { reason: Option<String> }`
+- `RunResumed { reason: Option<String> }`
+- `RunStopped { reason: Option<String> }`
+- `PerceptsAppended { count: usize, schemas: Vec<String> }`
 - `LoopTickStarted { tick_id }`
 - `PerceptsReceived { percepts: Vec<Percept> }`
 - `StateLoaded { state_hash: Option<ContentHash> }`

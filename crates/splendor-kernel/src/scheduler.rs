@@ -6,7 +6,7 @@
 
 use crate::loop_engine::{LoopEngine, LoopError, TickOutcome};
 use crate::tenancy::TenantRegistry;
-use splendor_types::{AgentId, TenantId};
+use splendor_types::{AgentId, TenantId, TraceEvent, TraceEventKind};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use time::OffsetDateTime;
@@ -42,6 +42,9 @@ pub enum SchedulerError {
     /// No tenant context was found for the agent.
     #[error("tenant context was not found for tenant {0}")]
     MissingTenant(TenantId),
+    /// No agent was found in the scheduler queue.
+    #[error("agent context was not found for agent {0}")]
+    MissingAgent(AgentId),
     /// A loop engine returned an error.
     #[error("loop engine failed: {0}")]
     Loop(#[from] LoopError),
@@ -102,6 +105,22 @@ impl Scheduler {
     /// Adds a loop engine to the scheduling queue.
     pub fn add_agent(&mut self, engine: LoopEngine) {
         self.queue.push_back(engine);
+    }
+
+    /// Records a non-tick runtime event through the target agent's trace runtime.
+    pub fn record_event_for_agent(
+        &self,
+        agent_id: &AgentId,
+        kind: TraceEventKind,
+    ) -> Result<TraceEvent, SchedulerError> {
+        let engine = self
+            .queue
+            .iter()
+            .find(|engine| engine.agent_id() == agent_id)
+            .ok_or_else(|| SchedulerError::MissingAgent(agent_id.clone()))?;
+        engine
+            .record_runtime_event(kind)
+            .map_err(SchedulerError::Loop)
     }
 
     /// Runs a single agent tick.

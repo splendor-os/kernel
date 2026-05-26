@@ -146,6 +146,8 @@ pub trait StateStore: Send + Sync {
         data_ref: StateDataRef,
         metadata: StateMetadata,
     ) -> Result<StateNodeId, StateStoreError>;
+    /// Retrieves a stored state node by identifier.
+    fn get_node(&self, node_id: &StateNodeId) -> Result<StateNode, StateStoreError>;
     /// Creates a `SnapshotId` for a state node.
     fn snapshot(&self, node_id: &StateNodeId) -> Result<SnapshotId, StateStoreError>;
     /// Loads a `StateSnapshot` by `SnapshotId`.
@@ -164,6 +166,10 @@ pub trait AsyncStateStore: Send + Sync {
         Self: 'a;
     /// Future returned by `commit_node`.
     type CommitNodeFuture<'a>: Future<Output = Result<StateNodeId, StateStoreError>> + Send + 'a
+    where
+        Self: 'a;
+    /// Future returned by `get_node`.
+    type GetNodeFuture<'a>: Future<Output = Result<StateNode, StateStoreError>> + Send + 'a
     where
         Self: 'a;
     /// Future returned by `snapshot`.
@@ -186,6 +192,8 @@ pub trait AsyncStateStore: Send + Sync {
         data_ref: StateDataRef,
         metadata: StateMetadata,
     ) -> Self::CommitNodeFuture<'a>;
+    /// Retrieves a stored state node by identifier.
+    fn get_node<'a>(&'a self, node_id: &'a StateNodeId) -> Self::GetNodeFuture<'a>;
     /// Creates a `SnapshotId` for a state node.
     fn snapshot<'a>(&'a self, node_id: &'a StateNodeId) -> Self::SnapshotFuture<'a>;
     /// Loads a `StateSnapshot` by `SnapshotId`.
@@ -261,6 +269,16 @@ impl StateStore for InMemoryStateStore {
         Ok(node_id)
     }
 
+    /// Retrieves a committed node from the in-memory state graph.
+    fn get_node(&self, node_id: &StateNodeId) -> Result<StateNode, StateStoreError> {
+        let state = self.inner.lock().map_err(|_| StateStoreError::Poisoned)?;
+        state
+            .nodes
+            .get(node_id)
+            .cloned()
+            .ok_or(StateStoreError::MissingNode)
+    }
+
     /// Creates a snapshot of the node's current state bytes.
     fn snapshot(&self, node_id: &StateNodeId) -> Result<SnapshotId, StateStoreError> {
         let mut state = self.inner.lock().map_err(|_| StateStoreError::Poisoned)?;
@@ -315,6 +333,10 @@ impl AsyncStateStore for InMemoryStateStore {
         = Ready<Result<StateNodeId, StateStoreError>>
     where
         Self: 'a;
+    type GetNodeFuture<'a>
+        = Ready<Result<StateNode, StateStoreError>>
+    where
+        Self: 'a;
     type SnapshotFuture<'a>
         = Ready<Result<SnapshotId, StateStoreError>>
     where
@@ -343,6 +365,11 @@ impl AsyncStateStore for InMemoryStateStore {
     ) -> Self::CommitNodeFuture<'a> {
         let result = StateStore::commit_node(self, parent_ids, data_ref, metadata);
         ready(result)
+    }
+
+    /// Async wrapper around `get_node` for in-memory storage.
+    fn get_node<'a>(&'a self, node_id: &'a StateNodeId) -> Self::GetNodeFuture<'a> {
+        ready(StateStore::get_node(self, node_id))
     }
 
     /// Async wrapper around `snapshot` for in-memory storage.
@@ -475,6 +502,41 @@ impl SqliteStateStore {
         let value = result.ok_or(StateStoreError::MissingNode)?;
         Self::parse_data_ref(&value)
     }
+
+    /// Fetches a complete state node by ID.
+    fn fetch_node(
+        connection: &Connection,
+        node_id: &StateNodeId,
+    ) -> Result<StateNode, StateStoreError> {
+        let (node_algo, node_value) = Self::hash_parts(node_id.hash());
+        let mut stmt = connection.prepare(
+            "SELECT parent_ids, data_ref, data_hash_algo, data_hash_value, metadata FROM state_nodes WHERE node_hash_algo = ?1 AND node_hash_value = ?2",
+        )?;
+        let result: Option<(String, String, String, String, String)> = stmt
+            .query_row(params![node_algo, node_value], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .optional()?;
+        let (parents_raw, data_ref_raw, data_algo, data_value, metadata_raw) =
+            result.ok_or(StateStoreError::MissingNode)?;
+        let parent_ids = serde_json::from_str(&parents_raw)?;
+        let data_ref = Self::parse_data_ref(&data_ref_raw)?;
+        let data_hash = Self::content_hash_from_parts(&data_algo, &data_value)?;
+        let metadata = serde_json::from_str(&metadata_raw)?;
+        Ok(StateNode {
+            id: node_id.clone(),
+            parent_ids,
+            data_ref,
+            data_hash,
+            metadata,
+        })
+    }
 }
 
 impl StateStore for SqliteStateStore {
@@ -542,6 +604,15 @@ impl StateStore for SqliteStateStore {
         Ok(node_id)
     }
 
+    /// Retrieves a committed node from the SQLite-backed state graph.
+    fn get_node(&self, node_id: &StateNodeId) -> Result<StateNode, StateStoreError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| StateStoreError::Poisoned)?;
+        Self::fetch_node(&connection, node_id)
+    }
+
     /// Creates a snapshot entry for the given node identifier.
     fn snapshot(&self, node_id: &StateNodeId) -> Result<SnapshotId, StateStoreError> {
         let connection = self
@@ -596,6 +667,10 @@ impl AsyncStateStore for SqliteStateStore {
         = Ready<Result<StateNodeId, StateStoreError>>
     where
         Self: 'a;
+    type GetNodeFuture<'a>
+        = Ready<Result<StateNode, StateStoreError>>
+    where
+        Self: 'a;
     type SnapshotFuture<'a>
         = Ready<Result<SnapshotId, StateStoreError>>
     where
@@ -624,6 +699,11 @@ impl AsyncStateStore for SqliteStateStore {
     ) -> Self::CommitNodeFuture<'a> {
         let result = StateStore::commit_node(self, parent_ids, data_ref, metadata);
         ready(result)
+    }
+
+    /// Async wrapper around `get_node` for SQLite storage.
+    fn get_node<'a>(&'a self, node_id: &'a StateNodeId) -> Self::GetNodeFuture<'a> {
+        ready(StateStore::get_node(self, node_id))
     }
 
     /// Async wrapper around `snapshot` for SQLite storage.
