@@ -134,6 +134,24 @@ export interface MessageTraceContext {
   causal_parent: TraceId | null;
 }
 
+export interface LocalDelegationTraceContext {
+  parent_run_id: RunId;
+  child_run_id: RunId;
+  parent_trace_id: TraceId | null;
+  request_message_id: MessageId | null;
+  response_message_id: MessageId | null;
+  source_agent_id: AgentId;
+  target_agent_id: AgentId;
+  objective: string;
+}
+
+export interface TaskFailure {
+  code: string;
+  reason: string;
+  retryable: boolean;
+  trace_id: TraceId | null;
+}
+
 export interface TraceIntegrity {
   prev_event_hash: ContentHash | null;
   event_hash: ContentHash;
@@ -141,6 +159,10 @@ export interface TraceIntegrity {
 
 export type TraceEventKind =
   | "RunStarted"
+  | { RunPaused: { reason: string | null } }
+  | { RunResumed: { reason: string | null } }
+  | { RunStopped: { reason: string | null } }
+  | { PerceptsAppended: { count: number; schemas: string[] } }
   | { LoopTickStarted: { tick_id: number } }
   | { PerceptsReceived: { percepts: Percept[] } }
   | { StateLoaded: { state_hash: ContentHash | null } }
@@ -160,6 +182,22 @@ export type TraceEventKind =
   | { MessageRejected: { message: MessageTraceContext; reason: string } }
   | { MessageExpired: { message: MessageTraceContext; reason: string | null } }
   | { MessageConsumed: { message: MessageTraceContext } }
+  | { DelegationRequested: { delegation: LocalDelegationTraceContext } }
+  | { DelegationRejected: { delegation: LocalDelegationTraceContext; reason: string } }
+  | { ParentRunCancelled: { parent_run_id: RunId; agent_id: AgentId; reason: string } }
+  | { ChildRunStarted: { delegation: LocalDelegationTraceContext } }
+  | { ChildRunCompleted: { delegation: LocalDelegationTraceContext } }
+  | { ChildRunFailed: { delegation: LocalDelegationTraceContext; failure: TaskFailure } }
+  | {
+      ChildRunLinked: {
+        parent_run_id: RunId;
+        child_run_id: RunId;
+        parent_agent_id: AgentId;
+        child_agent_id: AgentId;
+        causal_parent: TraceId | null;
+        source_message_id: MessageId | null;
+      };
+    }
   | { LoopTickCompleted: { tick_id: number; integrity: TraceIntegrity | null } };
 
 export interface TraceEvent {
@@ -434,6 +472,10 @@ export const CANONICAL_SCHEMA_FIELDS = {
 
 export const TRACE_EVENT_KIND_VARIANTS = [
   "RunStarted",
+  "RunPaused",
+  "RunResumed",
+  "RunStopped",
+  "PerceptsAppended",
   "LoopTickStarted",
   "PerceptsReceived",
   "StateLoaded",
@@ -453,6 +495,13 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "MessageRejected",
   "MessageExpired",
   "MessageConsumed",
+  "DelegationRequested",
+  "DelegationRejected",
+  "ParentRunCancelled",
+  "ChildRunStarted",
+  "ChildRunCompleted",
+  "ChildRunFailed",
+  "ChildRunLinked",
   "LoopTickCompleted"
 ] as const;
 
