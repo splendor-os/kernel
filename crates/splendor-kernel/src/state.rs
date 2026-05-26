@@ -235,6 +235,10 @@ impl StateGraph {
         self.head = Some(imported.node_id.clone());
         Ok(StateCommit {
             node_id: imported.node_id,
+            tenant_id: Some(handoff.authority.tenant_id.clone()),
+            agent_id: Some(handoff.authority.agent_id.clone()),
+            run_id: Some(handoff.authority.run_id.clone()),
+            trace_event_id: handoff.source_trace_id.clone(),
             snapshot_id: Some(imported.snapshot_id),
         })
     }

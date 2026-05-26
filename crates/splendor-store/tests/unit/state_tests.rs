@@ -83,10 +83,7 @@ fn state_store_exports_and_imports_handoff_snapshot_with_parent_linkage() {
         },
     )
     .expect("put first");
-    let metadata = StateMetadata {
-        created_at: OffsetDateTime::now_utc(),
-        label: Some("first".to_string()),
-    };
+    let metadata = StateMetadata::new(OffsetDateTime::now_utc(), Some("first".to_string()));
     let first =
         StateStore::commit_node(&source, Vec::new(), first_ref, metadata).expect("commit first");
 
@@ -95,10 +92,7 @@ fn state_store_exports_and_imports_handoff_snapshot_with_parent_linkage() {
         content_type: Some("application/octet-stream".to_string()),
     };
     let second_ref = StateStore::put_state(&source, second_data.clone()).expect("put second");
-    let metadata = StateMetadata {
-        created_at: OffsetDateTime::now_utc(),
-        label: Some("second".to_string()),
-    };
+    let metadata = StateMetadata::new(OffsetDateTime::now_utc(), Some("second".to_string()));
     let second = StateStore::commit_node(&source, vec![first.clone()], second_ref, metadata)
         .expect("commit second");
     let snapshot_id = StateStore::snapshot(&source, &second).expect("snapshot");
@@ -113,10 +107,7 @@ fn state_store_exports_and_imports_handoff_snapshot_with_parent_linkage() {
     let imported = StateStore::import_handoff_snapshot(
         &receiver,
         &exported,
-        StateMetadata {
-            created_at: OffsetDateTime::now_utc(),
-            label: Some("imported".to_string()),
-        },
+        StateMetadata::new(OffsetDateTime::now_utc(), Some("imported".to_string())),
     )
     .expect("import");
 
@@ -140,10 +131,7 @@ fn state_store_rejects_corrupted_handoff_snapshot_before_import() {
         &source,
         Vec::new(),
         data_ref,
-        StateMetadata {
-            created_at: OffsetDateTime::now_utc(),
-            label: None,
-        },
+        StateMetadata::new(OffsetDateTime::now_utc(), None),
     )
     .expect("commit");
     let snapshot_id = StateStore::snapshot(&source, &node_id).expect("snapshot");
@@ -154,10 +142,7 @@ fn state_store_rejects_corrupted_handoff_snapshot_before_import() {
     let error = StateStore::import_handoff_snapshot(
         &receiver,
         &exported,
-        StateMetadata {
-            created_at: OffsetDateTime::now_utc(),
-            label: None,
-        },
+        StateMetadata::new(OffsetDateTime::now_utc(), None),
     )
     .expect_err("hash mismatch");
 

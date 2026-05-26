@@ -181,7 +181,7 @@ fn fleet_telemetry_round_trips_with_snake_case_statuses() {
         node_id,
         instance_id,
         "splendor-0.03-dev",
-        TelemetryRuntimeMode::Resident,
+        RuntimeMode::Resident,
         vec!["trace.sync".to_string()],
         observed_at,
     ));

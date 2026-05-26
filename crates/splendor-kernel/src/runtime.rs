@@ -18,8 +18,8 @@
 use crate::{StdoutTraceSink, TraceError, TraceSink, TraceStoreSink};
 use splendor_store::TraceStore;
 use splendor_types::{
-    ContentHash, RunId, RuntimeIdentityContext, TraceEvent, TraceEventKind, TraceIdentityContext,
-    TraceIntegrity, StateHandoff, StateHandoffTraceContext, StateReference,
+    ContentHash, RunId, RuntimeIdentityContext, StateHandoff, StateHandoffTraceContext,
+    StateReference, TraceEvent, TraceEventKind, TraceIdentityContext, TraceIntegrity,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -169,7 +169,7 @@ impl KernelRuntime {
         let event = self.record_event(TraceEventKind::StateHandoffExported {
             handoff: StateHandoffTraceContext::exported(handoff),
         })?;
-        handoff.source_trace_id = Some(event.trace_id.clone());
+        handoff.source_trace_id = Some(event.trace_event_id.clone());
         Ok(event)
     }
 

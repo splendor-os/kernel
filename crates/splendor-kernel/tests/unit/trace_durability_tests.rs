@@ -2,7 +2,9 @@ use super::*;
 use splendor_gateway::{
     ActionGateway, ActionId, ActionOutcome, ActionRequest, ActionStatus, GatewayError,
 };
-use splendor_types::{Action, AgentId, QuotaUsage, SideEffectClass, TenantId, VerificationResult};
+use splendor_types::{
+    Action, AgentId, QuotaUsage, RunId, SideEffectClass, TenantId, VerificationResult,
+};
 use std::sync::{Arc, Mutex};
 use time::OffsetDateTime;
 
@@ -42,6 +44,7 @@ fn request(side_effect_class: SideEffectClass) -> ActionRequest {
         action_id: ActionId::new(),
         tenant_id: TenantId::new(),
         agent_id: AgentId::new(),
+        run_id: RunId::new(),
         action: Action {
             name: "file.write".to_string(),
             params: serde_json::json!({"path": "out.txt"}),

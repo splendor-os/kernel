@@ -203,7 +203,10 @@ fn runtime_records_state_handoff_source_and_receiver_events() {
     let exported = runtime
         .record_state_handoff_exported(&mut handoff)
         .expect("export trace");
-    assert_eq!(handoff.source_trace_id, Some(exported.trace_id.clone()));
+    assert_eq!(
+        handoff.source_trace_id,
+        Some(exported.trace_event_id.clone())
+    );
     runtime
         .record_state_handoff_imported(&handoff, "blake3:receiver")
         .expect("import trace");
@@ -215,7 +218,7 @@ fn runtime_records_state_handoff_source_and_receiver_events() {
     ));
     match &recorded[1].kind {
         TraceEventKind::StateHandoffImported { handoff: context } => {
-            assert_eq!(context.source_trace_id, Some(exported.trace_id));
+            assert_eq!(context.source_trace_id, Some(exported.trace_event_id));
             assert_eq!(
                 context.previous_state_node_id.as_deref(),
                 Some("blake3:previous")

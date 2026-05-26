@@ -21,8 +21,8 @@
 
 use crate::{
     Action, Constraint, ContentHash, Feedback, IdentityValidationError, MessageTraceContext,
-    RemoteMessageTraceContext, Reward, RunId, SnapshotId, TenantId, TickId, TraceEventId,
-    TraceIdentityContext, VerificationResult, WorkOrderId, StateHandoffTraceContext,
+    RemoteMessageTraceContext, Reward, RunId, SnapshotId, StateHandoffTraceContext, TenantId,
+    TickId, TraceEventId, TraceIdentityContext, VerificationResult, WorkOrderId,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;

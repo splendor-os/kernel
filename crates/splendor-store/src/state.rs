@@ -21,8 +21,8 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use splendor_types::{
-    AgentId, ContentHash, HashAlgorithm, RunId, SnapshotId, StateNodeId, TenantId, TraceEventId,
-    StateHandoffSnapshot,
+    AgentId, ContentHash, HashAlgorithm, RunId, SnapshotId, StateHandoffSnapshot, StateNodeId,
+    TenantId, TraceEventId,
 };
 use std::collections::HashMap;
 use std::fmt;

@@ -2,8 +2,8 @@ use super::*;
 use crate::{
     AgentId, EndpointScope, Message, MessageEnvelope, MessageId, MessageTraceContext, Percept,
     PerceptProvenance, RemoteMessageEnvelope, RemoteMessageRetryPolicy, RemoteMessageTraceContext,
-    RevocationStatus, SideEffectClass, TenantId, WorkOrderAuthorization, WorkOrderSignature,
-    SnapshotId, StateHandoffTraceContext, StateReferenceMode,
+    RevocationStatus, SideEffectClass, SnapshotId, StateHandoffTraceContext, StateReferenceMode,
+    TenantId, TraceId, WorkOrderAuthorization, WorkOrderSignature,
 };
 
 #[test]

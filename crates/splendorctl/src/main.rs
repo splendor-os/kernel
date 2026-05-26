@@ -21,10 +21,9 @@ use splendor_store::{
 };
 use splendor_types::{
     validate_work_order, Action, AgentId, ContentHash, HashAlgorithm, Percept, PerceptProvenance,
-    QuotaUsage, RunId, SideEffectClass, SnapshotId, TenantId, TraceEvent, TraceEventId,
-    TraceEventKind, StateHandoffTraceContext,
-    WorkOrder, WorkOrderEnvelope, WorkOrderId, WorkOrderKeyring, WorkOrderValidationContext,
-    WorkOrderValidationError,
+    QuotaUsage, RunId, SideEffectClass, SnapshotId, StateHandoffTraceContext, TenantId, TraceEvent,
+    TraceEventId, TraceEventKind, WorkOrder, WorkOrderEnvelope, WorkOrderId, WorkOrderKeyring,
+    WorkOrderValidationContext, WorkOrderValidationError,
 };
 use std::env;
 use std::fs;
