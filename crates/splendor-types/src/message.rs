@@ -275,10 +275,11 @@ impl RemoteMessageEnvelopeVersion {
 /// Retries are disabled by default. A message can be retried only when the
 /// envelope explicitly declares idempotent semantics and supplies a non-empty
 /// idempotency key.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteMessageRetryPolicy {
     /// No retries are permitted.
+    #[default]
     Never,
     /// Retry only idempotent message transport attempts. `max_attempts` counts
     /// the first attempt, so a value of `2` permits one retry.
@@ -288,12 +289,6 @@ pub enum RemoteMessageRetryPolicy {
         /// Stable idempotency marker used by receivers to collapse duplicates.
         idempotency_key: String,
     },
-}
-
-impl Default for RemoteMessageRetryPolicy {
-    fn default() -> Self {
-        Self::Never
-    }
 }
 
 impl RemoteMessageRetryPolicy {
