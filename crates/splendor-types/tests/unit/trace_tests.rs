@@ -1,6 +1,8 @@
 use super::*;
 use crate::{
-    AgentId, Message, MessageId, MessageTraceContext, Percept, PerceptProvenance, SideEffectClass,
+    AgentId, EndpointScope, Message, MessageEnvelope, MessageId, MessageTraceContext, Percept,
+    PerceptProvenance, RemoteMessageEnvelope, RemoteMessageRetryPolicy, RemoteMessageTraceContext,
+    RevocationStatus, SideEffectClass, TenantId, WorkOrderAuthorization, WorkOrderSignature,
 };
 
 #[test]
@@ -142,5 +144,108 @@ fn message_lifecycle_trace_events_round_trip() {
         let payload = serde_json::to_vec(&event).expect("serialize");
         let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
         assert_eq!(decoded, event);
+    }
+}
+
+#[test]
+fn remote_message_trace_events_round_trip_with_causal_linkage() {
+    let run_id = RunId::new();
+    let source = AgentId::new();
+    let target = AgentId::new();
+    let tenant_id = TenantId::new();
+    let causal_parent = TraceId::from_run_sequence(&run_id, 9);
+    let now = OffsetDateTime::now_utc();
+    let message = Message::new(
+        MessageId::new(),
+        source,
+        target.clone(),
+        run_id.clone(),
+        "splendor.message.task_request.v1",
+        serde_json::json!({"task": "summarize"}),
+        Some(causal_parent.clone()),
+        true,
+        now,
+    )
+    .expect("valid message");
+    let message_envelope = MessageEnvelope::new(message).expect("valid envelope");
+    let remote = RemoteMessageEnvelope::new(
+        tenant_id.clone(),
+        "instance_a",
+        "instance_b",
+        WorkOrderAuthorization {
+            work_order_id: "wo_remote_trace".to_string(),
+            tenant_id,
+            agent_id: target,
+            run_id: Some(run_id.clone()),
+            allowed_scopes: vec![EndpointScope::MessagesSend],
+            signature: Some(WorkOrderSignature {
+                key_id: "key".to_string(),
+                signature: "sig".to_string(),
+            }),
+            expires_at: now + time::Duration::hours(1),
+            revocation: RevocationStatus::Active,
+        },
+        message_envelope,
+        RemoteMessageRetryPolicy::Idempotent {
+            max_attempts: 2,
+            idempotency_key: "message-key".to_string(),
+        },
+        now,
+        None,
+    )
+    .expect("valid remote");
+    let context = RemoteMessageTraceContext::from_envelope(&remote);
+    let events = vec![
+        TraceEventKind::RemoteMessageSent {
+            remote_message: context.clone(),
+        },
+        TraceEventKind::RemoteMessageAccepted {
+            remote_message: context.clone(),
+        },
+        TraceEventKind::RemoteMessageRejected {
+            remote_message: context.clone(),
+            reason: "wrong target".to_string(),
+        },
+        TraceEventKind::RemoteMessageDelivered {
+            remote_message: context.clone(),
+        },
+        TraceEventKind::RemoteMessageTimedOut {
+            remote_message: context.clone(),
+            reason: "deadline exceeded".to_string(),
+        },
+        TraceEventKind::RemoteMessageDuplicate {
+            remote_message: context.clone(),
+            reason: "already accepted".to_string(),
+        },
+        TraceEventKind::RemoteMessageTransportFailed {
+            remote_message: context,
+            reason: "connection reset".to_string(),
+        },
+    ];
+
+    for (sequence, kind) in events.into_iter().enumerate() {
+        let event = TraceEvent::new(run_id.clone(), sequence as u64, now, kind);
+        let payload = serde_json::to_vec(&event).expect("serialize");
+        let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+        assert_eq!(decoded, event);
+        match decoded.kind {
+            TraceEventKind::RemoteMessageSent { remote_message }
+            | TraceEventKind::RemoteMessageAccepted { remote_message }
+            | TraceEventKind::RemoteMessageDelivered { remote_message }
+            | TraceEventKind::RemoteMessageTimedOut { remote_message, .. }
+            | TraceEventKind::RemoteMessageDuplicate { remote_message, .. }
+            | TraceEventKind::RemoteMessageTransportFailed { remote_message, .. }
+            | TraceEventKind::RemoteMessageRejected { remote_message, .. } => {
+                assert_eq!(
+                    remote_message.message.causal_parent,
+                    Some(causal_parent.clone())
+                );
+                assert_eq!(
+                    remote_message.idempotency_key.as_deref(),
+                    Some("message-key")
+                );
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }

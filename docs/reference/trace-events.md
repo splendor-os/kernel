@@ -49,7 +49,9 @@ If post-verification fails after an action executes, the kernel records
 Message lifecycle events are also trace events. They are ordered by the same
 per-run sequence counter and do not replace the required tick event ordering.
 The local message router emits them when a message is queued, delivered,
-rejected, expired, or consumed.
+rejected, expired, or consumed. Remote message transport emits additional
+cross-instance message events for send, accept, reject, deliver, timeout,
+duplicate, and transport failure.
 
 ## TraceEventKind Payloads
 
@@ -73,6 +75,13 @@ rejected, expired, or consumed.
 - `MessageRejected { message: MessageTraceContext, reason: String }`
 - `MessageExpired { message: MessageTraceContext, reason: Option<String> }`
 - `MessageConsumed { message: MessageTraceContext }`
+- `RemoteMessageSent { remote_message: RemoteMessageTraceContext }`
+- `RemoteMessageAccepted { remote_message: RemoteMessageTraceContext }`
+- `RemoteMessageRejected { remote_message: RemoteMessageTraceContext, reason: String }`
+- `RemoteMessageDelivered { remote_message: RemoteMessageTraceContext }`
+- `RemoteMessageTimedOut { remote_message: RemoteMessageTraceContext, reason: String }`
+- `RemoteMessageDuplicate { remote_message: RemoteMessageTraceContext, reason: String }`
+- `RemoteMessageTransportFailed { remote_message: RemoteMessageTraceContext, reason: String }`
 - `LoopTickCompleted { tick_id, integrity: Option<TraceIntegrity> }`
 
 ## Message Events
@@ -103,6 +112,25 @@ router behavior emits the lifecycle events for accepted, rejected, expired, and
 consumed local messages. Replayed trace records preserve `causal_parent`,
 allowing future multi-agent replay to rebuild message causality without executing
 message side effects or adapter actions.
+
+### Remote Message Events
+
+Remote message event variants correspond to these canonical event classes:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `RemoteMessageSent` | `remote_message.sent` | Source instance attempted a remote transport send. |
+| `RemoteMessageAccepted` | `remote_message.accepted` | Destination instance accepted the remote envelope after identity/schema/work-order validation. |
+| `RemoteMessageRejected` | `remote_message.rejected` | Remote envelope failed validation or local delivery before enqueue. |
+| `RemoteMessageDelivered` | `remote_message.delivered` | Wrapped local message reached the destination inbox boundary. |
+| `RemoteMessageTimedOut` | `remote_message.timed_out` | Transport timed out before receiver acceptance. |
+| `RemoteMessageDuplicate` | `remote_message.duplicate` | Receiver detected a duplicate `message_id` and did not deliver again. |
+| `RemoteMessageTransportFailed` | `remote_message.transport_failed` | Non-timeout transport failure before receiver acceptance. |
+
+All remote message events carry `RemoteMessageTraceContext`, including the local
+`MessageTraceContext`, tenant ID, source/target instance IDs, work-order ID,
+attempt number, and optional idempotency key. Replay can join source and receiver
+traces by message ID and causal parent without re-sending or re-delivering.
 
 ### TraceIntegrity
 

@@ -49,7 +49,8 @@ pub use hash::{ContentHash, HashAlgorithm};
 pub use ids::{AgentId, MessageId, RunId, SnapshotId, TenantId, TraceId};
 pub use message::{
     Message, MessageDeliveryStatus, MessageEnvelope, MessageSchemaVersion, MessageTraceContext,
-    MessageTraceLinks, MessageValidationError,
+    MessageTraceLinks, MessageValidationError, RemoteMessageEnvelope, RemoteMessageEnvelopeVersion,
+    RemoteMessageRetryPolicy, RemoteMessageTraceContext, RemoteMessageValidationError,
 };
 pub use primitives::{
     Action, Constraint, ConstraintKind, ConstraintScope, CostEstimate, Feedback, Percept,

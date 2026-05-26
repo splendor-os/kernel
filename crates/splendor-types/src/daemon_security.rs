@@ -72,6 +72,8 @@ pub enum EndpointScope {
     StateRead,
     /// Create an inspect-only replay request.
     ReplayCreate,
+    /// Send a typed message across a remote Splendor instance boundary.
+    MessagesSend,
     /// Read daemon health.
     HealthRead,
     /// Read daemon capabilities.
@@ -89,6 +91,7 @@ impl EndpointScope {
             Self::TracesRead => "splendor.traces.read",
             Self::StateRead => "splendor.state.read",
             Self::ReplayCreate => "splendor.replay.create",
+            Self::MessagesSend => "splendor.messages.send",
             Self::HealthRead => "splendor.health.read",
             Self::CapabilitiesRead => "splendor.capabilities.read",
         }

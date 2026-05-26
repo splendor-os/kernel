@@ -20,8 +20,8 @@
 //! ```
 
 use crate::{
-    Action, Constraint, ContentHash, Feedback, MessageTraceContext, Reward, RunId, SnapshotId,
-    TraceId, VerificationResult,
+    Action, Constraint, ContentHash, Feedback, MessageTraceContext, RemoteMessageTraceContext,
+    Reward, RunId, SnapshotId, TraceId, VerificationResult,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -181,6 +181,50 @@ pub enum TraceEventKind {
     MessageConsumed {
         /// Identity and causality context for the message.
         message: MessageTraceContext,
+    },
+    /// Records a remote message leaving the source instance transport boundary.
+    RemoteMessageSent {
+        /// Remote identity, authority, and message causality context.
+        remote_message: RemoteMessageTraceContext,
+    },
+    /// Records a remote message accepted by the destination transport boundary
+    /// after envelope/work-order validation.
+    RemoteMessageAccepted {
+        /// Remote identity, authority, and message causality context.
+        remote_message: RemoteMessageTraceContext,
+    },
+    /// Records a remote message rejected before local delivery.
+    RemoteMessageRejected {
+        /// Remote identity, authority, and message causality context.
+        remote_message: RemoteMessageTraceContext,
+        /// Fail-closed rejection reason.
+        reason: String,
+    },
+    /// Records a remote message delivered into the target local inbox boundary.
+    RemoteMessageDelivered {
+        /// Remote identity, authority, and message causality context.
+        remote_message: RemoteMessageTraceContext,
+    },
+    /// Records a remote message transport timeout.
+    RemoteMessageTimedOut {
+        /// Remote identity, authority, and message causality context.
+        remote_message: RemoteMessageTraceContext,
+        /// Timeout reason or duration description.
+        reason: String,
+    },
+    /// Records a deterministic duplicate detection outcome.
+    RemoteMessageDuplicate {
+        /// Remote identity, authority, and message causality context.
+        remote_message: RemoteMessageTraceContext,
+        /// Duplicate handling reason.
+        reason: String,
+    },
+    /// Records a non-timeout remote transport failure.
+    RemoteMessageTransportFailed {
+        /// Remote identity, authority, and message causality context.
+        remote_message: RemoteMessageTraceContext,
+        /// Transport failure reason.
+        reason: String,
     },
     /// Marks the end of a loop tick.
     LoopTickCompleted {

@@ -25,6 +25,11 @@ transitions, and trace emission documented in
 transport-neutral: no broker, remote transport, distributed delivery guarantee,
 or shared mutable state channel is part of the message object.
 
+0.03-S5 adds a remote wrapper documented in
+[`remote-messaging.md`](remote-messaging.md). The wrapper carries instance,
+work-order, retry, and idempotency metadata but does not change the canonical
+`Message` payload or local `MessageEnvelope` schema.
+
 ## Message
 
 | Field | Rust type | Required | Purpose |
@@ -116,6 +121,9 @@ The canonical schema contains no transport-specific fields such as endpoint URLs
 topics, stream names, connection IDs, node IDs, fleet IDs, or protocol names.
 Later local or remote transports may wrap `MessageEnvelope`; they must not change
 message identity, run scope, causal parent, or payload schema semantics.
+
+`RemoteMessageEnvelope` is such a wrapper. It is the remote transport contract,
+not a replacement for `Message`.
 
 ## Security notes
 

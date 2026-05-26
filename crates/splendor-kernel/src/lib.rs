@@ -26,6 +26,7 @@
 
 mod loop_engine;
 mod message_router;
+mod remote_message_transport;
 mod runtime;
 mod scheduler;
 mod state;
@@ -41,14 +42,20 @@ pub use message_router::{
     AgentMailboxSnapshot, LocalMessageRouter, MessageRouter, MessageRouterConfig,
     MessageRouterError, MessageTraceRecorder,
 };
+pub use remote_message_transport::{
+    send_remote_message, InMemoryRemoteMessageTransport, InMemoryRemoteTransportFault,
+    RemoteMessageReceiver, RemoteMessageTransport, RemoteMessageTransportError,
+};
 pub use runtime::{KernelRuntime, KernelRuntimeConfig};
 pub use scheduler::{Scheduler, SchedulerConfig, SchedulerError, SchedulerStep};
 pub use splendor_types::{
     Action, AgentId, Constraint, ConstraintKind, ConstraintScope, ContentHash, CostEstimate,
     Feedback, HashAlgorithm, Message, MessageDeliveryStatus, MessageEnvelope, MessageId,
     MessageSchemaVersion, MessageTraceContext, MessageTraceLinks, MessageValidationError, Percept,
-    PerceptProvenance, QuotaUsage, Reward, RunId, SideEffectClass, SnapshotId, TenantId,
-    TraceEvent, TraceEventKind, TraceId, VerificationResult,
+    PerceptProvenance, QuotaUsage, RemoteMessageEnvelope, RemoteMessageEnvelopeVersion,
+    RemoteMessageRetryPolicy, RemoteMessageTraceContext, RemoteMessageValidationError, Reward,
+    RunId, SideEffectClass, SnapshotId, TenantId, TraceEvent, TraceEventKind, TraceId,
+    VerificationResult,
 };
 pub use state::{SnapshotPolicy, StateCommit, StateGraph, StateGraphError};
 pub use tenancy::{
