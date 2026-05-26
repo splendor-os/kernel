@@ -36,6 +36,7 @@ mod hash;
 mod ids;
 mod message;
 mod node_registry;
+mod placement;
 mod primitives;
 mod trace;
 mod work_order;
@@ -66,6 +67,12 @@ pub use node_registry::{
     HealthStatus, InstanceHealth, InstanceHeartbeat, InstanceRegistration, ManagementAuditEvent,
     ManagementAuditEventKind, NodeHealth, NodeHeartbeat, NodeKind, NodeRegistration,
     NodeRegistryValidationError, RegistryScope, RuntimeMode,
+};
+pub use placement::{
+    select_placement, DataLocality, PlacementCandidate, PlacementCandidateEvaluation,
+    PlacementDecision, PlacementDecisionStatus, PlacementExecutionMode, PlacementExplain,
+    PlacementRejectionReason, PlacementRequest, PlacementTarget, PlacementTraceAudit,
+    PLACEMENT_DECISION_SCHEMA,
 };
 pub use primitives::{
     Action, Constraint, ConstraintKind, ConstraintScope, CostEstimate, Feedback, Percept,

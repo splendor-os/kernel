@@ -21,12 +21,17 @@
 - `splendorctl run` now rejects missing work-order authority by default;
   legacy local quickstarts must opt into `allow_unsigned_local_run: true` and are
   visibly warned.
+- Added a 0.03-S4 placement v0 contract in Rust for deterministic target-class,
+  capability, data-locality, runtime-version, execution-mode, and
+  dedicated-instance matching with explicit rejection reasons and management
+  trace/audit evidence.
 
 ### Explicitly not included
 
-- No fleet dispatch, placement engine, full PKI/OAuth product, governance
-  approval workflow, remote transport, distributed consensus, central manager, or
-  physical/edge orchestration.
+- No autoscaling, multi-region optimizer, cost optimizer, Kubernetes operator,
+  remote dispatch, full PKI/OAuth product, governance approval workflow, remote
+  transport, distributed consensus, central manager, or physical/edge
+  orchestration.
 
 ## 0.02-dev — Local multi-agent runtime + daemon control
 
