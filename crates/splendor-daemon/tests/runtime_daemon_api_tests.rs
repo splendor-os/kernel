@@ -10,7 +10,7 @@ use splendor_daemon::{
 };
 use splendor_types::{
     Action, AgentId, AuditAttribution, ClientPrincipal, CredentialAudience, EndpointScope, Percept,
-    PerceptProvenance, RevocationStatus, RunId, SideEffectClass, TenantId, TraceEvent,
+    PerceptProvenance, QuotaUsage, RevocationStatus, RunId, SideEffectClass, TenantId, TraceEvent,
     TraceEventKind, WorkOrderAuthorization, WorkOrderSignature,
 };
 use time::OffsetDateTime;
@@ -344,6 +344,50 @@ async fn daemon_run_lifecycle_state_trace_and_replay_are_local_and_ordered() {
 }
 
 #[tokio::test]
+async fn create_run_rejects_incompatible_and_duplicate_work_orders() {
+    let app = router(DaemonState::local_dev());
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+
+    let mut incompatible =
+        create_request(tenant_id.clone(), agent_id.clone(), Vec::new(), Vec::new());
+    incompatible.work_order.agent_id = AgentId::new();
+    let (status, error): (StatusCode, ApiErrorBody) = call_json(
+        app.clone(),
+        Method::POST,
+        "/runs",
+        serde_json::to_value(incompatible).expect("incompatible request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(error.code, "incompatible_work_order");
+
+    let duplicate_run_id = RunId::new();
+    let mut duplicate = create_request(tenant_id, agent_id, Vec::new(), Vec::new());
+    duplicate.work_order.run_id = Some(duplicate_run_id.clone());
+    duplicate.work_order.work_order_id = "wo_duplicate".to_string();
+    let (status, created): (StatusCode, CreateRunResponse) = call_json(
+        app.clone(),
+        Method::POST,
+        "/runs",
+        serde_json::to_value(duplicate.clone()).expect("duplicate request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(created.run_id, duplicate_run_id);
+
+    let (status, error): (StatusCode, ApiErrorBody) = call_json(
+        app,
+        Method::POST,
+        "/runs",
+        serde_json::to_value(duplicate).expect("second duplicate request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(error.code, "run_already_exists");
+}
+
+#[tokio::test]
 async fn action_endpoint_uses_gateway_and_returns_structured_denial() {
     let state = DaemonState::local_dev();
     let app = router(state);
@@ -433,7 +477,7 @@ async fn action_endpoint_uses_gateway_and_returns_structured_denial() {
         app.clone(),
         Method::POST,
         "/actions",
-        serde_json::to_value(submit).expect("submit request"),
+        serde_json::to_value(submit.clone()).expect("submit request"),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -443,6 +487,272 @@ async fn action_endpoint_uses_gateway_and_returns_structured_denial() {
         .reasons
         .iter()
         .any(|reason| reason == "action_not_allowed"));
+}
+
+#[tokio::test]
+async fn daemon_error_paths_cover_state_trace_lifecycle_scope_and_percepts() {
+    let state = DaemonState::local_dev();
+    let app = router(state.clone());
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let (status, created): (StatusCode, CreateRunResponse) = call_json(
+        app.clone(),
+        Method::POST,
+        "/runs",
+        serde_json::to_value(create_request(
+            tenant_id.clone(),
+            agent_id.clone(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .expect("create request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, error): (StatusCode, ApiErrorBody) = call_empty(
+        app.clone(),
+        Method::GET,
+        &format!("/runs/{}/state-head", created.run_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(error.code, "state_head_not_found");
+
+    let (status, error): (StatusCode, ApiErrorBody) = call_empty(
+        app.clone(),
+        Method::GET,
+        &format!("/runs/{}/traces", created.run_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(error.code, "missing_trace_redaction_policy");
+
+    let disallowed = AppendPerceptRequest {
+        credential: None,
+        audit_attribution: Some(attribution()),
+        percept: Some(percept("splendor.percept.disallowed.v1")),
+    };
+    let (status, error): (StatusCode, ApiErrorBody) = call_json(
+        app.clone(),
+        Method::POST,
+        &format!("/runs/{}/percepts", created.run_id),
+        serde_json::to_value(disallowed).expect("disallowed percept"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(error.code, "disallowed_percept");
+
+    let resume = LifecycleRequest {
+        credential: None,
+        work_order: Some(signed_work_order(
+            tenant_id.clone(),
+            agent_id.clone(),
+            Some(created.run_id.clone()),
+            vec![EndpointScope::RunsResume],
+        )),
+        audit_attribution: Some(attribution()),
+        reason: Some("not-paused".to_string()),
+    };
+    let (status, error): (StatusCode, ApiErrorBody) = call_json(
+        app.clone(),
+        Method::POST,
+        &format!("/runs/{}/resume", created.run_id),
+        serde_json::to_value(resume).expect("resume request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(error.code, "invalid_run_state");
+
+    let wrong_scope_submit = SubmitActionRequest {
+        run_id: created.run_id.clone(),
+        tenant_id: TenantId::new(),
+        agent_id: agent_id.clone(),
+        credential: None,
+        audit_attribution: Some(attribution()),
+        causal_trace_id: None,
+        action: action("allowed_action"),
+        adapter: Some("daemon.local".to_string()),
+        quota_usage: None,
+        satisfied_preconditions: Vec::new(),
+    };
+    let (status, error): (StatusCode, ApiErrorBody) = call_json(
+        app.clone(),
+        Method::POST,
+        "/actions",
+        serde_json::to_value(wrong_scope_submit).expect("wrong scope submit"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(error.code, "wrong_scope");
+
+    let lifecycle = LifecycleRequest {
+        credential: None,
+        work_order: None,
+        audit_attribution: Some(attribution()),
+        reason: Some("stop".to_string()),
+    };
+    let (status, stopped): (StatusCode, RunInspectResponse) = call_json(
+        app.clone(),
+        Method::POST,
+        &format!("/runs/{}/stop", created.run_id),
+        serde_json::to_value(&lifecycle).expect("stop request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(stopped.status, RunStatus::Stopped);
+
+    let (status, error): (StatusCode, ApiErrorBody) = call_json(
+        app.clone(),
+        Method::POST,
+        &format!("/runs/{}/start", created.run_id),
+        serde_json::to_value(lifecycle).expect("restart request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(error.code, "invalid_run_state");
+
+    state.set_runtime_available(false);
+    let (status, health): (StatusCode, Value) = call_empty(app, Method::GET, "/health").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(health["status"], "unavailable");
+}
+
+#[tokio::test]
+async fn daemon_executes_allowed_actions_and_pages_trace_ranges() {
+    let app = router(DaemonState::local_dev());
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let mut planned = action("allowed_action");
+    planned.preconditions = vec!["ready".to_string()];
+    let policy_actions = vec![DaemonActionCandidate {
+        action: planned,
+        adapter: Some("daemon.local".to_string()),
+        quota_usage: Some(QuotaUsage {
+            actions: 1,
+            http_requests: 1,
+            ..QuotaUsage::default()
+        }),
+        satisfied_preconditions: vec!["ready".to_string()],
+    }];
+    let mut create = create_request(
+        tenant_id.clone(),
+        agent_id.clone(),
+        policy_actions,
+        Vec::new(),
+    );
+    create.allowed_actions.push("failing_action".to_string());
+    let (status, created): (StatusCode, CreateRunResponse) = call_json(
+        app.clone(),
+        Method::POST,
+        "/runs",
+        serde_json::to_value(create).expect("create request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let lifecycle = LifecycleRequest {
+        credential: None,
+        work_order: None,
+        audit_attribution: Some(attribution()),
+        reason: None,
+    };
+    let (status, tick): (StatusCode, TickResponse) = call_json(
+        app.clone(),
+        Method::POST,
+        &format!("/runs/{}/start", created.run_id),
+        serde_json::to_value(lifecycle).expect("start request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(tick.action_outcomes.len(), 1);
+    assert_eq!(
+        tick.action_outcomes[0].status,
+        splendor_gateway::ActionStatus::Executed
+    );
+
+    let (status, range): (StatusCode, TracePageResponse) = call_empty(
+        app.clone(),
+        Method::GET,
+        &format!(
+            "/runs/{}/traces?start=0&end=2&redaction_policy=none",
+            created.run_id
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!range.records.is_empty());
+    assert!(range.records.len() <= 2);
+    let causal_trace_id = range.records.first().and_then(|record| {
+        serde_json::from_value::<TraceEvent>(record.payload.clone())
+            .ok()
+            .map(|event| event.trace_id)
+    });
+
+    let submit = SubmitActionRequest {
+        run_id: created.run_id,
+        tenant_id,
+        agent_id,
+        credential: None,
+        audit_attribution: Some(attribution()),
+        causal_trace_id,
+        action: action("allowed_action"),
+        adapter: Some("daemon.local".to_string()),
+        quota_usage: Some(QuotaUsage::single_action()),
+        satisfied_preconditions: Vec::new(),
+    };
+    let (status, outcome): (StatusCode, splendor_gateway::ActionOutcome) = call_json(
+        app.clone(),
+        Method::POST,
+        "/actions",
+        serde_json::to_value(submit.clone()).expect("submit request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(outcome.status, splendor_gateway::ActionStatus::Executed);
+
+    let mut failing = action("failing_action");
+    failing.params = json!({"fail_adapter": true});
+    let failed_submit = SubmitActionRequest {
+        run_id: submit.run_id,
+        tenant_id: submit.tenant_id,
+        agent_id: submit.agent_id,
+        credential: None,
+        audit_attribution: Some(attribution()),
+        causal_trace_id: submit.causal_trace_id,
+        action: failing,
+        adapter: Some("daemon.local".to_string()),
+        quota_usage: Some(QuotaUsage::single_action()),
+        satisfied_preconditions: Vec::new(),
+    };
+    let failed_run_id = failed_submit.run_id.clone();
+    let (status, failed): (StatusCode, splendor_gateway::ActionOutcome) = call_json(
+        app.clone(),
+        Method::POST,
+        "/actions",
+        serde_json::to_value(failed_submit).expect("failed submit request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(failed.status, splendor_gateway::ActionStatus::Failed);
+
+    let (status, traces): (StatusCode, TracePageResponse) = call_empty(
+        app,
+        Method::GET,
+        &format!("/runs/{failed_run_id}/traces?redaction_policy=none"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(traces.records.iter().any(|record| {
+        serde_json::from_value::<TraceEvent>(record.payload.clone())
+            .map(|event| matches!(event.kind, TraceEventKind::ActionFailed { .. }))
+            .unwrap_or(false)
+    }));
+    assert!(traces.records.iter().any(|record| {
+        serde_json::from_value::<TraceEvent>(record.payload.clone())
+            .map(|event| matches!(event.kind, TraceEventKind::OutcomeRecorded { .. }))
+            .unwrap_or(false)
+    }));
 }
 
 #[tokio::test]

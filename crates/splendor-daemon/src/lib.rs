@@ -256,6 +256,20 @@ struct RecordingAdapter {
 
 impl ActionAdapter for RecordingAdapter {
     fn execute(&self, action: &ActionRequest) -> Result<AdapterResult, AdapterError> {
+        // Deterministic local recording-adapter failure hook for daemon tests and
+        // examples. Real adapters must implement their own failure semantics
+        // behind the same gateway-mediated boundary.
+        if action
+            .action
+            .params
+            .get("fail_adapter")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Err(AdapterError::Failed(
+                "requested adapter failure".to_string(),
+            ));
+        }
         let execution = self.executions.fetch_add(1, Ordering::SeqCst) + 1;
         Ok(AdapterResult {
             output: serde_json::json!({
@@ -1301,5 +1315,206 @@ pub fn local_percept(schema: impl Into<String>, payload: serde_json::Value) -> P
             detail: None,
         },
         timestamp: OffsetDateTime::now_utc(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use splendor_store::{InMemoryTraceStore, TraceStore};
+
+    #[test]
+    fn helper_error_mappings_and_local_percept_are_stable() {
+        let security_errors = vec![
+            (
+                DaemonSecurityError::AnonymousNonDevCall,
+                "anonymous_non_dev_call",
+            ),
+            (
+                DaemonSecurityError::MissingScope { scope: "scope" },
+                "missing_scope",
+            ),
+            (
+                DaemonSecurityError::WrongCredentialBinding,
+                "wrong_credential_binding",
+            ),
+            (DaemonSecurityError::WrongAudience, "wrong_audience"),
+            (DaemonSecurityError::CredentialExpired, "credential_expired"),
+            (
+                DaemonSecurityError::CredentialRevoked {
+                    reason: "test".to_string(),
+                },
+                "credential_revoked",
+            ),
+            (DaemonSecurityError::MissingWorkOrder, "missing_work_order"),
+            (
+                DaemonSecurityError::UnsignedWorkOrder,
+                "unsigned_work_order",
+            ),
+            (DaemonSecurityError::ExpiredWorkOrder, "expired_work_order"),
+            (
+                DaemonSecurityError::RevokedWorkOrder {
+                    reason: "test".to_string(),
+                },
+                "revoked_work_order",
+            ),
+            (
+                DaemonSecurityError::IncompatibleWorkOrder,
+                "incompatible_work_order",
+            ),
+            (
+                DaemonSecurityError::MissingAuditAttribution,
+                "missing_audit_attribution",
+            ),
+            (
+                DaemonSecurityError::AttributionMismatch,
+                "attribution_mismatch",
+            ),
+            (
+                DaemonSecurityError::InvalidDevModeBinding,
+                "invalid_dev_mode_binding",
+            ),
+            (DaemonSecurityError::DisallowedPercept, "disallowed_percept"),
+            (
+                DaemonSecurityError::MissingTraceRedactionPolicy,
+                "missing_trace_redaction_policy",
+            ),
+            (
+                DaemonSecurityError::ActionMissingTraceLink,
+                "action_missing_trace_link",
+            ),
+            (
+                DaemonSecurityError::ActionGatewayBypassed,
+                "action_gateway_bypassed",
+            ),
+            (
+                DaemonSecurityError::ClientInsecureFallback,
+                "client_insecure_fallback",
+            ),
+        ];
+        for (error, code) in security_errors {
+            assert_eq!(daemon_security_code(&error), code);
+        }
+
+        let scheduler_error = ApiError::from(SchedulerError::NoAgents);
+        assert_eq!(scheduler_error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(scheduler_error.body.code, "scheduler_error");
+
+        let run_not_found = trace_error(TraceStoreError::RunNotFound);
+        assert_eq!(run_not_found.status, StatusCode::NOT_FOUND);
+        assert_eq!(run_not_found.body.code, "invalid_run");
+        let trace_store_error = trace_error(TraceStoreError::Poisoned);
+        assert_eq!(trace_store_error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(trace_store_error.body.code, "trace_store_error");
+
+        let percept = local_percept("splendor.percept.test.v1", serde_json::json!({"ok": true}));
+        assert_eq!(percept.schema, "splendor.percept.test.v1");
+        assert_eq!(percept.provenance.source, "daemon-client-local");
+    }
+
+    #[test]
+    fn trace_order_validation_accepts_contiguous_run_records_and_rejects_mismatch() {
+        let run_id = RunId::new();
+        let store = InMemoryTraceStore::default();
+        store
+            .append(&run_id.to_string(), serde_json::json!({"event": 1}))
+            .expect("append first");
+        store
+            .append(&run_id.to_string(), serde_json::json!({"event": 2}))
+            .expect("append second");
+        let records = store.read(&run_id.to_string()).expect("read records");
+        validate_trace_order(&records, &run_id).expect("contiguous order");
+
+        let wrong_run = RunId::new();
+        let error = validate_trace_order(&records, &wrong_run).expect_err("wrong run denied");
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        assert_eq!(error.body.code, "trace_order_invalid");
+    }
+
+    #[test]
+    fn registration_defaults_and_trace_recording_fail_closed_paths_are_stable() {
+        let tenant_id = TenantId::new();
+        let agent_id = splendor_types::AgentId::new();
+        let request = CreateRunRequest {
+            tenant_id: tenant_id.clone(),
+            agent_id: agent_id.clone(),
+            work_order: WorkOrderAuthorization {
+                work_order_id: "wo_unit".to_string(),
+                tenant_id: tenant_id.clone(),
+                agent_id: agent_id.clone(),
+                run_id: None,
+                allowed_scopes: vec![splendor_types::EndpointScope::RunsCreate],
+                signature: Some(splendor_types::WorkOrderSignature {
+                    key_id: "key".to_string(),
+                    signature: "sig".to_string(),
+                }),
+                expires_at: OffsetDateTime::now_utc() + time::Duration::hours(1),
+                revocation: splendor_types::RevocationStatus::Active,
+            },
+            credential: None,
+            audit_attribution: None,
+            allowed_actions: Vec::new(),
+            allowed_adapters: Vec::new(),
+            allowed_permissions: Vec::new(),
+            policy_actions: vec![DaemonActionCandidate {
+                action: Action {
+                    name: "policy_only".to_string(),
+                    params: serde_json::json!({}),
+                    side_effect_class: splendor_types::SideEffectClass::External,
+                    cost_estimate: None,
+                    required_permissions: Vec::new(),
+                    preconditions: Vec::new(),
+                    postconditions: Vec::new(),
+                },
+                adapter: None,
+                quota_usage: None,
+                satisfied_preconditions: Vec::new(),
+            }],
+            registered_actions: Vec::new(),
+            allowed_percept_schemas: Vec::new(),
+            allowed_percept_sources: Vec::new(),
+            initial_state: None,
+            snapshot_interval: None,
+        };
+        let registrations = registrations_for_request(&request);
+        assert_eq!(registrations.len(), 1);
+        assert_eq!(registrations[0].name, "policy_only");
+        assert_eq!(registrations[0].adapter, "daemon.local");
+
+        let lock = lock_error();
+        assert_eq!(lock.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(lock.body.code, "runtime_lock_error");
+
+        let slot = RunSlot {
+            run_id: RunId::new(),
+            tenant_id,
+            agent_id: agent_id.clone(),
+            status: RunStatus::Created,
+            scheduler: Scheduler::new(SchedulerConfig::default()),
+            state_store: Arc::new(InMemoryStateStore::default()),
+            trace_store: Arc::new(InMemoryTraceStore::default()),
+            gateway: Arc::new(splendor_gateway::UnimplementedGateway),
+            percept_queue: PerceptQueue::default(),
+            allowed_percept_schemas: Vec::new(),
+            allowed_percept_sources: Vec::new(),
+            state_head: None,
+            adapter_executions: Arc::new(AtomicU64::new(0)),
+            tick_count: 0,
+            created_at: OffsetDateTime::now_utc(),
+            updated_at: OffsetDateTime::now_utc(),
+        };
+        let response = inspect_response(&slot);
+        assert_eq!(response.agent_id, agent_id);
+        assert!(response.state_head.is_none());
+
+        let error = record_run_event(
+            &slot,
+            TraceEventKind::RunStopped {
+                reason: Some("unit".to_string()),
+            },
+        )
+        .expect_err("empty scheduler cannot record agent event");
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(error.body.code, "trace_error");
     }
 }

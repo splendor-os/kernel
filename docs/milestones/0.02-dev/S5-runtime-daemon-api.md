@@ -91,6 +91,9 @@ verifiers, adapter, outcome, state commit, and trace.
 | --- | --- | --- |
 | `daemon_run_lifecycle_state_trace_and_replay_are_local_and_ordered` | End-to-end create/start/pause/resume/stop/inspect, percept ingestion, state-head, ordered traces, replay suppression | `cargo test -p splendor-daemon` |
 | `action_endpoint_uses_gateway_and_returns_structured_denial` | Proves `/actions` routes through gateway and returns denied action outcome | `cargo test -p splendor-daemon` |
+| `create_run_rejects_incompatible_and_duplicate_work_orders` | Work-order compatibility and duplicate local run rejection | `cargo test -p splendor-daemon` |
+| `daemon_error_paths_cover_state_trace_lifecycle_scope_and_percepts` | State-head, trace redaction, percept allowlist, lifecycle, wrong-scope, and health error paths | `cargo test -p splendor-daemon` |
+| `daemon_executes_allowed_actions_and_pages_trace_ranges` | Allowed action execution through the gateway and trace range reads | `cargo test -p splendor-daemon` |
 | `structured_errors_cover_invalid_run_malformed_percept_and_unavailable_runtime` | Required structured error cases | `cargo test -p splendor-daemon` |
 | `state_store_commits_and_snapshots` / `sqlite_store_persists_state` | `StateStore::get_node` in memory and SQLite | `cargo test --workspace` |
 
