@@ -15,6 +15,9 @@
   request/response messages, parent/child run metadata, explicit delegated
   authority, local child-run trace events, structured child failures, parent
   cancellation denial, and inspect-only delegation replay reconstruction.
+- Hardened 0.02-S4 local delegation with duplicate child-run ID rejection and
+  terminal child completion/failure guards that avoid duplicate response messages
+  or terminal traces.
 
 ### Explicitly not included
 

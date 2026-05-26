@@ -133,6 +133,10 @@ fn delegation_request(
     request
 }
 
+fn count_events(events: &[TraceEvent], predicate: impl Fn(&TraceEventKind) -> bool) -> usize {
+    events.iter().filter(|event| predicate(&event.kind)).count()
+}
+
 #[test]
 fn parent_creates_child_with_explicit_target_objective_and_trace_links() {
     let (manager, parent, child, parent_run_id, child_run_id) = setup_manager();
@@ -208,6 +212,81 @@ fn delegated_scope_cannot_exceed_parent_or_target_authority() {
         error,
         LocalDelegationError::DelegatedAuthorityDenied { scope: "target" }
     ));
+}
+
+#[test]
+fn duplicate_child_run_id_is_rejected_before_task_message_or_state_mutation() {
+    let (manager, parent, child, parent_run_id, child_run_id) = setup_manager();
+    let (parent_runtime, parent_events) = runtime_for(parent_run_id.clone());
+    let (child_runtime, _child_events) = runtime_for(child_run_id.clone());
+    manager
+        .create_child_run(
+            &parent_runtime,
+            &child_runtime,
+            delegation_request(&parent, &child, parent_run_id.clone(), child_run_id.clone()),
+        )
+        .expect("first child run created");
+
+    let parent_outbox_len = manager
+        .router()
+        .outbox(&parent.agent_id, &parent_run_id)
+        .expect("parent outbox")
+        .len();
+    let child_inbox_len = manager
+        .router()
+        .inbox(&child.agent_id, &parent_run_id)
+        .expect("child inbox")
+        .len();
+    let (duplicate_child_runtime, duplicate_child_events) = runtime_for(child_run_id.clone());
+    let error = manager
+        .create_child_run(
+            &parent_runtime,
+            &duplicate_child_runtime,
+            delegation_request(&parent, &child, parent_run_id.clone(), child_run_id.clone()),
+        )
+        .expect_err("duplicate child run ID rejected");
+
+    assert!(matches!(error, LocalDelegationError::DuplicateChildRun(id) if id == child_run_id));
+    assert_eq!(
+        manager
+            .run(&parent_run_id)
+            .expect("parent record")
+            .child_run_ids,
+        vec![child_run_id]
+    );
+    assert_eq!(
+        manager
+            .router()
+            .outbox(&parent.agent_id, &parent_run_id)
+            .expect("parent outbox after duplicate")
+            .len(),
+        parent_outbox_len
+    );
+    assert_eq!(
+        manager
+            .router()
+            .inbox(&child.agent_id, &parent_run_id)
+            .expect("child inbox after duplicate")
+            .len(),
+        child_inbox_len
+    );
+    assert!(duplicate_child_events
+        .lock()
+        .expect("duplicate child events")
+        .is_empty());
+
+    let parent_events = parent_events.lock().expect("parent events");
+    assert_eq!(
+        count_events(&parent_events, |kind| matches!(
+            kind,
+            TraceEventKind::DelegationRequested { .. }
+        )),
+        1
+    );
+    assert!(parent_events.iter().any(|event| matches!(
+        &event.kind,
+        TraceEventKind::DelegationRejected { reason, .. } if reason == "duplicate_child_run_id"
+    )));
 }
 
 #[test]
@@ -410,6 +489,207 @@ fn completed_child_run_returns_response_and_parent_completion_trace() {
         .expect("child events")
         .iter()
         .any(|event| matches!(event.kind, TraceEventKind::ChildRunCompleted { .. })));
+}
+
+#[test]
+fn repeated_child_completion_is_rejected_without_duplicate_response() {
+    let (manager, parent, child, parent_run_id, child_run_id) = setup_manager();
+    let (parent_runtime, parent_events) = runtime_for(parent_run_id.clone());
+    let (child_runtime, child_events) = runtime_for(child_run_id.clone());
+    manager
+        .create_child_run(
+            &parent_runtime,
+            &child_runtime,
+            delegation_request(&parent, &child, parent_run_id.clone(), child_run_id.clone()),
+        )
+        .expect("child run created");
+
+    manager
+        .complete_child_run(
+            &parent_runtime,
+            &child_runtime,
+            &child_run_id,
+            serde_json::json!({"summary_ref": "artifact:summary"}),
+        )
+        .expect("first child completion succeeds");
+    let parent_events_len = parent_events.lock().expect("parent events").len();
+    let child_events_len = child_events.lock().expect("child events").len();
+    let response_outbox_len = manager
+        .router()
+        .outbox(&child.agent_id, &parent_run_id)
+        .expect("child response outbox")
+        .len();
+
+    let error = manager
+        .complete_child_run(
+            &parent_runtime,
+            &child_runtime,
+            &child_run_id,
+            serde_json::json!({"summary_ref": "artifact:duplicate"}),
+        )
+        .expect_err("second completion rejected");
+    assert!(matches!(
+        error,
+        LocalDelegationError::ChildRunAlreadyFinished {
+            status: LocalRunStatus::Completed,
+            ..
+        }
+    ));
+    assert_eq!(
+        parent_events.lock().expect("parent events").len(),
+        parent_events_len
+    );
+    assert_eq!(
+        child_events.lock().expect("child events").len(),
+        child_events_len
+    );
+    assert_eq!(
+        manager
+            .router()
+            .outbox(&child.agent_id, &parent_run_id)
+            .expect("child response outbox after duplicate")
+            .len(),
+        response_outbox_len
+    );
+}
+
+#[test]
+fn repeated_child_failure_is_rejected_without_duplicate_failure_trace() {
+    let (manager, parent, child, parent_run_id, child_run_id) = setup_manager();
+    let (parent_runtime, parent_events) = runtime_for(parent_run_id.clone());
+    let (child_runtime, child_events) = runtime_for(child_run_id.clone());
+    manager
+        .create_child_run(
+            &parent_runtime,
+            &child_runtime,
+            delegation_request(&parent, &child, parent_run_id.clone(), child_run_id.clone()),
+        )
+        .expect("child run created");
+
+    manager
+        .fail_child_run(
+            &parent_runtime,
+            &child_runtime,
+            &child_run_id,
+            TaskFailure::new("specialist_failed", "specialist failed", false),
+        )
+        .expect("first child failure succeeds");
+    let parent_failure_count =
+        count_events(&parent_events.lock().expect("parent events"), |kind| {
+            matches!(kind, TraceEventKind::ChildRunFailed { .. })
+        });
+    let child_failure_count = count_events(&child_events.lock().expect("child events"), |kind| {
+        matches!(kind, TraceEventKind::ChildRunFailed { .. })
+    });
+    let response_outbox_len = manager
+        .router()
+        .outbox(&child.agent_id, &parent_run_id)
+        .expect("child response outbox")
+        .len();
+
+    let error = manager
+        .fail_child_run(
+            &parent_runtime,
+            &child_runtime,
+            &child_run_id,
+            TaskFailure::new("second_failure", "second failure", false),
+        )
+        .expect_err("second failure rejected");
+    assert!(matches!(
+        error,
+        LocalDelegationError::ChildRunAlreadyFinished {
+            status: LocalRunStatus::Failed,
+            ..
+        }
+    ));
+    assert_eq!(
+        count_events(
+            &parent_events.lock().expect("parent events"),
+            |kind| matches!(kind, TraceEventKind::ChildRunFailed { .. })
+        ),
+        parent_failure_count
+    );
+    assert_eq!(
+        count_events(
+            &child_events.lock().expect("child events"),
+            |kind| matches!(kind, TraceEventKind::ChildRunFailed { .. })
+        ),
+        child_failure_count
+    );
+    assert_eq!(
+        manager
+            .router()
+            .outbox(&child.agent_id, &parent_run_id)
+            .expect("child response outbox after duplicate")
+            .len(),
+        response_outbox_len
+    );
+}
+
+#[test]
+fn child_failure_after_completion_is_rejected_without_failure_trace() {
+    let (manager, parent, child, parent_run_id, child_run_id) = setup_manager();
+    let (parent_runtime, parent_events) = runtime_for(parent_run_id.clone());
+    let (child_runtime, child_events) = runtime_for(child_run_id.clone());
+    manager
+        .create_child_run(
+            &parent_runtime,
+            &child_runtime,
+            delegation_request(&parent, &child, parent_run_id.clone(), child_run_id.clone()),
+        )
+        .expect("child run created");
+    manager
+        .complete_child_run(
+            &parent_runtime,
+            &child_runtime,
+            &child_run_id,
+            serde_json::json!({"summary_ref": "artifact:summary"}),
+        )
+        .expect("child completion succeeds");
+
+    let response_outbox_len = manager
+        .router()
+        .outbox(&child.agent_id, &parent_run_id)
+        .expect("child response outbox")
+        .len();
+    let error = manager
+        .fail_child_run(
+            &parent_runtime,
+            &child_runtime,
+            &child_run_id,
+            TaskFailure::new("late_failure", "late failure", false),
+        )
+        .expect_err("failure after completion rejected");
+
+    assert!(matches!(
+        error,
+        LocalDelegationError::ChildRunAlreadyFinished {
+            status: LocalRunStatus::Completed,
+            ..
+        }
+    ));
+    assert_eq!(
+        count_events(
+            &parent_events.lock().expect("parent events"),
+            |kind| matches!(kind, TraceEventKind::ChildRunFailed { .. })
+        ),
+        0
+    );
+    assert_eq!(
+        count_events(
+            &child_events.lock().expect("child events"),
+            |kind| matches!(kind, TraceEventKind::ChildRunFailed { .. })
+        ),
+        0
+    );
+    assert_eq!(
+        manager
+            .router()
+            .outbox(&child.agent_id, &parent_run_id)
+            .expect("child response outbox after late failure")
+            .len(),
+        response_outbox_len
+    );
 }
 
 #[test]

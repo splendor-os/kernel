@@ -91,6 +91,9 @@ gateway submission.
 6. The child completes or fails through `complete_child_run` or `fail_child_run`,
    which sends a structured task response and emits parent/child completion or
    failure trace events.
+7. Completion, failure, denial, and cancellation are terminal for the child run;
+   repeated finish attempts fail closed without emitting duplicate responses or
+   duplicate completion/failure trace events.
 
 ## Trace events
 
@@ -136,11 +139,16 @@ does not invoke policies, gateways, adapters, or child runs.
 - Missing or mismatched target/objective: structured message validation failure.
 - Delegated authority exceeds parent or target scope: `DelegationRejected` and no
   child run.
+- Duplicate `child_run_id`: `DelegationRejected` with
+  `duplicate_child_run_id`; no second task request, child state, or child-start
+  trace.
 - Delegated child action omits an adapter: `ActionDenied` with
   `delegated_adapter_unspecified`; no gateway call.
 - Parent run cancelled: `DelegationRejected` and no task request message.
 - Child failure: `TaskResponse { status: failed, failure: TaskFailure }` plus
   `ChildRunFailed` trace events.
+- Repeated completion/failure after a terminal child status:
+  `ChildRunAlreadyFinished`; no duplicate response message or terminal trace.
 
 ## Compatibility notes
 

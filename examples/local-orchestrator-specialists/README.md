@@ -112,5 +112,9 @@ adapters.
   adapter omission fails closed before gateway submission.
 - Parent cancellation rejects new child delegation and records
   `DelegationRejected`.
+- Child run IDs are single-use within the local manager; duplicate child IDs are
+  rejected before a second task request is routed.
+- Child completion/failure is terminal; repeated finish attempts are rejected
+  without duplicate response messages or terminal traces.
 - Remote dispatch, signed work orders, fleet placement, and long-lived child
   services are out of scope for this example.

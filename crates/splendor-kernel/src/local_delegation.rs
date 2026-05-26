@@ -34,6 +34,15 @@ pub enum LocalRunStatus {
     Denied,
 }
 
+impl LocalRunStatus {
+    fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Cancelled | Self::Denied
+        )
+    }
+}
+
 /// Registered agent boundary used for local delegation admission checks.
 #[derive(Clone, Debug)]
 pub struct LocalAgentRegistration {
@@ -162,6 +171,17 @@ pub enum LocalDelegationError {
     /// Child run was not registered.
     #[error("child run {0} is not registered")]
     UnknownChildRun(RunId),
+    /// Child run ID was already registered.
+    #[error("child run {0} is already registered")]
+    DuplicateChildRun(RunId),
+    /// Child run was already completed, failed, denied, or cancelled.
+    #[error("child run {child_run_id} is already finished with status {status:?}")]
+    ChildRunAlreadyFinished {
+        /// Child run that already reached a terminal status.
+        child_run_id: RunId,
+        /// Current terminal status.
+        status: LocalRunStatus,
+    },
     /// Agent was not registered.
     #[error("agent {0} is not registered for local delegation")]
     UnknownAgent(AgentId),
@@ -282,7 +302,7 @@ impl LocalDelegationManager {
         ensure_recorder_run(child_recorder, &request.child_run_id)?;
         let mut trace_context = request.trace_context();
 
-        let (parent_run, target_agent) = {
+        let (parent_run, target_agent, duplicate_child_run) = {
             let state = self.lock_state()?;
             let parent_run = state
                 .runs
@@ -298,7 +318,8 @@ impl LocalDelegationManager {
                 .ok_or_else(|| {
                     LocalDelegationError::UnknownAgent(request.target_agent_id.clone())
                 })?;
-            (parent_run, target_agent)
+            let duplicate_child_run = state.runs.contains_key(&request.child_run_id);
+            (parent_run, target_agent, duplicate_child_run)
         };
 
         if parent_run.status == LocalRunStatus::Cancelled {
@@ -308,6 +329,15 @@ impl LocalDelegationManager {
                 reason,
             })?;
             return Err(LocalDelegationError::ParentCancelled(request.parent_run_id));
+        }
+        if duplicate_child_run {
+            parent_recorder.record_message_event(TraceEventKind::DelegationRejected {
+                delegation: trace_context,
+                reason: "duplicate_child_run_id".to_string(),
+            })?;
+            return Err(LocalDelegationError::DuplicateChildRun(
+                request.child_run_id,
+            ));
         }
         if parent_run.agent_id != request.source_agent_id {
             return Err(LocalDelegationError::SourceAgentMismatch);
@@ -491,6 +521,7 @@ impl LocalDelegationManager {
         output: Option<serde_json::Value>,
         failure: Option<TaskFailure>,
     ) -> Result<LocalTaskResponse, LocalDelegationError> {
+        let _lifecycle = self.lock_lifecycle()?;
         ensure_recorder_run(child_recorder, child_run_id)?;
         let (child, parent) =
             {
@@ -499,6 +530,12 @@ impl LocalDelegationManager {
                     state.runs.get(child_run_id).cloned().ok_or_else(|| {
                         LocalDelegationError::UnknownChildRun(child_run_id.clone())
                     })?;
+                if child.status.is_terminal() || child.response_message_id.is_some() {
+                    return Err(LocalDelegationError::ChildRunAlreadyFinished {
+                        child_run_id: child_run_id.clone(),
+                        status: child.status,
+                    });
+                }
                 let parent_run_id = child
                     .parent_run_id
                     .clone()
