@@ -1,5 +1,5 @@
 import { SplendorClient } from "@splendor/client";
-import type { AuditAttribution, Percept, RunConfig, WorkOrderAuthorization } from "@splendor/types";
+import type { AuditAttribution, CreateRunRequest, LifecycleRequest, Percept, WorkOrderAuthorization } from "@splendor/types";
 
 const tenantId = "00000000-0000-0000-0000-000000000001";
 const agentId = "00000000-0000-0000-0000-000000000002";
@@ -25,11 +25,28 @@ const workOrder: WorkOrderAuthorization = {
   revocation: "active"
 };
 
-const runConfig: RunConfig = {
-  trace_db: "./data/trace.db",
-  state_db: "./data/state.db",
-  tenants: [{ id: tenantId, allowed_actions: [], allowed_adapters: [], allowed_permissions: [] }],
-  agents: [{ id: agentId, tenant_id: tenantId, policy: { type: "static", actions: [] } }]
+const createRunRequest: CreateRunRequest = {
+  tenant_id: tenantId,
+  agent_id: agentId,
+  work_order: workOrder,
+  credential: null,
+  audit_attribution: audit,
+  allowed_actions: [],
+  allowed_adapters: ["daemon.local"],
+  allowed_permissions: [],
+  policy_actions: [],
+  registered_actions: [],
+  allowed_percept_schemas: ["splendor.percept.example.v1"],
+  allowed_percept_sources: ["typescript-example"],
+  initial_state: { example: true },
+  snapshot_interval: 1
+};
+
+const lifecycle: LifecycleRequest = {
+  credential: null,
+  work_order: null,
+  audit_attribution: audit,
+  reason: "typescript daemon client example"
 };
 
 const percept: Percept = {
@@ -45,15 +62,16 @@ if (!token) {
 }
 
 const client = new SplendorClient({
-  baseUrl: process.env.SPLENDOR_DAEMON_URL ?? "http://127.0.0.1:7347",
+  baseUrl: process.env.SPLENDOR_DAEMON_URL ?? "http://127.0.0.1:8077",
   token,
   defaultAudit: audit
 });
 
-const created = await client.createRun(runConfig, { workOrder });
-await client.appendPercept(created.run_id, agentId, percept, { tenantId });
+const created = await client.createRun(createRunRequest);
+await client.appendPercept(created.run_id, percept);
+const tick = await client.startRun(created.run_id, lifecycle);
 const traces = await client.readTraces(created.run_id, { redactionPolicy: "tenant-default" });
 const stateHead = await client.getStateHead(created.run_id);
 const replay = await client.requestReplay(created.run_id);
 
-console.log({ run: created, traces: traces.length, stateHead, replay });
+console.log({ run: created, tick, traces: traces.length, stateHead, replay });

@@ -1,23 +1,29 @@
 import type {
-  AgentId,
+  ActionOutcome,
   AppendPerceptResponse,
   AuditAttribution,
+  CapabilitiesResponse,
+  CallerCredential,
+  CreateRunRequest,
   CreateRunResponse,
+  HealthResponse,
+  LifecycleRequest,
   Percept,
-  ReplayRequest,
   ReplayResponse,
-  RunConfig,
+  RunInspectResponse,
   RunId,
   StateHead,
-  TenantId,
-  TraceEvent,
+  SubmitActionRequest,
+  TickResponse,
+  TracePageResponse,
+  TraceRecord,
   WorkOrderAuthorization
 } from "@splendor/types";
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export interface SplendorClientOptions {
-  /** Runtime daemon base URL, for example `http://127.0.0.1:7347`. */
+  /** Runtime daemon base URL, for example `http://127.0.0.1:8077`. */
   baseUrl: string;
   /** Caller bearer token. The client never silently falls back to anonymous calls. */
   token: string;
@@ -27,26 +33,25 @@ export interface SplendorClientOptions {
   apiVersion?: string;
   /** Optional default audit attribution for mutating calls. */
   defaultAudit?: AuditAttribution;
-}
-
-export interface CreateRunOptions {
-  workOrder: WorkOrderAuthorization;
-  audit?: AuditAttribution;
+  /** Optional default caller credential serialized into daemon request bodies. */
+  defaultCredential?: CallerCredential | null;
 }
 
 export interface AppendPerceptOptions {
-  tenantId?: TenantId;
+  credential?: CallerCredential | null;
   audit?: AuditAttribution;
 }
 
 export interface ReadTracesOptions {
   /** Required by the daemon security boundary before raw trace data is exposed. */
   redactionPolicy: string;
-  afterSequence?: number;
-  limit?: number;
+  start?: number;
+  end?: number;
 }
 
-export interface RequestReplayOptions extends ReplayRequest {}
+export interface RequestReplayOptions {
+  credential?: CallerCredential | null;
+}
 
 export interface DaemonErrorPayload {
   code?: string;
@@ -91,6 +96,7 @@ export class SplendorClient {
   private readonly fetcher: FetchLike;
   private readonly apiVersion: string;
   private readonly defaultAudit?: AuditAttribution;
+  private readonly defaultCredential?: CallerCredential | null;
 
   constructor(options: SplendorClientOptions) {
     if (!options.baseUrl.trim()) {
@@ -107,57 +113,77 @@ export class SplendorClient {
     }
     this.apiVersion = options.apiVersion ?? "0.02-dev";
     this.defaultAudit = options.defaultAudit;
+    this.defaultCredential = options.defaultCredential;
   }
 
-  async createRun(config: RunConfig, options: CreateRunOptions): Promise<CreateRunResponse> {
-    if (!options?.workOrder) {
+  async createRun(request: CreateRunRequest): Promise<CreateRunResponse> {
+    if (!request?.work_order) {
       throw new TypeError("createRun requires a signed, scoped work order authorization");
     }
-    this.validateCreateRunWorkOrder(options.workOrder);
-    const audit = this.requireAudit(options.audit);
+    this.validateCreateRunWorkOrder(request.work_order);
+    if (!request.audit_attribution) {
+      throw new TypeError("mutating daemon calls require audit attribution");
+    }
     return this.request<CreateRunResponse>("POST", "runs", {
-      body: {
-        run_config: config,
-        work_order: options.workOrder,
-        audit
-      }
+      body: request
     });
+  }
+
+  async inspectRun(runId: RunId): Promise<RunInspectResponse> {
+    return this.request<RunInspectResponse>("GET", `runs/${encodeURIComponent(runId)}`);
+  }
+
+  async startRun(runId: RunId, request: LifecycleRequest): Promise<TickResponse> {
+    return this.lifecycle<TickResponse>(runId, "start", request);
+  }
+
+  async pauseRun(runId: RunId, request: LifecycleRequest): Promise<RunInspectResponse> {
+    return this.lifecycle<RunInspectResponse>(runId, "pause", request);
+  }
+
+  async resumeRun(runId: RunId, request: LifecycleRequest): Promise<TickResponse> {
+    return this.lifecycle<TickResponse>(runId, "resume", request);
+  }
+
+  async stopRun(runId: RunId, request: LifecycleRequest): Promise<RunInspectResponse> {
+    return this.lifecycle<RunInspectResponse>(runId, "stop", request);
   }
 
   async appendPercept(
     runId: RunId,
-    agentId: AgentId,
     percept: Percept,
     options: AppendPerceptOptions = {}
   ): Promise<AppendPerceptResponse> {
     const audit = this.requireAudit(options.audit);
     return this.request<AppendPerceptResponse>("POST", `runs/${encodeURIComponent(runId)}/percepts`, {
       body: {
-        agent_id: agentId,
+        credential: options.credential ?? this.defaultCredential ?? null,
+        audit_attribution: audit,
         percept,
-        tenant_id: options.tenantId,
-        audit
       }
     });
   }
 
-  async readTraces(runId: RunId, options: ReadTracesOptions): Promise<TraceEvent[]> {
+  async readTracePage(runId: RunId, options: ReadTracesOptions): Promise<TracePageResponse> {
     if (!options?.redactionPolicy.trim()) {
       throw new TypeError("readTraces requires an explicit redactionPolicy");
     }
-    const payload = await this.request<TraceEvent[] | { events: TraceEvent[] }>("GET", `runs/${encodeURIComponent(runId)}/traces`, {
+    return this.request<TracePageResponse>("GET", `runs/${encodeURIComponent(runId)}/traces`, {
       query: {
         redaction_policy: options.redactionPolicy,
-        after_sequence: options.afterSequence,
-        limit: options.limit
+        start: options.start,
+        end: options.end
       }
     });
-    return Array.isArray(payload) ? payload : payload.events;
   }
 
-  async *streamTraces(runId: RunId, options: ReadTracesOptions): AsyncIterable<TraceEvent> {
-    for (const event of await this.readTraces(runId, options)) {
-      yield event;
+  async readTraces(runId: RunId, options: ReadTracesOptions): Promise<TraceRecord[]> {
+    return (await this.readTracePage(runId, options)).records;
+  }
+
+  async *streamTraces(runId: RunId, options: ReadTracesOptions): AsyncIterable<TraceRecord> {
+    for (const record of await this.readTraces(runId, options)) {
+      yield record;
     }
   }
 
@@ -168,9 +194,38 @@ export class SplendorClient {
   async requestReplay(runId: RunId, options: RequestReplayOptions = {}): Promise<ReplayResponse> {
     return this.request<ReplayResponse>("POST", `runs/${encodeURIComponent(runId)}/replay`, {
       body: {
-        mode: options.mode ?? "inspect_only",
-        from_snapshot: options.from_snapshot ?? null,
-        include_state: options.include_state ?? false
+        credential: options.credential ?? this.defaultCredential ?? null
+      }
+    });
+  }
+
+  async submitAction(request: SubmitActionRequest): Promise<ActionOutcome> {
+    if (!request.causal_trace_id) {
+      throw new TypeError("submitAction requires causal_trace_id trace linkage");
+    }
+    return this.request<ActionOutcome>("POST", "actions", {
+      body: {
+        ...request,
+        credential: request.credential ?? this.defaultCredential ?? null,
+        audit_attribution: request.audit_attribution ?? this.requireAudit()
+      }
+    });
+  }
+
+  async getHealth(): Promise<HealthResponse> {
+    return this.request<HealthResponse>("GET", "health");
+  }
+
+  async getCapabilities(): Promise<CapabilitiesResponse> {
+    return this.request<CapabilitiesResponse>("GET", "capabilities");
+  }
+
+  private lifecycle<T>(runId: RunId, action: "start" | "pause" | "resume" | "stop", request: LifecycleRequest): Promise<T> {
+    return this.request<T>("POST", `runs/${encodeURIComponent(runId)}/${action}`, {
+      body: {
+        ...request,
+        credential: request.credential ?? this.defaultCredential ?? null,
+        audit_attribution: request.audit_attribution ?? this.requireAudit()
       }
     });
   }

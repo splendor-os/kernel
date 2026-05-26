@@ -305,6 +305,31 @@ async fn daemon_run_lifecycle_state_trace_and_replay_are_local_and_ordered() {
             .map(|event| matches!(event.kind, TraceEventKind::PerceptsAppended { .. }))
             .unwrap_or(false)
     });
+    let audit_endpoints = traces
+        .records
+        .iter()
+        .filter_map(|record| serde_json::from_value::<TraceEvent>(record.payload.clone()).ok())
+        .filter_map(|event| match event.kind {
+            TraceEventKind::DaemonAudit { endpoint, audit } => {
+                assert_eq!(audit.principal, principal());
+                Some(endpoint)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for required in [
+        "splendor.runs.create",
+        "splendor.percepts.append",
+        "splendor.runs.start",
+        "splendor.runs.pause",
+        "splendor.runs.resume",
+        "splendor.runs.stop",
+    ] {
+        assert!(
+            audit_endpoints.iter().any(|endpoint| endpoint == required),
+            "missing audit endpoint {required}"
+        );
+    }
     let saw_received = traces.records.iter().any(|record| {
         serde_json::from_value::<TraceEvent>(record.payload.clone())
             .map(|event| {
@@ -487,6 +512,28 @@ async fn action_endpoint_uses_gateway_and_returns_structured_denial() {
         .reasons
         .iter()
         .any(|reason| reason == "action_not_allowed"));
+    let (status, traces): (StatusCode, TracePageResponse) = call_empty(
+        app,
+        Method::GET,
+        &format!("/runs/{}/traces?redaction_policy=none", created.run_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let saw_action_audit = traces.records.iter().any(|record| {
+        serde_json::from_value::<TraceEvent>(record.payload.clone())
+            .map(|event| {
+                matches!(
+                    event.kind,
+                    TraceEventKind::DaemonAudit { ref endpoint, ref audit }
+                        if endpoint == "splendor.actions.submit" && audit.principal == principal()
+                )
+            })
+            .unwrap_or(false)
+    });
+    assert!(
+        saw_action_audit,
+        "action submit must persist caller attribution"
+    );
 }
 
 #[tokio::test]

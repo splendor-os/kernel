@@ -103,11 +103,16 @@ are returned in monotonic sequence order. Range reads use `start` inclusive and
 Lifecycle and daemon-specific events added for 0.02-S5:
 
 ```text
+DaemonAudit
 RunPaused
 RunResumed
 RunStopped
 PerceptsAppended
 ```
+
+`DaemonAudit { endpoint, audit }` is emitted for accepted mutating daemon calls
+after S0 security validation and before the runtime mutation, preserving caller
+identity and credential attribution in the run trace.
 
 Action submissions through `/actions` emit normal action trace events:
 

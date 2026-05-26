@@ -938,6 +938,7 @@ fn event_kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::RunResumed { .. } => "RunResumed",
         TraceEventKind::RunStopped { .. } => "RunStopped",
         TraceEventKind::PerceptsAppended { .. } => "PerceptsAppended",
+        TraceEventKind::DaemonAudit { .. } => "DaemonAudit",
         TraceEventKind::LoopTickStarted { .. } => "LoopTickStarted",
         TraceEventKind::PerceptsReceived { .. } => "PerceptsReceived",
         TraceEventKind::StateLoaded { .. } => "StateLoaded",

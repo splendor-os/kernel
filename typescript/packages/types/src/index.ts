@@ -134,6 +134,15 @@ export interface MessageTraceContext {
   causal_parent: TraceId | null;
 }
 
+export interface TraceRecord {
+  run_id: string;
+  sequence: number;
+  payload: JsonValue;
+  recorded_at: ISODateTime;
+  event_hash: ContentHash;
+  prev_event_hash: ContentHash | null;
+}
+
 export interface LocalDelegationTraceContext {
   parent_run_id: RunId;
   child_run_id: RunId;
@@ -163,6 +172,7 @@ export type TraceEventKind =
   | { RunResumed: { reason: string | null } }
   | { RunStopped: { reason: string | null } }
   | { PerceptsAppended: { count: number; schemas: string[] } }
+  | { DaemonAudit: { endpoint: string; audit: AuditAttribution } }
   | { LoopTickStarted: { tick_id: number } }
   | { PerceptsReceived: { percepts: Percept[] } }
   | { StateLoaded: { state_hash: ContentHash | null } }
@@ -233,10 +243,14 @@ export interface ActionOutcome {
 
 export interface StateHead {
   run_id: RunId;
-  state_hash: ContentHash;
-  snapshot_id: SnapshotId | null;
-  trace_sequence: number;
+  state_node_id: string;
+  parent_state_node_ids: string[];
+  data_hash: string;
+  created_at: ISODateTime;
+  label: string | null;
 }
+
+export type RunStatus = "created" | "running" | "paused" | "stopped" | "failed";
 
 export interface RunConfig {
   trace_db: string;
@@ -248,6 +262,18 @@ export interface RunConfig {
   tenants: TenantConfig[];
   agents: AgentConfig[];
   adapters?: AdaptersConfig;
+}
+
+export interface DaemonActionCandidate {
+  action: Action;
+  adapter: string | null;
+  quota_usage: QuotaUsage | null;
+  satisfied_preconditions: string[];
+}
+
+export interface RegisteredAction {
+  name: string;
+  adapter: string;
 }
 
 export interface TenantConfig {
@@ -327,7 +353,11 @@ export interface HttpAdapterConfig {
 
 export type EndpointScope =
   | "runs_create"
+  | "runs_start"
+  | "runs_read"
+  | "runs_pause"
   | "runs_resume"
+  | "runs_stop"
   | "percepts_append"
   | "actions_submit"
   | "traces_read"
@@ -388,39 +418,106 @@ export interface AuditAttribution {
 }
 
 export interface CreateRunRequest {
-  run_config: RunConfig;
+  tenant_id: TenantId;
+  agent_id: AgentId;
   work_order: WorkOrderAuthorization;
-  audit: AuditAttribution;
+  credential: CallerCredential | null;
+  audit_attribution: AuditAttribution | null;
+  allowed_actions: string[];
+  allowed_adapters: string[];
+  allowed_permissions: string[];
+  policy_actions: DaemonActionCandidate[];
+  registered_actions: RegisteredAction[];
+  allowed_percept_schemas: string[];
+  allowed_percept_sources: string[];
+  initial_state: JsonValue | null;
+  snapshot_interval: number | null;
 }
 
 export interface CreateRunResponse {
   run_id: RunId;
-  status?: string;
+  status: RunStatus;
+}
+
+export interface LifecycleRequest {
+  credential: CallerCredential | null;
+  work_order: WorkOrderAuthorization | null;
+  audit_attribution: AuditAttribution | null;
+  reason: string | null;
+}
+
+export interface RunInspectResponse {
+  run_id: RunId;
+  tenant_id: TenantId;
+  agent_id: AgentId;
+  status: RunStatus;
+  state_head: string | null;
+  ticks: number;
+  adapter_executions: number;
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
+export interface TickResponse {
+  run_id: RunId;
+  status: RunStatus;
+  tick_id: number;
+  state_node_id: string;
+  action_outcomes: ActionOutcome[];
 }
 
 export interface AppendPerceptRequest {
-  agent_id: AgentId;
-  percept: Percept;
-  tenant_id?: TenantId;
-  audit: AuditAttribution;
+  credential: CallerCredential | null;
+  audit_attribution: AuditAttribution | null;
+  percept: Percept | null;
 }
 
 export interface AppendPerceptResponse {
-  accepted: boolean;
-  trace_id?: TraceId;
+  run_id: RunId;
+  accepted: number;
 }
 
 export interface ReplayRequest {
-  mode?: "inspect_only";
-  from_snapshot?: SnapshotId | null;
-  include_state?: boolean;
+  credential: CallerCredential | null;
 }
 
 export interface ReplayResponse {
   replay_id: string;
   run_id: RunId;
-  mode: "inspect_only";
-  status?: string;
+  mode: string;
+  event_count: number;
+  action_event_count: number;
+}
+
+export interface TracePageResponse {
+  run_id: RunId;
+  records: TraceRecord[];
+}
+
+export interface SubmitActionRequest {
+  run_id: RunId;
+  tenant_id: TenantId;
+  agent_id: AgentId;
+  credential: CallerCredential | null;
+  audit_attribution: AuditAttribution | null;
+  causal_trace_id: TraceId | null;
+  action: Action;
+  adapter: string | null;
+  quota_usage: QuotaUsage | null;
+  satisfied_preconditions: string[];
+}
+
+export interface HealthResponse {
+  status: string;
+  local_only: boolean;
+  runtime_available: boolean;
+}
+
+export interface CapabilitiesResponse {
+  daemon_api_version: string;
+  local_only: boolean;
+  replay_modes: string[];
+  endpoints: string[];
 }
 
 export const CANONICAL_SCHEMA_FIELDS = {
@@ -459,7 +556,53 @@ export const CANONICAL_SCHEMA_FIELDS = {
   ],
   action_outcome: ["action_id", "status", "verification", "post_verification", "output", "error", "completed_at"],
   trace_event: ["trace_id", "run_id", "sequence", "timestamp", "kind"],
-  state_head: ["run_id", "state_hash", "snapshot_id", "trace_sequence"]
+  state_head: ["run_id", "state_node_id", "parent_state_node_ids", "data_hash", "created_at", "label"],
+  create_run_request: [
+    "tenant_id",
+    "agent_id",
+    "work_order",
+    "credential",
+    "audit_attribution",
+    "allowed_actions",
+    "allowed_adapters",
+    "allowed_permissions",
+    "policy_actions",
+    "registered_actions",
+    "allowed_percept_schemas",
+    "allowed_percept_sources",
+    "initial_state",
+    "snapshot_interval"
+  ],
+  lifecycle_request: ["credential", "work_order", "audit_attribution", "reason"],
+  run_inspect_response: [
+    "run_id",
+    "tenant_id",
+    "agent_id",
+    "status",
+    "state_head",
+    "ticks",
+    "adapter_executions",
+    "created_at",
+    "updated_at"
+  ],
+  tick_response: ["run_id", "status", "tick_id", "state_node_id", "action_outcomes"],
+  append_percept_request: ["credential", "audit_attribution", "percept"],
+  trace_page_response: ["run_id", "records"],
+  replay_response: ["replay_id", "run_id", "mode", "event_count", "action_event_count"],
+  submit_action_request: [
+    "run_id",
+    "tenant_id",
+    "agent_id",
+    "credential",
+    "audit_attribution",
+    "causal_trace_id",
+    "action",
+    "adapter",
+    "quota_usage",
+    "satisfied_preconditions"
+  ],
+  health_response: ["status", "local_only", "runtime_available"],
+  capabilities_response: ["daemon_api_version", "local_only", "replay_modes", "endpoints"]
 } as const satisfies {
   message: readonly (keyof Message)[];
   run_config: readonly (keyof RunConfig)[];
@@ -468,6 +611,16 @@ export const CANONICAL_SCHEMA_FIELDS = {
   action_outcome: readonly (keyof ActionOutcome)[];
   trace_event: readonly (keyof TraceEvent)[];
   state_head: readonly (keyof StateHead)[];
+  create_run_request: readonly (keyof CreateRunRequest)[];
+  lifecycle_request: readonly (keyof LifecycleRequest)[];
+  run_inspect_response: readonly (keyof RunInspectResponse)[];
+  tick_response: readonly (keyof TickResponse)[];
+  append_percept_request: readonly (keyof AppendPerceptRequest)[];
+  trace_page_response: readonly (keyof TracePageResponse)[];
+  replay_response: readonly (keyof ReplayResponse)[];
+  submit_action_request: readonly (keyof SubmitActionRequest)[];
+  health_response: readonly (keyof HealthResponse)[];
+  capabilities_response: readonly (keyof CapabilitiesResponse)[];
 };
 
 export const TRACE_EVENT_KIND_VARIANTS = [
@@ -476,6 +629,7 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "RunResumed",
   "RunStopped",
   "PerceptsAppended",
+  "DaemonAudit",
   "LoopTickStarted",
   "PerceptsReceived",
   "StateLoaded",
@@ -507,9 +661,29 @@ export const TRACE_EVENT_KIND_VARIANTS = [
 
 export const ACTION_STATUS_VALUES = ["Executed", "Denied", "Failed"] as const satisfies readonly ActionStatus[];
 
+export const ENDPOINT_SCOPE_VALUES = [
+  "RunsCreate",
+  "RunsStart",
+  "RunsRead",
+  "RunsPause",
+  "RunsResume",
+  "RunsStop",
+  "PerceptsAppend",
+  "ActionsSubmit",
+  "TracesRead",
+  "StateRead",
+  "ReplayCreate",
+  "HealthRead",
+  "CapabilitiesRead"
+] as const;
+
 export const ENDPOINT_SCOPE_LABELS: Record<EndpointScope, string> = {
   runs_create: "splendor.runs.create",
+  runs_start: "splendor.runs.start",
+  runs_read: "splendor.runs.read",
+  runs_pause: "splendor.runs.pause",
   runs_resume: "splendor.runs.resume",
+  runs_stop: "splendor.runs.stop",
   percepts_append: "splendor.percepts.append",
   actions_submit: "splendor.actions.submit",
   traces_read: "splendor.traces.read",

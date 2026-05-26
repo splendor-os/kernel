@@ -23,7 +23,7 @@ Set daemon connection variables and execute the example with your preferred TS
 runner or after compiling it in your application:
 
 ```bash
-export SPLENDOR_DAEMON_URL=http://127.0.0.1:7347
+export SPLENDOR_DAEMON_URL=http://127.0.0.1:8077
 export SPLENDOR_TOKEN=<caller-token>
 ```
 
@@ -34,9 +34,10 @@ emission, and replay side-effect suppression.
 
 ## What the example demonstrates
 
-- Create a run with a run config, signed work-order authorization, and audit
-  attribution.
+- Create a run with the Rust-aligned `CreateRunRequest` shape, signed work-order
+  authorization, and audit attribution.
 - Append a percept to the run.
+- Start one local scheduler tick through the daemon lifecycle endpoint.
 - Read trace events with an explicit redaction policy.
 - Query the state head.
 - Request inspect-only replay.

@@ -26,9 +26,10 @@ use splendor_store::{
     TraceStore, TraceStoreError,
 };
 use splendor_types::{
-    AuditAttribution, CallerCredential, CredentialAudience, DaemonEndpoint, DaemonSecurityError,
-    DaemonSecurityRequest, GatewayVerificationState, InsecureDevMode, LocalTransportBinding,
-    PerceptProvenance, TenantId, TraceEvent, TraceId, WorkOrderAuthorization,
+    AuditAttribution, CallerCredential, CredentialAudience, DaemonEndpoint, DaemonSecurityDecision,
+    DaemonSecurityError, DaemonSecurityRequest, GatewayVerificationState, InsecureDevMode,
+    LocalTransportBinding, PerceptProvenance, TenantId, TraceEvent, TraceId,
+    WorkOrderAuthorization,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -96,7 +97,7 @@ impl DaemonState {
         credential: Option<CallerCredential>,
         work_order: Option<WorkOrderAuthorization>,
         audit_attribution: Option<AuditAttribution>,
-    ) -> Result<(), ApiError> {
+    ) -> Result<DaemonSecurityDecision, ApiError> {
         let request = DaemonSecurityRequest {
             endpoint,
             credential,
@@ -106,7 +107,6 @@ impl DaemonState {
             insecure_dev_mode: self.inner.insecure_dev_mode.clone(),
         };
         splendor_types::validate_daemon_request(&request, OffsetDateTime::now_utc())
-            .map(|_| ())
             .map_err(ApiError::from)
     }
 }
@@ -541,7 +541,7 @@ async fn create_run(
     Json(request): Json<CreateRunRequest>,
 ) -> Result<Json<CreateRunResponse>, ApiError> {
     state.ensure_runtime_available()?;
-    state.validate_security(
+    let security = state.validate_security(
         DaemonEndpoint::RunCreate {
             tenant_id: request.tenant_id.clone(),
         },
@@ -658,6 +658,7 @@ async fn create_run(
             "run already exists in local daemon",
         ));
     }
+    record_daemon_audit(&slot, "splendor.runs.create", security.audit_attribution)?;
     runs.insert(run_id.clone(), slot);
     Ok(Json(CreateRunResponse {
         run_id,
@@ -707,7 +708,7 @@ async fn pause_run(
     state.ensure_runtime_available()?;
     let mut runs = state.inner.runs.lock().map_err(|_| lock_error())?;
     let slot = runs.get_mut(&run_id).ok_or_else(|| invalid_run(&run_id))?;
-    state.validate_security(
+    let security = state.validate_security(
         DaemonEndpoint::RunPause {
             tenant_id: slot.tenant_id.clone(),
             run_id: run_id.clone(),
@@ -716,6 +717,7 @@ async fn pause_run(
         None,
         request.audit_attribution,
     )?;
+    record_daemon_audit(slot, "splendor.runs.pause", security.audit_attribution)?;
     record_run_event(
         slot,
         TraceEventKind::RunPaused {
@@ -750,7 +752,7 @@ async fn stop_run(
     state.ensure_runtime_available()?;
     let mut runs = state.inner.runs.lock().map_err(|_| lock_error())?;
     let slot = runs.get_mut(&run_id).ok_or_else(|| invalid_run(&run_id))?;
-    state.validate_security(
+    let security = state.validate_security(
         DaemonEndpoint::RunStop {
             tenant_id: slot.tenant_id.clone(),
             run_id: run_id.clone(),
@@ -759,6 +761,7 @@ async fn stop_run(
         None,
         request.audit_attribution,
     )?;
+    record_daemon_audit(slot, "splendor.runs.stop", security.audit_attribution)?;
     record_run_event(
         slot,
         TraceEventKind::RunStopped {
@@ -785,7 +788,7 @@ async fn append_percept(
     })?;
     let mut runs = state.inner.runs.lock().map_err(|_| lock_error())?;
     let slot = runs.get_mut(&run_id).ok_or_else(|| invalid_run(&run_id))?;
-    state.validate_security(
+    let security = state.validate_security(
         DaemonEndpoint::PerceptAppend {
             tenant_id: slot.tenant_id.clone(),
             run_id: run_id.clone(),
@@ -798,6 +801,7 @@ async fn append_percept(
         None,
         request.audit_attribution,
     )?;
+    record_daemon_audit(slot, "splendor.percepts.append", security.audit_attribution)?;
     slot.percept_queue.push(percept.clone()).map_err(|error| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -947,7 +951,7 @@ async fn submit_action(
             "action tenant or agent does not match the run",
         ));
     }
-    state.validate_security(
+    let security = state.validate_security(
         DaemonEndpoint::ActionSubmit {
             tenant_id: request.tenant_id.clone(),
             run_id: request.run_id.clone(),
@@ -958,6 +962,7 @@ async fn submit_action(
         None,
         request.audit_attribution,
     )?;
+    record_daemon_audit(slot, "splendor.actions.submit", security.audit_attribution)?;
 
     record_run_event(
         slot,
@@ -1108,7 +1113,7 @@ async fn run_lifecycle_tick(
         .work_order
         .as_ref()
         .map(|work_order| work_order.agent_id.clone());
-    state.validate_security(
+    let security = state.validate_security(
         endpoint,
         request.credential,
         request.work_order,
@@ -1137,6 +1142,11 @@ async fn run_lifecycle_tick(
             "stopped or failed runs cannot be started",
         ));
     }
+    let endpoint = match kind {
+        LifecycleKind::Start => "splendor.runs.start",
+        LifecycleKind::Resume => "splendor.runs.resume",
+    };
+    record_daemon_audit(slot, endpoint, security.audit_attribution)?;
     if matches!(kind, LifecycleKind::Resume) {
         record_run_event(
             slot,
@@ -1238,6 +1248,27 @@ fn record_run_event(slot: &RunSlot, kind: TraceEventKind) -> Result<(), ApiError
                 error.to_string(),
             )
         })
+}
+
+fn record_daemon_audit(
+    slot: &RunSlot,
+    endpoint: &'static str,
+    audit: Option<AuditAttribution>,
+) -> Result<(), ApiError> {
+    let audit = audit.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "missing_audit_attribution",
+            "validated mutating daemon call did not return audit attribution",
+        )
+    })?;
+    record_run_event(
+        slot,
+        TraceEventKind::DaemonAudit {
+            endpoint: endpoint.to_string(),
+            audit,
+        },
+    )
 }
 
 fn validate_trace_order(records: &[TraceRecord], run_id: &RunId) -> Result<(), ApiError> {

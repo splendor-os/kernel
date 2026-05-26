@@ -15,7 +15,7 @@ actions.
 import { SplendorClient } from "@splendor/client";
 
 const client = new SplendorClient({
-  baseUrl: "http://127.0.0.1:7347",
+  baseUrl: "http://127.0.0.1:8077",
   token: process.env.SPLENDOR_TOKEN!,
 });
 ```
@@ -34,21 +34,33 @@ Every request includes:
 
 ## Methods
 
-### `createRun(config, { workOrder, audit })`
+### `createRun(request)`
 
 Sends `POST /runs` with:
 
 ```ts
 {
-  run_config: RunConfig,
+  tenant_id: TenantId,
+  agent_id: AgentId,
   work_order: WorkOrderAuthorization,
-  audit: AuditAttribution
+  credential: CallerCredential | null,
+  audit_attribution: AuditAttribution | null,
+  allowed_actions: string[],
+  allowed_adapters: string[],
+  allowed_permissions: string[],
+  policy_actions: DaemonActionCandidate[],
+  registered_actions: RegisteredAction[],
+  allowed_percept_schemas: string[],
+  allowed_percept_sources: string[],
+  initial_state: JsonValue | null,
+  snapshot_interval: number | null
 }
 ```
 
-The method requires a signed, scoped work-order object and audit attribution.
-Those requirements mirror the daemon security boundary: caller authentication
-does not authorize a run by itself.
+The method requires a signed, scoped work-order object and `audit_attribution`.
+Those requirements mirror the daemon security boundary: caller authentication does
+not authorize a run by itself. The 0.02-S6 client uses the Rust daemon's flattened
+`CreateRunRequest` schema, not a `{ run_config, work_order, audit }` wrapper.
 
 The client performs only structural fail-closed checks before sending the
 request: signature metadata must be present, `runs_create` must be in
@@ -56,14 +68,36 @@ request: signature metadata must be present, `runs_create` must be in
 future. Cryptographic signature verification and compatibility checks remain
 daemon/runtime responsibilities.
 
-### `appendPercept(runId, agentId, percept, { tenantId, audit })`
+### `inspectRun(runId)`
+
+Sends `GET /runs/:run_id` and returns local lifecycle metadata, including run
+status, state-head reference, tick count, adapter execution count, and timestamps.
+
+### `startRun(runId, request)` / `pauseRun(runId, request)` / `resumeRun(runId, request)` / `stopRun(runId, request)`
+
+Lifecycle mutating calls send `LifecycleRequest`:
+
+```ts
+{
+  credential: CallerCredential | null,
+  work_order: WorkOrderAuthorization | null,
+  audit_attribution: AuditAttribution | null,
+  reason: string | null
+}
+```
+
+`startRun` and `resumeRun` return a one-tick `TickResponse`; `pauseRun` and
+`stopRun` return `RunInspectResponse`. `resumeRun` still requires the daemon to
+validate a signed, unexpired, unrevoked resume work order.
+
+### `appendPercept(runId, percept, { audit, credential })`
 
 Sends `POST /runs/:run_id/percepts` with a run-scoped percept and audit
 attribution. The daemon remains responsible for tenant/run binding, allowed
 percept schema checks, provenance checks, trace emission, and state/runtime
 effects.
 
-### `readTraces(runId, { redactionPolicy, afterSequence, limit })`
+### `readTraces(runId, { redactionPolicy, start, end })`
 
 Sends `GET /runs/:run_id/traces`. `redactionPolicy` is required because the
 daemon security boundary does not permit raw trace access without visibility and
@@ -83,6 +117,18 @@ Sends `GET /runs/:run_id/state-head` and returns `StateHead`.
 Sends `POST /runs/:run_id/replay`. The request defaults to
 `mode: "inspect_only"`. Replay remains daemon/runtime-owned and must not
 re-execute side-effectful actions.
+
+### `submitAction(request)`
+
+Sends `POST /actions` with the Rust-aligned `SubmitActionRequest` shape. The
+client requires `causal_trace_id` and audit attribution before sending, but it
+does not authorize side effects. The daemon still validates endpoint scope and
+routes the action through the gateway with `GatewayVerificationState::Required`.
+
+### `getHealth()` / `getCapabilities()`
+
+Read local daemon status and the advertised 0.02-S5 endpoint list. These helpers
+do not mutate runtime state.
 
 ## Structured errors
 

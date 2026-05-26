@@ -57,7 +57,8 @@ by each affected run's sequence counter and carry explicit parent/child IDs.
 
 0.02-S5 daemon lifecycle events are emitted outside the tick body but through the
 same run trace runtime, preserving monotonic sequence order before the next tick
-or replay inspection.
+or replay inspection. Mutating daemon calls also emit `DaemonAudit` before the
+mutation so caller attribution is persisted in the run trace.
 
 ## TraceEventKind Payloads
 
@@ -66,6 +67,7 @@ or replay inspection.
 - `RunResumed { reason: Option<String> }`
 - `RunStopped { reason: Option<String> }`
 - `PerceptsAppended { count: usize, schemas: Vec<String> }`
+- `DaemonAudit { endpoint: String, audit: AuditAttribution }`
 - `LoopTickStarted { tick_id }`
 - `PerceptsReceived { percepts: Vec<Percept> }`
 - `StateLoaded { state_hash: Option<ContentHash> }`
@@ -165,6 +167,21 @@ actions are never executed by replay.
 | `source_agent_id` | Parent/orchestrator agent. |
 | `target_agent_id` | Child/specialist agent. |
 | `objective` | Scoped child objective. |
+
+## Daemon audit events
+
+`DaemonAudit` records the caller attribution validated at the daemon boundary for
+mutating daemon operations. It is emitted before the accepted mutation is applied
+and carries:
+
+| Field | Purpose |
+| --- | --- |
+| `endpoint` | Canonical endpoint scope such as `splendor.runs.create` or `splendor.actions.submit`. |
+| `audit` | `AuditAttribution` with caller principal, optional credential ID, and request timestamp. |
+
+These events do not authorize side effects. They only make accepted mutating
+daemon calls trace/audit attributable; action execution still requires the
+gateway/verifier path.
 
 ### TraceIntegrity
 

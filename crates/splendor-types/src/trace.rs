@@ -20,8 +20,8 @@
 //! ```
 
 use crate::{
-    Action, AgentId, Constraint, ContentHash, Feedback, MessageId, MessageTraceContext, Reward,
-    RunId, SnapshotId, TaskFailure, TraceId, VerificationResult,
+    Action, AgentId, AuditAttribution, Constraint, ContentHash, Feedback, MessageId,
+    MessageTraceContext, Reward, RunId, SnapshotId, TaskFailure, TraceId, VerificationResult,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -86,6 +86,13 @@ pub enum TraceEventKind {
         count: usize,
         /// Accepted percept schemas.
         schemas: Vec<String>,
+    },
+    /// Records caller attribution for a mutating daemon operation.
+    DaemonAudit {
+        /// Endpoint or endpoint scope that accepted the mutating request.
+        endpoint: String,
+        /// Caller attribution validated at the daemon boundary.
+        audit: AuditAttribution,
     },
     /// Marks the start of a loop tick.
     LoopTickStarted {

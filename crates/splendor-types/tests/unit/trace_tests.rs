@@ -1,8 +1,8 @@
 use super::*;
 use crate::{
-    AgentId, DelegatedAuthority, LocalDelegationTraceContext, Message, MessageId,
-    MessageTraceContext, Percept, PerceptProvenance, SideEffectClass, TaskFailure, TaskRequest,
-    TASK_REQUEST_SCHEMA,
+    AgentId, AuditAttribution, ClientPrincipal, DelegatedAuthority, LocalDelegationTraceContext,
+    Message, MessageId, MessageTraceContext, Percept, PerceptProvenance, SideEffectClass,
+    TaskFailure, TaskRequest, TASK_REQUEST_SCHEMA,
 };
 
 #[test]
@@ -261,6 +261,40 @@ fn child_run_link_trace_event_round_trips_with_source_message() {
             assert_eq!(decoded_child_agent, child_agent_id);
             assert_eq!(decoded_causal_parent, Some(causal_parent));
             assert_eq!(decoded_source_message, Some(source_message_id));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn daemon_audit_trace_event_preserves_caller_attribution() {
+    let run_id = RunId::new();
+    let audit = AuditAttribution {
+        principal: ClientPrincipal::new("app_test", "client_test"),
+        credential_id: Some("cred_test".to_string()),
+        requested_at: OffsetDateTime::now_utc(),
+    };
+    let event = TraceEvent::new(
+        run_id,
+        9,
+        OffsetDateTime::now_utc(),
+        TraceEventKind::DaemonAudit {
+            endpoint: "splendor.runs.create".to_string(),
+            audit: audit.clone(),
+        },
+    );
+
+    let payload = serde_json::to_vec(&event).expect("serialize");
+    let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+    assert_eq!(decoded, event);
+
+    match decoded.kind {
+        TraceEventKind::DaemonAudit {
+            endpoint,
+            audit: decoded_audit,
+        } => {
+            assert_eq!(endpoint, "splendor.runs.create");
+            assert_eq!(decoded_audit, audit);
         }
         other => panic!("unexpected event: {other:?}"),
     }
