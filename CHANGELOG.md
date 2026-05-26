@@ -32,6 +32,9 @@
 - Added `TraceDurabilityGateway` so local policy can fail closed before
   side-effectful adapter execution when central trace sync durability is
   required and stale or failed.
+- Added 0.03-S7 state handoff v0 schemas, snapshot export/import validation,
+  read-only state references, source/receiver handoff trace events, and replay
+  handoff boundary inspection.
 
 ### Explicitly not included
 
@@ -39,7 +42,8 @@
   remote dispatch, full PKI/OAuth product, governance approval workflow,
   analytics dashboard, long-term warehouse, governance audit product, remote
   trace transport, distributed consensus, central manager, telemetry dashboard,
-  or physical/edge orchestration.
+  distributed mutable state, CRDTs, automatic conflict merge, full runtime
+  migration engine, fleet scheduler, or physical/edge orchestration.
 
 ## 0.02-dev — Local multi-agent runtime + daemon control
 

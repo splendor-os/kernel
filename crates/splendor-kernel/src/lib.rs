@@ -65,10 +65,15 @@ pub use splendor_types::{
     NodeRegistration, NodeRegistryValidationError, Percept, PerceptProvenance, QuotaUsage,
     RegistryScope, RemoteMessageEnvelope, RemoteMessageEnvelopeVersion, RemoteMessageRetryPolicy,
     RemoteMessageTraceContext, RemoteMessageValidationError, Reward, RunId, RuntimeIdentityContext,
-    RuntimeMode, SideEffectClass, SnapshotId, StateNodeId, TenantId, TickId, TraceEvent,
-    TraceEventId, TraceEventKind, TraceId, TraceIdentityContext, VerificationResult,
+    RuntimeMode, SideEffectClass, SnapshotId, StateHandoff, StateHandoffAuthority,
+    StateHandoffSnapshot, StateHandoffTraceContext, StateNodeId, StateReference,
+    StateReferenceMode, TenantId, TickId, TraceEvent, TraceEventId, TraceEventKind, TraceId,
+    TraceIdentityContext, VerificationResult,
 };
-pub use state::{SnapshotPolicy, StateCommit, StateGraph, StateGraphError};
+pub use state::{
+    SnapshotPolicy, StateCommit, StateGraph, StateGraphError, StateHandoffExportRequest,
+    StateHandoffScope,
+};
 pub use tenancy::{
     AdapterQuota, AgentContext, AgentRuntimeConfig, QuotaLedger, QuotaPolicy, TenantContext,
     TenantPolicy, TenantRegistry,

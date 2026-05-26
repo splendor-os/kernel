@@ -142,6 +142,14 @@ pub enum TraceError {
     /// Integrity state mutex could not be acquired.
     #[error("trace integrity lock poisoned")]
     IntegrityLock,
+    /// State handoff event scope did not match the runtime run.
+    #[error("state handoff run mismatch: runtime {runtime_run_id}, handoff {handoff_run_id}")]
+    HandoffRunMismatch {
+        /// Run ID owned by this runtime.
+        runtime_run_id: RunId,
+        /// Run ID declared by the handoff/reference authority.
+        handoff_run_id: RunId,
+    },
 }
 
 #[cfg(test)]

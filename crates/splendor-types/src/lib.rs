@@ -38,6 +38,7 @@ mod message;
 mod node_registry;
 mod placement;
 mod primitives;
+mod state_handoff;
 mod trace;
 mod work_order;
 
@@ -78,6 +79,10 @@ pub use placement::{
 pub use primitives::{
     Action, Constraint, ConstraintKind, ConstraintScope, CostEstimate, Feedback, Percept,
     PerceptProvenance, QuotaUsage, Reward, SideEffectClass, VerificationResult,
+};
+pub use state_handoff::{
+    StateHandoff, StateHandoffAuthority, StateHandoffSnapshot, StateHandoffTraceContext,
+    StateReference, StateReferenceMode,
 };
 pub use trace::{TraceEvent, TraceEventKind, TraceIntegrity};
 pub use work_order::{

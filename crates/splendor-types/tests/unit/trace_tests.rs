@@ -3,6 +3,7 @@ use crate::{
     AgentId, EndpointScope, Message, MessageEnvelope, MessageId, MessageTraceContext, Percept,
     PerceptProvenance, RemoteMessageEnvelope, RemoteMessageRetryPolicy, RemoteMessageTraceContext,
     RevocationStatus, SideEffectClass, TenantId, WorkOrderAuthorization, WorkOrderSignature,
+    SnapshotId, StateHandoffTraceContext, StateReferenceMode,
 };
 
 #[test]
@@ -256,5 +257,53 @@ fn remote_message_trace_events_round_trip_with_causal_linkage() {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+}
+
+#[test]
+fn state_handoff_trace_events_round_trip_with_previous_head() {
+    let run_id = RunId::new();
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let bytes = b"handoff".to_vec();
+    let handoff = StateHandoffTraceContext {
+        handoff_id: "handoff_trace".to_string(),
+        mode: StateReferenceMode::SnapshotImport,
+        tenant_id,
+        agent_id,
+        run_id: run_id.clone(),
+        work_order_id: "wo_handoff".to_string(),
+        source_instance_id: Some("source".to_string()),
+        receiver_instance_id: Some("receiver".to_string()),
+        source_state_node_id: ContentHash::blake3(&bytes).to_string(),
+        previous_state_node_id: Some("blake3:previous".to_string()),
+        receiver_state_node_id: Some("blake3:receiver".to_string()),
+        snapshot_id: Some(SnapshotId::from_bytes(&bytes)),
+        source_trace_id: Some(TraceId::from_run_sequence(&run_id, 1)),
+    };
+    let events = vec![
+        TraceEventKind::StateHandoffExported {
+            handoff: handoff.clone(),
+        },
+        TraceEventKind::StateHandoffImported {
+            handoff: handoff.clone(),
+        },
+        TraceEventKind::StateHandoffImportFailed {
+            handoff: handoff.clone(),
+            reason: "corrupted snapshot".to_string(),
+        },
+        TraceEventKind::ReadOnlyStateReferenced { handoff },
+    ];
+
+    for (sequence, kind) in events.into_iter().enumerate() {
+        let event = TraceEvent::new(
+            run_id.clone(),
+            sequence as u64,
+            OffsetDateTime::now_utc(),
+            kind,
+        );
+        let payload = serde_json::to_vec(&event).expect("serialize");
+        let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+        assert_eq!(decoded, event);
     }
 }

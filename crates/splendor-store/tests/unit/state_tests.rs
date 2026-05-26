@@ -73,6 +73,102 @@ fn state_store_commits_and_snapshots() {
 }
 
 #[test]
+fn state_store_exports_and_imports_handoff_snapshot_with_parent_linkage() {
+    let source = InMemoryStateStore::default();
+    let first_ref = StateStore::put_state(
+        &source,
+        StateData {
+            bytes: vec![1],
+            content_type: None,
+        },
+    )
+    .expect("put first");
+    let metadata = StateMetadata {
+        created_at: OffsetDateTime::now_utc(),
+        label: Some("first".to_string()),
+    };
+    let first =
+        StateStore::commit_node(&source, Vec::new(), first_ref, metadata).expect("commit first");
+
+    let second_data = StateData {
+        bytes: vec![2],
+        content_type: Some("application/octet-stream".to_string()),
+    };
+    let second_ref = StateStore::put_state(&source, second_data.clone()).expect("put second");
+    let metadata = StateMetadata {
+        created_at: OffsetDateTime::now_utc(),
+        label: Some("second".to_string()),
+    };
+    let second = StateStore::commit_node(&source, vec![first.clone()], second_ref, metadata)
+        .expect("commit second");
+    let snapshot_id = StateStore::snapshot(&source, &second).expect("snapshot");
+
+    let exported = StateStore::export_snapshot(&source, &snapshot_id).expect("export");
+    assert_eq!(exported.snapshot_id, snapshot_id);
+    assert_eq!(exported.state_node_id, second.to_string());
+    assert_eq!(exported.parent_state_node_ids, vec![first.to_string()]);
+    assert_eq!(exported.state_hash, ContentHash::blake3(&second_data.bytes));
+
+    let receiver = InMemoryStateStore::default();
+    let imported = StateStore::import_handoff_snapshot(
+        &receiver,
+        &exported,
+        StateMetadata {
+            created_at: OffsetDateTime::now_utc(),
+            label: Some("imported".to_string()),
+        },
+    )
+    .expect("import");
+
+    assert_eq!(imported.node_id, second);
+    assert_eq!(imported.snapshot_id, snapshot_id);
+    let imported_node = StateStore::get_node(&receiver, &imported.node_id).expect("node");
+    assert_eq!(imported_node.parent_ids, vec![first]);
+    let imported_snapshot = StateStore::load_snapshot(&receiver, &snapshot_id).expect("snapshot");
+    assert_eq!(imported_snapshot.state, second_data);
+}
+
+#[test]
+fn state_store_rejects_corrupted_handoff_snapshot_before_import() {
+    let source = InMemoryStateStore::default();
+    let data = StateData {
+        bytes: vec![1, 2, 3],
+        content_type: None,
+    };
+    let data_ref = StateStore::put_state(&source, data).expect("put");
+    let node_id = StateStore::commit_node(
+        &source,
+        Vec::new(),
+        data_ref,
+        StateMetadata {
+            created_at: OffsetDateTime::now_utc(),
+            label: None,
+        },
+    )
+    .expect("commit");
+    let snapshot_id = StateStore::snapshot(&source, &node_id).expect("snapshot");
+    let mut exported = StateStore::export_snapshot(&source, &snapshot_id).expect("export");
+    exported.state_bytes.push(4);
+
+    let receiver = InMemoryStateStore::default();
+    let error = StateStore::import_handoff_snapshot(
+        &receiver,
+        &exported,
+        StateMetadata {
+            created_at: OffsetDateTime::now_utc(),
+            label: None,
+        },
+    )
+    .expect_err("hash mismatch");
+
+    assert!(matches!(error, StateStoreError::HashMismatch { .. }));
+    assert!(matches!(
+        StateStore::get_node(&receiver, &node_id),
+        Err(StateStoreError::MissingNode)
+    ));
+}
+
+#[test]
 fn state_store_error_paths() {
     let store = InMemoryStateStore::default();
     let missing_ref = StateDataRef::new();

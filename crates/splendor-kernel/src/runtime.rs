@@ -19,7 +19,7 @@ use crate::{StdoutTraceSink, TraceError, TraceSink, TraceStoreSink};
 use splendor_store::TraceStore;
 use splendor_types::{
     ContentHash, RunId, RuntimeIdentityContext, TraceEvent, TraceEventKind, TraceIdentityContext,
-    TraceIntegrity,
+    TraceIntegrity, StateHandoff, StateHandoffTraceContext, StateReference,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -158,6 +158,66 @@ impl KernelRuntime {
         *prev_hash = Some(event_hash);
         self.trace_sink.record(&event)?;
         Ok(event)
+    }
+
+    /// Records a source-side state handoff export and stores its trace ID in the handoff.
+    pub fn record_state_handoff_exported(
+        &self,
+        handoff: &mut StateHandoff,
+    ) -> Result<TraceEvent, TraceError> {
+        self.ensure_handoff_run_scope(&handoff.authority.run_id)?;
+        let event = self.record_event(TraceEventKind::StateHandoffExported {
+            handoff: StateHandoffTraceContext::exported(handoff),
+        })?;
+        handoff.source_trace_id = Some(event.trace_id.clone());
+        Ok(event)
+    }
+
+    /// Records a receiver-side successful state handoff import.
+    pub fn record_state_handoff_imported(
+        &self,
+        handoff: &StateHandoff,
+        receiver_state_node_id: impl Into<String>,
+    ) -> Result<TraceEvent, TraceError> {
+        self.ensure_handoff_run_scope(&handoff.authority.run_id)?;
+        self.record_event(TraceEventKind::StateHandoffImported {
+            handoff: StateHandoffTraceContext::imported(handoff, receiver_state_node_id),
+        })
+    }
+
+    /// Records a receiver-side failed state handoff import.
+    pub fn record_state_handoff_import_failed(
+        &self,
+        handoff: &StateHandoff,
+        reason: impl Into<String>,
+    ) -> Result<TraceEvent, TraceError> {
+        self.ensure_handoff_run_scope(&handoff.authority.run_id)?;
+        self.record_event(TraceEventKind::StateHandoffImportFailed {
+            handoff: StateHandoffTraceContext::exported(handoff),
+            reason: reason.into(),
+        })
+    }
+
+    /// Records attachment of a read-only state reference.
+    pub fn record_read_only_state_referenced(
+        &self,
+        reference: &StateReference,
+    ) -> Result<TraceEvent, TraceError> {
+        self.ensure_handoff_run_scope(&reference.authority.run_id)?;
+        self.record_event(TraceEventKind::ReadOnlyStateReferenced {
+            handoff: StateHandoffTraceContext::referenced(reference),
+        })
+    }
+
+    fn ensure_handoff_run_scope(&self, handoff_run_id: &RunId) -> Result<(), TraceError> {
+        if &self.run_id == handoff_run_id {
+            Ok(())
+        } else {
+            Err(TraceError::HandoffRunMismatch {
+                runtime_run_id: self.run_id.clone(),
+                handoff_run_id: handoff_run_id.clone(),
+            })
+        }
     }
 }
 

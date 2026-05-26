@@ -12,6 +12,9 @@ splendorctl replay --db <trace-path> --state-db <state-path> --run <run-id> [--f
 Replay emits JSON Lines:
 
 - `replay_start`: requested run and optional starting snapshot.
+- `handoff_boundary`: state handoff or read-only reference boundary with
+  `event_kind`, `handoff_id`, previous receiver state head, receiver imported
+  head when present, failure reason when present, and trace sequence.
 - `tick`: reconstructed policy name, percepts, candidate actions, verification
   result, action statuses, outcome payload, feedback/reward, state hash, and
   snapshot metadata.
@@ -35,6 +38,8 @@ Before reconstructing ticks, replay validates:
 - each `trace_event_id` matches the deterministic run/sequence derivation;
 - trace hash-chain continuity through `prev_event_hash`;
 - referenced snapshots can be loaded from the state store.
+- state handoff events decode as ordinary trace events and expose their previous
+  state head; replay does not perform imports.
 
 Work-order acceptance/rejection events are replayed as trace facts only. Replay
 does not re-verify signatures, call revocation sources, refresh key material, or
@@ -51,6 +56,9 @@ Replay fails with a clear error when:
 - trace run/sequence/ID validation fails;
 - the requested `--from-snapshot` is not in the trace history;
 - a referenced snapshot is missing from the state store.
+
+State handoff import failures are replayed as `handoff_boundary` records with a
+reason. They are not retried, and no receiver state is mutated during replay.
 
 ## Python SDK
 
