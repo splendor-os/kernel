@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.03-dev — Resident nodes + fleet execution foundation
+
+### Implemented primitives
+
+- Added a 0.03-S4 placement v0 contract in Rust for deterministic target-class,
+  capability, data-locality, runtime-version, execution-mode, and
+  dedicated-instance matching with explicit rejection reasons and management
+  trace/audit evidence.
+
+### Explicitly not included
+
+- No autoscaling, multi-region optimizer, cost optimizer, Kubernetes operator,
+  remote dispatch, work-order authority validation, or Action Gateway changes.
+
 ## 0.02-dev — Local multi-agent runtime + daemon control
 
 ### Implemented primitives

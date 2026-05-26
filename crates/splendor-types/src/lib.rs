@@ -34,6 +34,7 @@ mod daemon_security;
 mod hash;
 mod ids;
 mod message;
+mod placement;
 mod primitives;
 mod trace;
 
@@ -50,6 +51,12 @@ pub use ids::{AgentId, MessageId, RunId, SnapshotId, TenantId, TraceId};
 pub use message::{
     Message, MessageDeliveryStatus, MessageEnvelope, MessageSchemaVersion, MessageTraceContext,
     MessageTraceLinks, MessageValidationError,
+};
+pub use placement::{
+    select_placement, DataLocality, PlacementCandidate, PlacementCandidateEvaluation,
+    PlacementDecision, PlacementDecisionStatus, PlacementExecutionMode, PlacementExplain,
+    PlacementRejectionReason, PlacementRequest, PlacementTarget, PlacementTraceAudit,
+    PLACEMENT_DECISION_SCHEMA,
 };
 pub use primitives::{
     Action, Constraint, ConstraintKind, ConstraintScope, CostEstimate, Feedback, Percept,
