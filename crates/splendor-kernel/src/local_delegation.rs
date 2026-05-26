@@ -723,13 +723,13 @@ pub fn replay_local_delegations(events: &[TraceEvent]) -> LocalDelegationReplay 
             }
             TraceEventKind::MessageQueued { message }
             | TraceEventKind::MessageDelivered { message }
-            | TraceEventKind::MessageConsumed { message } => {
-                if (message.schema == TASK_REQUEST_SCHEMA || message.schema == TASK_RESPONSE_SCHEMA)
-                    && !seen_messages.contains(&message.message_id)
-                {
-                    seen_messages.push(message.message_id.clone());
-                    replay.messages.push(message.clone());
-                }
+            | TraceEventKind::MessageConsumed { message }
+                if (message.schema == TASK_REQUEST_SCHEMA
+                    || message.schema == TASK_RESPONSE_SCHEMA)
+                    && !seen_messages.contains(&message.message_id) =>
+            {
+                seen_messages.push(message.message_id.clone());
+                replay.messages.push(message.clone());
             }
             _ => {}
         }
