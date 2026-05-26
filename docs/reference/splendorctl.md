@@ -15,7 +15,7 @@ splendorctl --version
 
 **Output shape**
 ```
-splendorctl 0.1.0 (Splendor0.01-dev)
+splendorctl 0.1.0 (Splendor0.02-dev)
 ```
 
 ## trace export

@@ -2,6 +2,16 @@
 
 ## 0.02-dev — Local multi-agent runtime + daemon control
 
+### Release hygiene
+
+- Updated the visible Rust CLI and Python SDK milestone labels to
+  `Splendor0.02-dev` while keeping package versions on the existing development
+  `0.1.0` line.
+- Added 0.02-dev release notes with QA evidence, compatibility notes, and
+  explicit future-scope exclusions.
+- Updated README and local runtime docs so the repository status reflects the
+  completed 0.02-dev local multi-agent and daemon-control scope.
+
 ### Implemented primitives
 
 - Added a 0.02-S0 daemon security boundary reference contract in Rust for

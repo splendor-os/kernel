@@ -538,4 +538,4 @@ def test_package_exports() -> None:
     assert "QuotaUsage" in splendor.__all__
     assert isinstance(splendor.__version__, str)
     assert splendor.__version__
-    assert splendor.__baseline__ == "Splendor0.01-dev"
+    assert splendor.__baseline__ == "Splendor0.02-dev"

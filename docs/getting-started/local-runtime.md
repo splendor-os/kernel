@@ -1,7 +1,9 @@
 # Getting Started: Local Runtime
 
-This is the exact 0.01-dev quickstart for the local Splendor kernel baseline.
-It requires only Rust/Cargo and the repository checkout.
+This is the 0.02-dev quickstart for the local Splendor runtime. It exercises the
+single-agent baseline loop that remains the foundation for the 0.02 local
+multi-agent, daemon, TypeScript, and replay surfaces. It requires only
+Rust/Cargo and the repository checkout.
 
 ## 1. Build the CLI
 
@@ -24,7 +26,7 @@ rm -f ./examples/local-basic-loop/data/trace.db ./examples/local-basic-loop/data
 Expected shape:
 
 ```text
-splendorctl 0.1.0 (Splendor0.01-dev)
+splendorctl 0.1.0 (Splendor0.02-dev)
 ```
 
 ## 4. Run one local tick
@@ -70,9 +72,11 @@ filesystem adapter again.
 bash scripts/verify-0.01-baseline.sh
 ```
 
-## Not available in 0.01-dev
+## Beyond this single-agent smoke path
 
-- Typed local message router and multi-agent delegation are planned for 0.02.
+- Typed local message routing, per-agent isolation, local delegation, the runtime
+  daemon API, TypeScript client/types, and multi-agent replay are available in
+  the 0.02-dev docs and examples.
 - Fleet registry, signed work orders, remote messaging, and trace aggregation are
   planned for 0.03.
 - Approval workflows, circuit breakers, kill switches, and policy TTL governance

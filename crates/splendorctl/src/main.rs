@@ -29,7 +29,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use time::OffsetDateTime;
 
-const SPLENDOR_001_BASELINE: &str = "Splendor0.01-dev";
+const SPLENDOR_RELEASE_LABEL: &str = "Splendor0.02-dev";
 
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
@@ -348,7 +348,7 @@ fn print_version() {
     println!(
         "splendorctl {} ({})",
         env!("CARGO_PKG_VERSION"),
-        SPLENDOR_001_BASELINE
+        SPLENDOR_RELEASE_LABEL
     );
 }
 
