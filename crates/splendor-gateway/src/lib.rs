@@ -15,6 +15,7 @@
 //!     action_id: Default::default(),
 //!     tenant_id: splendor_types::TenantId::new(),
 //!     agent_id: splendor_types::AgentId::new(),
+//!     run_id: splendor_types::RunId::new(),
 //!     action: Action {
 //!         name: "noop".into(),
 //!         params: serde_json::json!({}),
@@ -33,30 +34,15 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use splendor_types::{Action, AgentId, QuotaUsage, TenantId, VerificationResult};
+use splendor_types::{
+    Action, AgentId, IdentityValidationError, QuotaUsage, RunId, TenantId, VerificationResult,
+};
 use std::collections::HashMap;
 use std::future::{ready, Future, Ready};
 use std::sync::Arc;
 use time::OffsetDateTime;
-use uuid::Uuid;
 
-/// Unique identifier assigned to a submitted action.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-pub struct ActionId(Uuid);
-
-impl ActionId {
-    /// Creates a new action identifier.
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for ActionId {
-    /// Creates a new action identifier using a random UUID.
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use splendor_types::ActionId;
 
 /// Request payload submitted to the action gateway.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -67,6 +53,8 @@ pub struct ActionRequest {
     pub tenant_id: TenantId,
     /// Agent identifier that submitted the action.
     pub agent_id: AgentId,
+    /// Run identifier that scopes the action and its trace events.
+    pub run_id: RunId,
     /// Action details to execute.
     pub action: Action,
     /// Adapter identifier requested for this action.
@@ -77,6 +65,25 @@ pub struct ActionRequest {
     pub satisfied_preconditions: Vec<String>,
     /// Timestamp when the action was requested.
     pub requested_at: OffsetDateTime,
+}
+
+impl ActionRequest {
+    /// Validates action, tenant, agent, and run identities before adapter execution.
+    pub fn validate_identity(&self) -> Result<(), IdentityValidationError> {
+        if self.action_id.is_nil() {
+            return Err(IdentityValidationError::Missing { field: "action_id" });
+        }
+        if self.tenant_id.is_nil() {
+            return Err(IdentityValidationError::Missing { field: "tenant_id" });
+        }
+        if self.agent_id.is_nil() {
+            return Err(IdentityValidationError::Missing { field: "agent_id" });
+        }
+        if self.run_id.is_nil() {
+            return Err(IdentityValidationError::Missing { field: "run_id" });
+        }
+        Ok(())
+    }
 }
 
 /// Outcome captured after verification and execution.
@@ -241,6 +248,10 @@ impl VerifiedActionGateway {
 
 impl ActionGateway for VerifiedActionGateway {
     fn submit(&self, action: ActionRequest) -> Result<ActionOutcome, GatewayError> {
+        if let Err(error) = action.validate_identity() {
+            return Ok(identity_denied_outcome(action.action_id, error));
+        }
+
         let registration = self
             .adapters
             .get(&action.action.name)
@@ -338,6 +349,24 @@ impl ActionGateway for VerifiedActionGateway {
             error,
             completed_at: OffsetDateTime::now_utc(),
         })
+    }
+}
+
+fn identity_denied_outcome(action_id: ActionId, error: IdentityValidationError) -> ActionOutcome {
+    ActionOutcome {
+        action_id,
+        status: ActionStatus::Denied,
+        verification: VerificationResult {
+            allowed: false,
+            reasons: vec!["identity_invalid".to_string()],
+            artifacts: serde_json::json!({
+                "error": error.to_string(),
+            }),
+        },
+        post_verification: None,
+        output: None,
+        error: Some(error.to_string()),
+        completed_at: OffsetDateTime::now_utc(),
     }
 }
 

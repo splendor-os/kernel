@@ -7,16 +7,26 @@ This document describes the canonical data structures defined in
 
 | Type | Backing | Purpose | Determinism |
 | --- | --- | --- | --- |
+| `FleetId` | UUID v4 | Governed fleet boundary. | Random per fleet. |
+| `NodeId` | UUID v4 | Physical, virtual, or logical host. | Random per node. |
+| `InstanceId` | UUID v4 | Running Splendor runtime process/instance. | Random per instance. |
 | `TenantId` | UUID v4 | Tenant boundary identifier. | Random per instance. |
 | `AgentId` | UUID v4 | Agent identity within a tenant. | Random per instance. |
 | `RunId` | UUID v4 | Runtime execution session identifier. | Random per instance. |
+| `TickId` | `u64` | Tick counter scoped within a run. | Monotonic within run. |
+| `ActionId` | UUID v4 | Action submission identifier. | Random per action. |
 | `MessageId` | UUID v4 | Agent-to-agent message identifier. | Random per message. |
-| `TraceId` | UUID v5 | Trace event identifier derived from `RunId` + sequence. | Deterministic from inputs. |
+| `TraceEventId` | UUID v5 | Trace event identifier derived from `RunId` + sequence. | Deterministic from inputs. |
+| `TraceId` | alias | Compatibility alias for `TraceEventId`. | Same as `TraceEventId`. |
+| `StateNodeId` | `algorithm:digest` string | State graph node identifier. | Deterministic from parent IDs + state data hash. |
 | `SnapshotId` | `ContentHash` | Identifier for snapshot bytes. | Deterministic from bytes. |
 
-### TraceId derivation
+See [`identity.md`](identity.md) for the 0.03 distributed identity contract.
+
+### TraceEventId derivation
+
 ```
-TraceId = uuid_v5(NAMESPACE_OID, "{run_id}:{sequence}")
+TraceEventId = uuid_v5(NAMESPACE_OID, "{run_id}:{sequence}")
 ```
 
 ## Percept
@@ -65,7 +75,7 @@ TraceId = uuid_v5(NAMESPACE_OID, "{run_id}:{sequence}")
 - `run_id` (`RunId`): run scope.
 - `schema` (`String`): versioned payload schema such as `splendor.message.task_request.v1`.
 - `payload` (`serde_json::Value`): typed JSON payload.
-- `causal_parent` (`Option<TraceId>`): optional trace event that caused the message.
+- `causal_parent` (`Option<TraceEventId>`): optional trace event that caused the message.
 - `requires_response` (`bool`): whether a response is expected.
 - `created_at` (`OffsetDateTime`): creation timestamp.
 
@@ -81,6 +91,26 @@ TraceId = uuid_v5(NAMESPACE_OID, "{run_id}:{sequence}")
 - `network_read_bytes` (`u64`): network bytes read.
 - `network_write_bytes` (`u64`): network bytes written.
 - `http_requests` (`u32`): HTTP requests issued.
+
+## Node and Instance Registry
+
+0.03-S2 adds resident node and runtime instance registry contracts. See
+[`node-registry.md`](node-registry.md) and [`capabilities.md`](capabilities.md)
+for the full contract.
+
+Core structs:
+
+- `CapabilityDocument`
+- `RegistryScope`
+- `NodeKind`
+- `NodeRegistration`
+- `InstanceRegistration`
+- `NodeHeartbeat`
+- `InstanceHeartbeat`
+- `ManagementAuditEvent`
+
+Registry data is management metadata. It does not grant runtime permissions,
+start runs, or authorize side effects.
 
 ## Constraint
 
@@ -133,6 +163,10 @@ TraceId = uuid_v5(NAMESPACE_OID, "{run_id}:{sequence}")
 ```
 {algorithm}:{value}
 ```
+
+Rust state graph node IDs are emitted as BLAKE3 content-hash strings. Python
+local SDK traces use the same `algorithm:digest` string shape for state-node
+identity.
 
 ## TraceIntegrity
 

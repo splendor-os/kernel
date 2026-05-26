@@ -7,6 +7,10 @@ data in SQLite.
 The 0.01-dev reference quickstart is `examples/local-basic-loop`; this example
 remains as a compatible two-cycle variant.
 
+For compatibility with the 0.01-dev local example shape, this config explicitly
+sets `allow_unsigned_local_run: true`. New resident/distributed examples should
+use a signed `work_order`; omitting both is rejected before runtime execution.
+
 ## Run
 
 ```

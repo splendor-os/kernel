@@ -1,6 +1,7 @@
 from .runtime import (
     Action,
     ActionCandidate,
+    CANONICAL_ID_FIELDS,
     Constraint,
     KernelRuntime,
     KernelRuntimeConfig,
@@ -13,6 +14,7 @@ from .runtime import (
 __all__ = [
     "Action",
     "ActionCandidate",
+    "CANONICAL_ID_FIELDS",
     "Constraint",
     "KernelRuntime",
     "KernelRuntimeConfig",

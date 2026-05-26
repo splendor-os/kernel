@@ -1,8 +1,11 @@
 use super::*;
 use crate::{
-    AgentId, AuditAttribution, ClientPrincipal, DelegatedAuthority, LocalDelegationTraceContext,
-    Message, MessageId, MessageTraceContext, Percept, PerceptProvenance, SideEffectClass,
-    TaskFailure, TaskRequest, TASK_REQUEST_SCHEMA,
+    AgentId, AuditAttribution, ClientPrincipal, DelegatedAuthority, EndpointScope,
+    LocalDelegationTraceContext, Message, MessageEnvelope, MessageId, MessageTraceContext, Percept,
+    PerceptProvenance, RemoteMessageEnvelope, RemoteMessageRetryPolicy, RemoteMessageTraceContext,
+    RevocationStatus, SideEffectClass, SnapshotId, StateHandoffTraceContext, StateReferenceMode,
+    TaskFailure, TaskRequest, TenantId, TraceId, WorkOrderAuthorization, WorkOrderSignature,
+    TASK_REQUEST_SCHEMA,
 };
 
 #[test]
@@ -14,7 +17,16 @@ fn trace_event_uses_deterministic_trace_id() {
         OffsetDateTime::now_utc(),
         TraceEventKind::LoopTickStarted { tick_id: 1 },
     );
-    assert_eq!(event.trace_id, TraceId::from_run_sequence(&run_id, 5));
+    assert_eq!(
+        event.trace_event_id,
+        TraceEventId::from_run_sequence(&run_id, 5)
+    );
+    assert_eq!(event.identity.run_id, run_id);
+    assert_eq!(event.identity.tick_id, Some(TickId::from(1)));
+    let payload = serde_json::to_value(&event).expect("serialize");
+    assert!(payload.get("trace_event_id").is_some());
+    assert!(payload.get("trace_id").is_none());
+    assert_eq!(payload["identity"]["tick_id"], serde_json::json!(1));
 }
 
 #[test]
@@ -65,7 +77,7 @@ fn trace_event_round_trip() {
 #[test]
 fn message_rejection_trace_event_preserves_causal_parent() {
     let run_id = RunId::new();
-    let causal_parent = TraceId::from_run_sequence(&run_id, 3);
+    let causal_parent = TraceEventId::from_run_sequence(&run_id, 3);
     let target = AgentId::new();
     let task = TaskRequest::new(
         run_id.clone(),
@@ -150,6 +162,165 @@ fn message_lifecycle_trace_events_round_trip() {
             reason: Some("ttl exceeded".to_string()),
         },
         TraceEventKind::MessageConsumed { message: context },
+    ];
+
+    for (sequence, kind) in events.into_iter().enumerate() {
+        let event = TraceEvent::new(
+            run_id.clone(),
+            sequence as u64,
+            OffsetDateTime::now_utc(),
+            kind,
+        );
+        let payload = serde_json::to_vec(&event).expect("serialize");
+        let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+        assert_eq!(decoded, event);
+    }
+}
+
+#[test]
+fn remote_message_trace_events_round_trip_with_causal_linkage() {
+    let run_id = RunId::new();
+    let source = AgentId::new();
+    let target = AgentId::new();
+    let tenant_id = TenantId::new();
+    let causal_parent = TraceEventId::from_run_sequence(&run_id, 9);
+    let now = OffsetDateTime::now_utc();
+    let task = TaskRequest::new(
+        run_id.clone(),
+        RunId::new(),
+        target.clone(),
+        "summarize",
+        DelegatedAuthority::empty(),
+    )
+    .expect("valid task request");
+    let message = Message::new(
+        MessageId::new(),
+        source,
+        target.clone(),
+        run_id.clone(),
+        TASK_REQUEST_SCHEMA,
+        serde_json::to_value(task).expect("task payload"),
+        Some(causal_parent.clone()),
+        true,
+        now,
+    )
+    .expect("valid message");
+    let message_envelope = MessageEnvelope::new(message).expect("valid envelope");
+    let remote = RemoteMessageEnvelope::new(
+        tenant_id.clone(),
+        "instance_a",
+        "instance_b",
+        WorkOrderAuthorization {
+            work_order_id: "wo_remote_trace".to_string(),
+            tenant_id,
+            agent_id: target,
+            run_id: Some(run_id.clone()),
+            allowed_scopes: vec![EndpointScope::MessagesSend],
+            signature: Some(WorkOrderSignature {
+                key_id: "key".to_string(),
+                signature: "sig".to_string(),
+            }),
+            expires_at: now + time::Duration::hours(1),
+            revocation: RevocationStatus::Active,
+        },
+        message_envelope,
+        RemoteMessageRetryPolicy::Idempotent {
+            max_attempts: 2,
+            idempotency_key: "message-key".to_string(),
+        },
+        now,
+        None,
+    )
+    .expect("valid remote");
+    let context = RemoteMessageTraceContext::from_envelope(&remote);
+    let events = vec![
+        TraceEventKind::RemoteMessageSent {
+            remote_message: context.clone(),
+        },
+        TraceEventKind::RemoteMessageAccepted {
+            remote_message: context.clone(),
+        },
+        TraceEventKind::RemoteMessageRejected {
+            remote_message: context.clone(),
+            reason: "wrong target".to_string(),
+        },
+        TraceEventKind::RemoteMessageDelivered {
+            remote_message: context.clone(),
+        },
+        TraceEventKind::RemoteMessageTimedOut {
+            remote_message: context.clone(),
+            reason: "deadline exceeded".to_string(),
+        },
+        TraceEventKind::RemoteMessageDuplicate {
+            remote_message: context.clone(),
+            reason: "already accepted".to_string(),
+        },
+        TraceEventKind::RemoteMessageTransportFailed {
+            remote_message: context,
+            reason: "connection reset".to_string(),
+        },
+    ];
+
+    for (sequence, kind) in events.into_iter().enumerate() {
+        let event = TraceEvent::new(run_id.clone(), sequence as u64, now, kind);
+        let payload = serde_json::to_vec(&event).expect("serialize");
+        let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+        assert_eq!(decoded, event);
+        match decoded.kind {
+            TraceEventKind::RemoteMessageSent { remote_message }
+            | TraceEventKind::RemoteMessageAccepted { remote_message }
+            | TraceEventKind::RemoteMessageDelivered { remote_message }
+            | TraceEventKind::RemoteMessageTimedOut { remote_message, .. }
+            | TraceEventKind::RemoteMessageDuplicate { remote_message, .. }
+            | TraceEventKind::RemoteMessageTransportFailed { remote_message, .. }
+            | TraceEventKind::RemoteMessageRejected { remote_message, .. } => {
+                assert_eq!(
+                    remote_message.message.causal_parent,
+                    Some(causal_parent.clone())
+                );
+                assert_eq!(
+                    remote_message.idempotency_key.as_deref(),
+                    Some("message-key")
+                );
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn state_handoff_trace_events_round_trip_with_previous_head() {
+    let run_id = RunId::new();
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let bytes = b"handoff".to_vec();
+    let handoff = StateHandoffTraceContext {
+        handoff_id: "handoff_trace".to_string(),
+        mode: StateReferenceMode::SnapshotImport,
+        tenant_id,
+        agent_id,
+        run_id: run_id.clone(),
+        work_order_id: "wo_handoff".to_string(),
+        source_instance_id: Some("source".to_string()),
+        receiver_instance_id: Some("receiver".to_string()),
+        source_state_node_id: ContentHash::blake3(&bytes).to_string(),
+        previous_state_node_id: Some("blake3:previous".to_string()),
+        receiver_state_node_id: Some("blake3:receiver".to_string()),
+        snapshot_id: Some(SnapshotId::from_bytes(&bytes)),
+        source_trace_id: Some(TraceId::from_run_sequence(&run_id, 1)),
+    };
+    let events = vec![
+        TraceEventKind::StateHandoffExported {
+            handoff: handoff.clone(),
+        },
+        TraceEventKind::StateHandoffImported {
+            handoff: handoff.clone(),
+        },
+        TraceEventKind::StateHandoffImportFailed {
+            handoff: handoff.clone(),
+            reason: "corrupted snapshot".to_string(),
+        },
+        TraceEventKind::ReadOnlyStateReferenced { handoff },
     ];
 
     for (sequence, kind) in events.into_iter().enumerate() {

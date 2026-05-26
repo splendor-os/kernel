@@ -9,7 +9,14 @@ export type AgentId = string;
 export type RunId = string;
 export type MessageId = string;
 export type TraceId = string;
+export type TraceEventId = TraceId;
 export type ActionId = string;
+export type FleetId = string;
+export type NodeId = string;
+export type InstanceId = string;
+export type TickId = number;
+export type StateNodeId = string;
+export type WorkOrderId = string;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -161,6 +168,47 @@ export interface TaskFailure {
   trace_id: TraceId | null;
 }
 
+export type StateReferenceMode = "snapshot_import" | "read_only_reference";
+
+export interface StateHandoffTraceContext {
+  handoff_id: string;
+  mode: StateReferenceMode;
+  tenant_id: TenantId;
+  agent_id: AgentId;
+  run_id: RunId;
+  work_order_id: string;
+  source_instance_id: string | null;
+  receiver_instance_id: string | null;
+  source_state_node_id: string;
+  previous_state_node_id: string | null;
+  receiver_state_node_id: string | null;
+  snapshot_id: SnapshotId | null;
+  source_trace_id: TraceId | null;
+}
+
+export interface RemoteMessageTraceContext {
+  message: MessageTraceContext;
+  tenant_id: TenantId;
+  source_instance_id: string;
+  target_instance_id: string;
+  work_order_id: string;
+  attempt: number;
+  idempotency_key: string | null;
+}
+
+export interface TraceIdentityContext {
+  fleet_id?: FleetId | null;
+  node_id?: NodeId | null;
+  instance_id?: InstanceId | null;
+  tenant_id?: TenantId | null;
+  agent_id?: AgentId | null;
+  run_id: RunId;
+  tick_id?: TickId | null;
+  action_id?: ActionId | null;
+  state_node_id?: StateNodeId | null;
+  message_id?: MessageId | null;
+}
+
 export interface TraceIntegrity {
   prev_event_hash: ContentHash | null;
   event_hash: ContentHash;
@@ -168,6 +216,23 @@ export interface TraceIntegrity {
 
 export type TraceEventKind =
   | "RunStarted"
+  | {
+      WorkOrderAccepted: {
+        work_order_id: WorkOrderId;
+        tenant_id: TenantId;
+        agent_id: AgentId;
+        run_id: RunId | null;
+      };
+    }
+  | {
+      WorkOrderRejected: {
+        work_order_id: WorkOrderId | null;
+        tenant_id: TenantId | null;
+        agent_id: AgentId | null;
+        run_id: RunId | null;
+        reason: string;
+      };
+    }
   | { RunPaused: { reason: string | null } }
   | { RunResumed: { reason: string | null } }
   | { RunStopped: { reason: string | null } }
@@ -187,11 +252,22 @@ export type TraceEventKind =
   | { ActionFailed: { action: Action; error: string; result: VerificationResult } }
   | { OutcomeRecorded: { outcome: JsonValue; feedback: Feedback | null; reward: Reward | null } }
   | { StateCommitted: { state_hash: ContentHash; snapshot_id: SnapshotId | null } }
+  | { StateHandoffExported: { handoff: StateHandoffTraceContext } }
+  | { StateHandoffImported: { handoff: StateHandoffTraceContext } }
+  | { StateHandoffImportFailed: { handoff: StateHandoffTraceContext; reason: string } }
+  | { ReadOnlyStateReferenced: { handoff: StateHandoffTraceContext } }
   | { MessageQueued: { message: MessageTraceContext } }
   | { MessageDelivered: { message: MessageTraceContext } }
   | { MessageRejected: { message: MessageTraceContext; reason: string } }
   | { MessageExpired: { message: MessageTraceContext; reason: string | null } }
   | { MessageConsumed: { message: MessageTraceContext } }
+  | { RemoteMessageSent: { remote_message: RemoteMessageTraceContext } }
+  | { RemoteMessageAccepted: { remote_message: RemoteMessageTraceContext } }
+  | { RemoteMessageRejected: { remote_message: RemoteMessageTraceContext; reason: string } }
+  | { RemoteMessageDelivered: { remote_message: RemoteMessageTraceContext } }
+  | { RemoteMessageTimedOut: { remote_message: RemoteMessageTraceContext; reason: string } }
+  | { RemoteMessageDuplicate: { remote_message: RemoteMessageTraceContext; reason: string } }
+  | { RemoteMessageTransportFailed: { remote_message: RemoteMessageTraceContext; reason: string } }
   | { DelegationRequested: { delegation: LocalDelegationTraceContext } }
   | { DelegationRejected: { delegation: LocalDelegationTraceContext; reason: string } }
   | { ParentRunCancelled: { parent_run_id: RunId; agent_id: AgentId; reason: string } }
@@ -211,10 +287,11 @@ export type TraceEventKind =
   | { LoopTickCompleted: { tick_id: number; integrity: TraceIntegrity | null } };
 
 export interface TraceEvent {
-  trace_id: TraceId;
+  trace_event_id: TraceEventId;
   run_id: RunId;
   sequence: number;
   timestamp: ISODateTime;
+  identity: TraceIdentityContext;
   kind: TraceEventKind;
 }
 
@@ -224,6 +301,7 @@ export interface ActionRequest {
   action_id: ActionId;
   tenant_id: TenantId;
   agent_id: AgentId;
+  run_id: RunId;
   action: Action;
   adapter: string | null;
   quota_usage: QuotaUsage;
@@ -363,8 +441,13 @@ export type EndpointScope =
   | "traces_read"
   | "state_read"
   | "replay_create"
+  | "messages_send"
   | "health_read"
-  | "capabilities_read";
+  | "capabilities_read"
+  | "nodes_register"
+  | "instances_register"
+  | "nodes_heartbeat"
+  | "instances_heartbeat";
 
 export interface AppPrincipal {
   app_principal_id: string;
@@ -548,6 +631,7 @@ export const CANONICAL_SCHEMA_FIELDS = {
     "action_id",
     "tenant_id",
     "agent_id",
+    "run_id",
     "action",
     "adapter",
     "quota_usage",
@@ -555,7 +639,7 @@ export const CANONICAL_SCHEMA_FIELDS = {
     "requested_at"
   ],
   action_outcome: ["action_id", "status", "verification", "post_verification", "output", "error", "completed_at"],
-  trace_event: ["trace_id", "run_id", "sequence", "timestamp", "kind"],
+  trace_event: ["trace_event_id", "run_id", "sequence", "timestamp", "identity", "kind"],
   state_head: ["run_id", "state_node_id", "parent_state_node_ids", "data_hash", "created_at", "label"],
   create_run_request: [
     "tenant_id",
@@ -625,6 +709,8 @@ export const CANONICAL_SCHEMA_FIELDS = {
 
 export const TRACE_EVENT_KIND_VARIANTS = [
   "RunStarted",
+  "WorkOrderAccepted",
+  "WorkOrderRejected",
   "RunPaused",
   "RunResumed",
   "RunStopped",
@@ -644,11 +730,22 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "ActionFailed",
   "OutcomeRecorded",
   "StateCommitted",
+  "StateHandoffExported",
+  "StateHandoffImported",
+  "StateHandoffImportFailed",
+  "ReadOnlyStateReferenced",
   "MessageQueued",
   "MessageDelivered",
   "MessageRejected",
   "MessageExpired",
   "MessageConsumed",
+  "RemoteMessageSent",
+  "RemoteMessageAccepted",
+  "RemoteMessageRejected",
+  "RemoteMessageDelivered",
+  "RemoteMessageTimedOut",
+  "RemoteMessageDuplicate",
+  "RemoteMessageTransportFailed",
   "DelegationRequested",
   "DelegationRejected",
   "ParentRunCancelled",
@@ -673,8 +770,13 @@ export const ENDPOINT_SCOPE_VALUES = [
   "TracesRead",
   "StateRead",
   "ReplayCreate",
+  "MessagesSend",
   "HealthRead",
-  "CapabilitiesRead"
+  "CapabilitiesRead",
+  "NodesRegister",
+  "InstancesRegister",
+  "NodesHeartbeat",
+  "InstancesHeartbeat"
 ] as const;
 
 export const ENDPOINT_SCOPE_LABELS: Record<EndpointScope, string> = {
@@ -689,8 +791,13 @@ export const ENDPOINT_SCOPE_LABELS: Record<EndpointScope, string> = {
   traces_read: "splendor.traces.read",
   state_read: "splendor.state.read",
   replay_create: "splendor.replay.create",
+  messages_send: "splendor.messages.send",
   health_read: "splendor.health.read",
-  capabilities_read: "splendor.capabilities.read"
+  capabilities_read: "splendor.capabilities.read",
+  nodes_register: "splendor.nodes.register",
+  instances_register: "splendor.instances.register",
+  nodes_heartbeat: "splendor.nodes.heartbeat",
+  instances_heartbeat: "splendor.instances.heartbeat"
 };
 
 export const DAEMON_API_COMPATIBILITY = {

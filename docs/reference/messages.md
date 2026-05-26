@@ -3,8 +3,8 @@
 Messages are the transport-neutral primitive for local agent-to-agent
 coordination in Splendor 0.02. A message is not a chat transcript and it is not a
 transport packet. It is a typed, versioned runtime object scoped by explicit
-agent and run identity so later local routing, delegation, and replay work can
-preserve causality without inheriting permissions implicitly.
+agent, run, and trace-event identity so later local routing, delegation, and
+replay work can preserve causality without inheriting permissions implicitly.
 
 Implemented in Rust as `splendor_types::{Message, MessageEnvelope}`.
 
@@ -25,6 +25,11 @@ transitions, and trace emission documented in
 transport-neutral: no broker, remote transport, distributed delivery guarantee,
 or shared mutable state channel is part of the message object.
 
+0.03-S5 adds a remote wrapper documented in
+[`remote-messaging.md`](remote-messaging.md). The wrapper carries instance,
+work-order, retry, and idempotency metadata but does not change the canonical
+`Message` payload or local `MessageEnvelope` schema.
+
 0.02-S3 adds agent-isolation checks around local routing: a source agent must be
 explicitly allowed to send the message schema to the target recipient.
 
@@ -44,7 +49,7 @@ before routing.
 | `run_id` | `RunId` | yes | Run that scopes the message and trace causality. The nil UUID is rejected. |
 | `schema` | `String` | yes | Versioned payload schema, such as `splendor.message.task_request.v1`. |
 | `payload` | `serde_json::Value` | yes | Typed JSON payload. JSON `null` is rejected at the envelope layer. |
-| `causal_parent` | `Option<TraceId>` | no | Trace event that causally produced the message. Preserved by serialization/replay inputs. |
+| `causal_parent` | `Option<TraceEventId>` | no | Trace event that causally produced the message. Preserved by serialization/replay inputs. |
 | `requires_response` | `bool` | yes | Whether the sender expects a response message. |
 | `created_at` | `OffsetDateTime` | yes | Message creation timestamp. |
 
@@ -123,7 +128,7 @@ the message trace context and reason.
 
 ## Trace and replay behavior
 
-Messages carry an optional `causal_parent: TraceId`. The value identifies the
+Messages carry an optional `causal_parent: TraceEventId`. The value identifies the
 trace event that caused the message to be proposed or produced. Serialization
 round trips preserve this field. Multi-agent replay uses it to reconstruct
 message lineage without re-executing side effects.
@@ -137,6 +142,9 @@ The canonical schema contains no transport-specific fields such as endpoint URLs
 topics, stream names, connection IDs, node IDs, fleet IDs, or protocol names.
 Later local or remote transports may wrap `MessageEnvelope`; they must not change
 message identity, run scope, causal parent, or payload schema semantics.
+
+`RemoteMessageEnvelope` is such a wrapper. It is the remote transport contract,
+not a replacement for `Message`.
 
 ## Security notes
 

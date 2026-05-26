@@ -94,6 +94,11 @@ are documented in [`quotas.md`](quotas.md).
 6. Target agents call `inbox` for a non-mutating snapshot or `consume_next` /
    `consume` to mark a message consumed and emit `message.consumed`.
 
+0.03-S5 also exposes `LocalMessageRouter::deliver_remote_inbound_at(...)` for the
+remote receive boundary. That method may deliver a validated remote inbound
+`MessageEnvelope` to the local target inbox without requiring the remote source
+agent to be registered locally and without writing to a local source outbox.
+
 Ordering is deterministic within a `(source_agent_id, target_agent_id, run_id)`
 stream because messages are appended to per-agent FIFO queues.
 
@@ -144,7 +149,8 @@ re-delivering messages or executing adapters.
 
 ## Non-goals
 
-- No cross-instance or remote messaging.
+- No production cross-instance network transport or broker semantics; the remote
+  receive bridge is documented in [`remote-messaging.md`](remote-messaging.md).
 - No durable remote queue or broker semantics.
 - No exactly-once distributed delivery.
 - No scoped delegation model.

@@ -483,7 +483,7 @@ async fn action_endpoint_uses_gateway_and_returns_structured_denial() {
     let causal_trace_id = traces.records.first().and_then(|record| {
         serde_json::from_value::<TraceEvent>(record.payload.clone())
             .ok()
-            .map(|event| event.trace_id)
+            .map(|event| event.trace_event_id)
     });
 
     let submit = SubmitActionRequest {
@@ -733,7 +733,7 @@ async fn daemon_executes_allowed_actions_and_pages_trace_ranges() {
     let causal_trace_id = range.records.first().and_then(|record| {
         serde_json::from_value::<TraceEvent>(record.payload.clone())
             .ok()
-            .map(|event| event.trace_id)
+            .map(|event| event.trace_event_id)
     });
 
     let submit = SubmitActionRequest {

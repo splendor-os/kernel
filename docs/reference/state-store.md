@@ -10,10 +10,12 @@ graph.
 | --------------- | ------------------------------------------------------------ |
 | `StateData`     | Serialized state bytes with an optional `content_type`.      |
 | `StateDataRef`  | UUID reference for stored state bytes.                       |
-| `StateNodeId`   | Content hash identifying a state graph node.                 |
-| `StateMetadata` | Metadata stored with each state node.                        |
+| `StateNodeId`   | Content hash identifying a state graph node; canonical type lives in `splendor-types` and is re-exported by `splendor-store`. |
+| `StateMetadata` | Metadata stored with each state node, including optional tenant/agent/run/trace-event linkage for runtime-owned commits. |
 | `StateNode`     | Node payload containing parents, data reference, and hashes. |
 | `StateSnapshot` | Snapshot payload containing node ID and `StateData`.         |
+| `StateHandoffSnapshot` | Export payload containing snapshot ID, source node ID, parent IDs, state hash, bytes, and content type. |
+| `ImportedStateSnapshot` | Import result containing receiver node ID and snapshot ID. |
 
 ## StateStore
 
@@ -26,7 +28,14 @@ commit_node(parent_ids, data_ref, metadata) -> StateNodeId
 get_node(StateNodeId) -> StateNode
 snapshot(StateNodeId) -> SnapshotId
 load_snapshot(SnapshotId) -> StateSnapshot
+export_snapshot(SnapshotId) -> StateHandoffSnapshot
+import_handoff_snapshot(StateHandoffSnapshot, StateMetadata) -> ImportedStateSnapshot
 ```
+
+`export_snapshot` verifies the node data hash before producing a handoff payload.
+`import_handoff_snapshot` verifies snapshot ID, state bytes hash, source node ID,
+and parent linkage before writing receiver state. Invalid handoff payloads fail
+with `StateStoreError::HashMismatch` and do not create a receiver node.
 
 ## AsyncStateStore
 
@@ -46,6 +55,9 @@ contains:
 - `state_nodes`: serialized parent IDs, data refs, data hash, and metadata.
 - `snapshots`: snapshot hash to node hash mapping.
 
+No distributed state table is introduced for 0.03-S7. Imported snapshots are
+stored as ordinary explicit state graph nodes in the receiver store.
+
 ## Example
 
 ```rust
@@ -57,7 +69,7 @@ let temp = NamedTempFile::new().expect("temp");
 let store = SqliteStateStore::open(temp.path()).expect("open");
 let data = StateData { bytes: vec![1, 2, 3], content_type: None };
 let data_ref = StateStore::put_state(&store, data).expect("put");
-let metadata = StateMetadata { created_at: OffsetDateTime::now_utc(), label: Some("seed".into()) };
+let metadata = StateMetadata::new(OffsetDateTime::now_utc(), Some("seed".into()));
 let node_id = StateStore::commit_node(&store, Vec::new(), data_ref, metadata).expect("commit");
 let node = StateStore::get_node(&store, &node_id).expect("node exists");
 assert_eq!(node.id, node_id);

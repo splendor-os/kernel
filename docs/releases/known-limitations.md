@@ -3,8 +3,9 @@
 ## 0.01-dev local-only constraints
 
 - Runs execute inside one local Splendor instance.
-- There is no fleet registry, resident node registry, central manager, or remote
-  work-order dispatch.
+- 0.03-S2 includes a minimal in-memory resident node/instance registry, but there
+  is no central manager, remote work-order dispatch, placement engine, or trace
+  aggregation protocol.
 - There is no local multi-agent router or typed message delivery in 0.01-dev.
 - There is no daemon API or TypeScript client in 0.01-dev.
 - Replay is inspect-only and local; there is no cross-instance replay.

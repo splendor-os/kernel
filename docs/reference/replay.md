@@ -13,6 +13,9 @@ Replay emits JSON Lines:
 
 - `replay_start`: requested run, optional starting snapshot, replay mode, and
   `side_effects_replayed: false`.
+- `handoff_boundary`: state handoff or read-only reference boundary with
+  `event_kind`, `handoff_id`, previous receiver state head, receiver imported
+  head when present, failure reason when present, and trace sequence.
 - `tick`: reconstructed policy name, percepts, candidate actions, verification
   result, action statuses, message lifecycle events, local parent/child run
   links, replay-visible isolation denials, outcome payload, feedback/reward,
@@ -51,13 +54,19 @@ Before reconstructing ticks, replay validates:
 - trace records are scoped to the requested run;
 - sequence numbers are contiguous from zero;
 - each serialized `TraceEvent` run and sequence match the stored record;
-- each `trace_id` matches the deterministic run/sequence derivation;
+- each `trace_event_id` matches the deterministic run/sequence derivation;
 - trace hash-chain continuity through `prev_event_hash`;
 - referenced snapshots can be loaded from the state store.
+- state handoff events decode as ordinary trace events and expose their previous
+  state head; replay does not perform imports.
 - message trace event IDs still match the validated trace record sequence before
   they are exposed in the causal graph.
 - embedded message contexts and parent/child run links remain scoped to the
   enclosing trace event run.
+
+Work-order acceptance/rejection events are replayed as trace facts only. Replay
+does not re-verify signatures, call revocation sources, refresh key material, or
+authorize a new run from historical work-order data.
 
 ## Failure modes
 
@@ -70,6 +79,9 @@ Replay fails with a clear error when:
 - trace run/sequence/ID validation fails;
 - the requested `--from-snapshot` is not in the trace history;
 - a referenced snapshot is missing from the state store.
+
+State handoff import failures are replayed as `handoff_boundary` records with a
+reason. They are not retried, and no receiver state is mutated during replay.
 
 ## Python SDK
 

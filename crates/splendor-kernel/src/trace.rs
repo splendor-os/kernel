@@ -21,7 +21,7 @@
 //! ```
 
 use splendor_store::{TraceStore, TraceStoreError};
-use splendor_types::{ContentHash, RunId, TraceEvent};
+use splendor_types::{ContentHash, IdentityValidationError, RunId, TraceEvent};
 use std::future::{ready, Future, Ready};
 use std::sync::Arc;
 
@@ -127,6 +127,9 @@ pub enum TraceError {
     /// JSON serialization failure for trace events.
     #[error("failed to serialize trace event: {0}")]
     Serialization(#[from] serde_json::Error),
+    /// Trace identity validation failed before persistence.
+    #[error("trace identity error: {0}")]
+    Identity(#[from] IdentityValidationError),
     /// Trace store failure while persisting events.
     #[error("trace store error: {0}")]
     Store(#[from] TraceStoreError),
@@ -139,6 +142,14 @@ pub enum TraceError {
     /// Integrity state mutex could not be acquired.
     #[error("trace integrity lock poisoned")]
     IntegrityLock,
+    /// State handoff event scope did not match the runtime run.
+    #[error("state handoff run mismatch: runtime {runtime_run_id}, handoff {handoff_run_id}")]
+    HandoffRunMismatch {
+        /// Run ID owned by this runtime.
+        runtime_run_id: RunId,
+        /// Run ID declared by the handoff/reference authority.
+        handoff_run_id: RunId,
+    },
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 use super::*;
-use splendor_types::{AgentId, QuotaUsage, SideEffectClass, TenantId};
+use splendor_types::{AgentId, QuotaUsage, RunId, SideEffectClass, TenantId};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -34,6 +34,7 @@ fn sample_action() -> ActionRequest {
         action_id: ActionId::default(),
         tenant_id: TenantId::new(),
         agent_id: AgentId::new(),
+        run_id: RunId::new(),
         action: Action {
             name: "noop".to_string(),
             params: serde_json::json!({"ok": true}),
@@ -180,6 +181,7 @@ fn base_request() -> ActionRequest {
         action_id: ActionId::default(),
         tenant_id: TenantId::new(),
         agent_id: AgentId::new(),
+        run_id: RunId::new(),
         action: Action {
             name: "noop".to_string(),
             params: serde_json::json!({"ok": true}),
@@ -318,6 +320,28 @@ fn verified_gateway_denies_adapter_mismatch() {
         .verification
         .reasons
         .contains(&"adapter_mismatch".to_string()));
+    assert_eq!(*adapter.calls.lock().expect("calls lock"), 0);
+}
+
+#[test]
+fn verified_gateway_denies_invalid_identity_before_adapter_execution() {
+    let tenant_access = Arc::new(TestTenantAccess {
+        policy: VerificationResult::allow(),
+        quota: VerificationResult::allow(),
+    });
+    let mut gateway = VerifiedActionGateway::new(tenant_access);
+    let adapter = Arc::new(CountingAdapter::default());
+    gateway.register_adapter("noop", "adapter", adapter.clone());
+
+    let mut request = base_request();
+    request.run_id = RunId::from(uuid::Uuid::nil());
+
+    let outcome = gateway.submit(request).expect("outcome");
+    assert!(matches!(outcome.status, ActionStatus::Denied));
+    assert!(outcome
+        .verification
+        .reasons
+        .contains(&"identity_invalid".to_string()));
     assert_eq!(*adapter.calls.lock().expect("calls lock"), 0);
 }
 

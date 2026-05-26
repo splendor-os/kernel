@@ -30,13 +30,23 @@
 //! assert_eq!(action.name, "http_get");
 //! ```
 
+mod capabilities;
 mod daemon_security;
+mod fleet_telemetry;
 mod hash;
 mod ids;
 mod message;
+mod node_registry;
+mod placement;
 mod primitives;
+mod state_handoff;
 mod trace;
+mod work_order;
 
+pub use capabilities::{
+    is_valid_capability_name, CapabilityDocument, CapabilityValidationError,
+    CAPABILITY_DOCUMENT_SCHEMA,
+};
 pub use daemon_security::{
     validate_client_connection_policy, validate_daemon_request, validate_insecure_dev_mode,
     AppPrincipal, AuditAttribution, CallerCredential, ClientConnectionPolicy, ClientPrincipal,
@@ -45,18 +55,50 @@ pub use daemon_security::{
     InsecureDevMode, LocalTransportBinding, RevocationStatus, WorkOrderAuthorization,
     WorkOrderSignature,
 };
+pub use fleet_telemetry::{
+    DenialSignal, FailureCategory, FailureSignal, FleetTelemetrySnapshot, InstanceTelemetry,
+    NodeOnlineState, NodeTelemetry, QueueTelemetry, QuotaSignal, RunStatus, RunStatusCount,
+    RunStatusCounts, RunTelemetry, RuntimeMode as TelemetryRuntimeMode, TelemetryAuthority,
+    TraceSyncFailure, TraceSyncTelemetry, FLEET_TELEMETRY_SCHEMA_VERSION,
+};
 pub use hash::{ContentHash, HashAlgorithm};
-pub use ids::{AgentId, MessageId, RunId, SnapshotId, TenantId, TraceId};
+pub use ids::{
+    ActionId, AgentId, FleetId, IdentityValidationError, InstanceId, MessageId, NodeId, RunId,
+    RuntimeIdentityContext, SnapshotId, StateNodeId, TenantId, TickId, TraceEventId, TraceId,
+    TraceIdentityContext, WorkOrderId, WorkOrderIdError,
+};
 pub use message::{
     DelegatedAuthority, Message, MessageDeliveryStatus, MessageEnvelope, MessageSchemaVersion,
-    MessageTraceContext, MessageTraceLinks, MessageValidationError, TaskFailure, TaskRequest,
-    TaskResponse, TaskResponseStatus, TASK_REQUEST_SCHEMA, TASK_RESPONSE_SCHEMA,
+    MessageTraceContext, MessageTraceLinks, MessageValidationError, RemoteMessageEnvelope,
+    RemoteMessageEnvelopeVersion, RemoteMessageRetryPolicy, RemoteMessageTraceContext,
+    RemoteMessageValidationError, TaskFailure, TaskRequest, TaskResponse, TaskResponseStatus,
+    TASK_REQUEST_SCHEMA, TASK_RESPONSE_SCHEMA,
+};
+pub use node_registry::{
+    HealthStatus, InstanceHealth, InstanceHeartbeat, InstanceRegistration, ManagementAuditEvent,
+    ManagementAuditEventKind, NodeHealth, NodeHeartbeat, NodeKind, NodeRegistration,
+    NodeRegistryValidationError, RegistryScope, RuntimeMode,
+};
+pub use placement::{
+    select_placement, DataLocality, PlacementCandidate, PlacementCandidateEvaluation,
+    PlacementDecision, PlacementDecisionStatus, PlacementExecutionMode, PlacementExplain,
+    PlacementRejectionReason, PlacementRequest, PlacementTarget, PlacementTraceAudit,
+    PLACEMENT_DECISION_SCHEMA,
 };
 pub use primitives::{
     Action, Constraint, ConstraintKind, ConstraintScope, CostEstimate, Feedback, Percept,
     PerceptProvenance, QuotaUsage, Reward, SideEffectClass, VerificationResult,
 };
+pub use state_handoff::{
+    StateHandoff, StateHandoffAuthority, StateHandoffSnapshot, StateHandoffTraceContext,
+    StateReference, StateReferenceMode,
+};
 pub use trace::{LocalDelegationTraceContext, TraceEvent, TraceEventKind, TraceIntegrity};
+pub use work_order::{
+    validate_work_order, ValidatedWorkOrder, WorkOrder, WorkOrderEnvelope, WorkOrderKeyring,
+    WorkOrderPlacement, WorkOrderQuotaPolicy, WorkOrderValidationContext, WorkOrderValidationError,
+    WORK_ORDER_SCHEMA_VERSION, WORK_ORDER_SIGNATURE_ALGORITHM,
+};
 
 #[cfg(test)]
 #[path = "../tests/unit/lib_tests.rs"]

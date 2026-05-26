@@ -63,6 +63,9 @@ allowlists and required permissions before execution.
 - Allowlists are enforced strictly (empty lists deny access).
 - `TenantPolicy::verify_action` returns a `VerificationResult` with reason codes:
   `action_not_allowed`, `adapter_not_allowed`, and `permission_denied`.
+- `TenantPolicy::constrain_to_work_order` narrows allowlists to the intersection
+  of tenant policy and validated work-order authority. It never broadens tenant
+  permissions.
 
 ### QuotaPolicy
 
@@ -91,6 +94,9 @@ allowlists and required permissions before execution.
 - `http_requests` (`u32`): HTTP requests issued.
 
 `TenantContext::record_usage` consumes `QuotaUsage` to enforce policies.
+`QuotaPolicy::constrain_to_work_order` narrows each quota field to the smaller of
+tenant and work-order limits when both are present; missing work-order limits do
+not increase tenant quotas.
 
 ### AgentContext
 
@@ -135,6 +141,9 @@ state commits.
 - Verify actions via gateway verifiers (`TenantAccess` + invariants) and record quotas.
 - Execute actions through an `ActionGateway` implementation.
 - Record `OutcomeRecorded` and `StateCommitted` events.
+- Record `WorkOrderAccepted` after `RunStarted` when constructed with a validated
+  work order via `with_trace_store_and_work_order` or
+  `resume_from_trace_store_with_work_order`.
 
 **Key Types**
 - `ActionCandidate`: action proposal plus adapter, quota usage, and satisfied preconditions.

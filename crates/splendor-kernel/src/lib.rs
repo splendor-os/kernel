@@ -24,15 +24,20 @@
 //! assert_eq!(event.sequence, 0);
 //! ```
 
+mod fleet_telemetry;
 mod local_delegation;
 mod loop_engine;
 mod message_router;
+mod node_registry;
+mod remote_message_transport;
 mod runtime;
 mod scheduler;
 mod state;
 mod tenancy;
 mod trace;
+mod trace_durability;
 
+pub use fleet_telemetry::{FleetTelemetryCollector, TelemetryThresholds};
 pub use local_delegation::{
     replay_local_delegations, LocalAgentRegistration, LocalChildRun, LocalDelegationError,
     LocalDelegationManager, LocalDelegationReplay, LocalDelegationRequest, LocalRunRecord,
@@ -41,27 +46,53 @@ pub use local_delegation::{
 pub use loop_engine::{
     ActionCandidate, AllowAllConstraintEngine, ConstraintEngine, ConstraintEvaluation, LoopEngine,
     LoopError, NoopOutcomeEvaluator, OutcomeEvaluator, OutcomeSignal, Perceptor, Policy,
-    PolicyDecision, ResumeInfo, TickOutcome,
+    PolicyDecision, ResumeInfo, RunTraceContext, TickOutcome,
 };
 pub use message_router::{
     AgentMailboxSnapshot, LocalMessageRouter, MessageRouter, MessageRouterConfig,
     MessageRouterError, MessageTraceRecorder,
 };
+pub use node_registry::{
+    HeartbeatFreshness, InMemoryManagementAuditSink, InMemoryNodeRegistry, InstanceRecord,
+    ManagementAuditError, ManagementAuditSink, NodeRecord, NodeRegistry, NodeRegistryConfig,
+    NodeRegistryError, RegistryHealthStatus,
+};
+pub use remote_message_transport::{
+    send_remote_message, InMemoryRemoteMessageTransport, InMemoryRemoteTransportFault,
+    RemoteMessageReceiver, RemoteMessageTransport, RemoteMessageTransportError,
+};
 pub use runtime::{KernelRuntime, KernelRuntimeConfig};
 pub use scheduler::{Scheduler, SchedulerConfig, SchedulerError, SchedulerStep};
 pub use splendor_types::{
-    Action, AgentId, Constraint, ConstraintKind, ConstraintScope, ContentHash, CostEstimate,
-    DelegatedAuthority, Feedback, HashAlgorithm, LocalDelegationTraceContext, Message,
-    MessageDeliveryStatus, MessageEnvelope, MessageId, MessageSchemaVersion, MessageTraceContext,
-    MessageTraceLinks, MessageValidationError, Percept, PerceptProvenance, QuotaUsage, Reward,
-    RunId, SideEffectClass, SnapshotId, TaskFailure, TaskRequest, TaskResponse, TaskResponseStatus,
-    TenantId, TraceEvent, TraceEventKind, TraceId, VerificationResult, TASK_REQUEST_SCHEMA,
-    TASK_RESPONSE_SCHEMA,
+    Action, ActionId, AgentId, CapabilityDocument, CapabilityValidationError, Constraint,
+    ConstraintKind, ConstraintScope, ContentHash, CostEstimate, DelegatedAuthority, DenialSignal,
+    FailureCategory, FailureSignal, Feedback, FleetId, FleetTelemetrySnapshot, HashAlgorithm,
+    HealthStatus, IdentityValidationError, InstanceHealth, InstanceHeartbeat, InstanceId,
+    InstanceRegistration, InstanceTelemetry, LocalDelegationTraceContext, ManagementAuditEvent,
+    ManagementAuditEventKind, Message, MessageDeliveryStatus, MessageEnvelope, MessageId,
+    MessageSchemaVersion, MessageTraceContext, MessageTraceLinks, MessageValidationError,
+    NodeHealth, NodeHeartbeat, NodeId, NodeKind, NodeOnlineState, NodeRegistration,
+    NodeRegistryValidationError, NodeTelemetry, Percept, PerceptProvenance, QueueTelemetry,
+    QuotaSignal, QuotaUsage, RegistryScope, RemoteMessageEnvelope, RemoteMessageEnvelopeVersion,
+    RemoteMessageRetryPolicy, RemoteMessageTraceContext, RemoteMessageValidationError, Reward,
+    RunId, RunStatus, RunStatusCount, RunStatusCounts, RunTelemetry, RuntimeIdentityContext,
+    RuntimeMode, SideEffectClass, SnapshotId, StateHandoff, StateHandoffAuthority,
+    StateHandoffSnapshot, StateHandoffTraceContext, StateNodeId, StateReference,
+    StateReferenceMode, TaskFailure, TaskRequest, TaskResponse, TaskResponseStatus,
+    TelemetryAuthority, TelemetryRuntimeMode, TenantId, TickId, TraceEvent, TraceEventId,
+    TraceEventKind, TraceId, TraceIdentityContext, TraceSyncFailure, TraceSyncTelemetry,
+    VerificationResult, FLEET_TELEMETRY_SCHEMA_VERSION, TASK_REQUEST_SCHEMA, TASK_RESPONSE_SCHEMA,
 };
-pub use state::{SnapshotPolicy, StateCommit, StateGraph, StateGraphError};
+pub use state::{
+    SnapshotPolicy, StateCommit, StateGraph, StateGraphError, StateHandoffExportRequest,
+    StateHandoffScope,
+};
 pub use tenancy::{
     AdapterQuota, AgentContext, AgentIsolationPolicy, AgentRuntimeConfig, QuotaLedger, QuotaPolicy,
     TenantContext, TenantPolicy, TenantRegistry, AGENT_ISOLATION_LEDGER_SOURCE,
     QUOTA_LEDGER_SOURCE,
 };
 pub use trace::{AsyncTraceSink, StdoutTraceSink, TraceError, TraceSink, TraceStoreSink};
+pub use trace_durability::{
+    TraceDurabilityGateway, TraceDurabilityPolicy, TraceDurabilityState, TraceDurabilityStatus,
+};

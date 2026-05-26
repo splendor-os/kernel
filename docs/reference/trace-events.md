@@ -7,10 +7,11 @@ sequence number within a `RunId` and must be emitted in strict tick order.
 
 **Fields**
 
-- `trace_id` (`TraceId`): deterministic identifier derived from `RunId` + sequence.
+- `trace_event_id` (`TraceEventId`): deterministic identifier derived from `RunId` + sequence. Deserialization accepts legacy `trace_id` as an input alias during the 0.02 migration window.
 - `run_id` (`RunId`): owning run.
 - `sequence` (`u64`): monotonic per-run sequence number.
 - `timestamp` (`OffsetDateTime`): capture time at emission.
+- `identity` (`TraceIdentityContext`): runtime identity context containing required `run_id` and optional fleet, node, instance, tenant, agent, tick, action, state, and message IDs when applicable.
 - `kind` (`TraceEventKind`): event payload.
 
 Trace events are serialized into `TraceRecord` entries within a `TraceStore`.
@@ -19,8 +20,11 @@ The store records additional integrity hashes for audit validation.
 ## Ordering Rules
 
 When a new persisted local run trace stream is created, `RunStarted` is emitted
-before the first tick. Events MUST then be emitted in the following order for
-each tick:
+before the first tick. If the run was authorized by a validated 0.03-S3 work
+order, `WorkOrderAccepted` follows `RunStarted` and precedes the first tick. If
+work-order validation fails, `WorkOrderRejected` is emitted as a management/audit
+trace and no tick events are emitted. Events MUST then be emitted in the
+following order for each tick:
 
 1. `LoopTickStarted`
 2. `PerceptsReceived`
@@ -49,7 +53,26 @@ If post-verification fails after an action executes, the kernel records
 Message lifecycle events are also trace events. They are ordered by the same
 per-run sequence counter and do not replace the required tick event ordering.
 The local message router emits them when a message is queued, delivered,
-rejected, expired, or consumed.
+rejected, expired, or consumed. Remote message transport emits additional
+cross-instance message events for send, accept, reject, deliver, timeout,
+duplicate, and transport failure.
+
+## Identity context
+
+Every trace event carries `identity.run_id`; runtime emission validates that it
+matches the top-level `run_id` before persistence. Loop events emitted by the
+kernel include tenant, agent, run, and tick identity where applicable. Action
+events include `action_id`; state commit events include `state_node_id`; message
+lifecycle events include `message_id`. Fleet, node, and instance IDs are optional
+until later 0.03 registry and transport sprints populate them.
+
+Node and instance registry lifecycle events introduced in 0.03-S2 are management
+audit events rather than run-scoped `TraceEventKind` variants. They are documented
+in [`node-registry.md`](node-registry.md) and remain suitable for later
+aggregation without inventing fake run IDs.
+
+State handoff events are trace events too. They identify source and receiver
+handoff boundaries and preserve the previous receiver state head for replay.
 
 Local delegation events are emitted outside the tick ordering when a parent run
 creates, completes, fails, cancels, or rejects local child work. They are ordered
@@ -63,6 +86,8 @@ mutation so caller attribution is persisted in the run trace.
 ## TraceEventKind Payloads
 
 - `RunStarted`
+- `WorkOrderAccepted { work_order_id, tenant_id, agent_id, run_id }`
+- `WorkOrderRejected { work_order_id: Option<WorkOrderId>, tenant_id: Option<TenantId>, agent_id: Option<AgentId>, run_id: Option<RunId>, reason: String }`
 - `RunPaused { reason: Option<String> }`
 - `RunResumed { reason: Option<String> }`
 - `RunStopped { reason: Option<String> }`
@@ -82,11 +107,22 @@ mutation so caller attribution is persisted in the run trace.
 - `ActionFailed { action: Action, error: String, result: VerificationResult }`
 - `OutcomeRecorded { outcome: serde_json::Value, feedback: Option<Feedback>, reward: Option<Reward> }`
 - `StateCommitted { state_hash: ContentHash, snapshot_id: Option<SnapshotId> }`
+- `StateHandoffExported { handoff: StateHandoffTraceContext }`
+- `StateHandoffImported { handoff: StateHandoffTraceContext }`
+- `StateHandoffImportFailed { handoff: StateHandoffTraceContext, reason: String }`
+- `ReadOnlyStateReferenced { handoff: StateHandoffTraceContext }`
 - `MessageQueued { message: MessageTraceContext }`
 - `MessageDelivered { message: MessageTraceContext }`
 - `MessageRejected { message: MessageTraceContext, reason: String }`
 - `MessageExpired { message: MessageTraceContext, reason: Option<String> }`
 - `MessageConsumed { message: MessageTraceContext }`
+- `RemoteMessageSent { remote_message: RemoteMessageTraceContext }`
+- `RemoteMessageAccepted { remote_message: RemoteMessageTraceContext }`
+- `RemoteMessageRejected { remote_message: RemoteMessageTraceContext, reason: String }`
+- `RemoteMessageDelivered { remote_message: RemoteMessageTraceContext }`
+- `RemoteMessageTimedOut { remote_message: RemoteMessageTraceContext, reason: String }`
+- `RemoteMessageDuplicate { remote_message: RemoteMessageTraceContext, reason: String }`
+- `RemoteMessageTransportFailed { remote_message: RemoteMessageTraceContext, reason: String }`
 - `DelegationRequested { delegation: LocalDelegationTraceContext }`
 - `DelegationRejected { delegation: LocalDelegationTraceContext, reason: String }`
 - `ParentRunCancelled { parent_run_id: RunId, agent_id: AgentId, reason: String }`
@@ -183,6 +219,64 @@ These events do not authorize side effects. They only make accepted mutating
 daemon calls trace/audit attributable; action execution still requires the
 gateway/verifier path.
 
+## Work-order Events
+
+Work-order events correspond to the 0.03-S3 signed work-order lifecycle:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `WorkOrderAccepted` | `work_order.accepted` | A signed work order validated and scoped a run. |
+| `WorkOrderRejected` | `work_order.rejected` | Work-order ingestion failed closed before runtime execution. |
+
+`WorkOrderAccepted` carries only identity metadata (`work_order_id`, `tenant_id`,
+`agent_id`, and optional `run_id`). `WorkOrderRejected` carries those fields when
+parseable plus a sanitized reason code. Neither event records signature material,
+verification secrets, caller tokens, or broad credentials.
+
+### Remote Message Events
+
+Remote message event variants correspond to these canonical event classes:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `RemoteMessageSent` | `remote_message.sent` | Source instance attempted a remote transport send. |
+| `RemoteMessageAccepted` | `remote_message.accepted` | Destination instance accepted the remote envelope after identity/schema/work-order validation. |
+| `RemoteMessageRejected` | `remote_message.rejected` | Remote envelope failed validation or local delivery before enqueue. |
+| `RemoteMessageDelivered` | `remote_message.delivered` | Wrapped local message reached the destination inbox boundary. |
+| `RemoteMessageTimedOut` | `remote_message.timed_out` | Transport timed out before receiver acceptance. |
+| `RemoteMessageDuplicate` | `remote_message.duplicate` | Receiver detected a duplicate `message_id` and did not deliver again. |
+| `RemoteMessageTransportFailed` | `remote_message.transport_failed` | Non-timeout transport failure before receiver acceptance. |
+
+All remote message events carry `RemoteMessageTraceContext`, including the local
+`MessageTraceContext`, tenant ID, source/target instance IDs, work-order ID,
+attempt number, and optional idempotency key. Replay can join source and receiver
+traces by message ID and causal parent without re-sending or re-delivering.
+
+## State Handoff Events
+
+State handoff event variants correspond to these canonical event classes:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `StateHandoffExported` | `state.handoff.exported` | Source exported a snapshot handoff. |
+| `StateHandoffImported` | `state.handoff.imported` | Receiver imported a validated snapshot. |
+| `StateHandoffImportFailed` | `state.handoff.import_failed` | Receiver failed closed before changing state head. |
+| `ReadOnlyStateReferenced` | `state.reference.read_only` | Receiver attached an immutable state reference. |
+
+All state handoff events carry `StateHandoffTraceContext`:
+
+| Field | Purpose |
+| --- | --- |
+| `handoff_id` | Links source and receiver handoff events. |
+| `mode` | `snapshot_import` or `read_only_reference`. |
+| `tenant_id`, `agent_id`, `run_id` | Authority scope for the state boundary. |
+| `work_order_id` | Signed work order authorizing import/reference. |
+| `source_state_node_id` | Source state node being transferred or referenced. |
+| `previous_state_node_id` | Receiver head expected before import/reference. |
+| `receiver_state_node_id` | Receiver-owned node after successful import. |
+| `snapshot_id` | Snapshot ID verified from state bytes. |
+| `source_trace_id` | Source event proving the export/reference boundary. |
+
 ### TraceIntegrity
 
 `TraceIntegrity` captures optional chain metadata emitted at the end of a tick:
@@ -205,11 +299,12 @@ let event = TraceEvent::new(
     TraceEventKind::LoopTickStarted { tick_id: 1 },
 );
 assert_eq!(event.sequence, 0);
+assert_eq!(event.trace_event_id.to_string().len(), 36);
 ```
 
 ## Replay validation contract
 
-0.01-dev replay validates that stored trace records are contiguous, scoped to
-the requested run, use deterministic trace IDs, and preserve hash-chain
+Replay validates that stored trace records are contiguous, scoped to the
+requested run, use deterministic `trace_event_id` values, and preserve hash-chain
 continuity. A missing or corrupted segment causes replay to fail rather than
 silently continuing.

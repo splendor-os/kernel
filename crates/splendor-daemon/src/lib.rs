@@ -974,6 +974,7 @@ async fn submit_action(
         action_id: ActionId::new(),
         tenant_id: request.tenant_id,
         agent_id: request.agent_id,
+        run_id: request.run_id,
         action: request.action.clone(),
         adapter: request.adapter,
         quota_usage: request
@@ -1333,6 +1334,7 @@ fn daemon_security_code(error: &DaemonSecurityError) -> &'static str {
         DaemonSecurityError::ActionMissingTraceLink => "action_missing_trace_link",
         DaemonSecurityError::ActionGatewayBypassed => "action_gateway_bypassed",
         DaemonSecurityError::ClientInsecureFallback => "client_insecure_fallback",
+        DaemonSecurityError::InvalidRegistryEndpoint => "invalid_registry_endpoint",
     }
 }
 

@@ -13,14 +13,17 @@
 //! let store = InMemoryStateStore::default();
 //! let data = StateData { bytes: vec![1, 2, 3], content_type: None };
 //! let data_ref = StateStore::put_state(&store, data).expect("put");
-//! let metadata = StateMetadata { created_at: OffsetDateTime::now_utc(), label: Some("seed".into()) };
+//! let metadata = StateMetadata::new(OffsetDateTime::now_utc(), Some("seed".into()));
 //! let node_id = StateStore::commit_node(&store, Vec::new(), data_ref, metadata).expect("commit");
 //! assert!(!node_id.to_string().is_empty());
 //! ```
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use splendor_types::{ContentHash, HashAlgorithm, SnapshotId};
+use splendor_types::{
+    AgentId, ContentHash, HashAlgorithm, RunId, SnapshotId, StateHandoffSnapshot, StateNodeId,
+    TenantId, TraceEventId,
+};
 use std::collections::HashMap;
 use std::fmt;
 use std::future::{ready, Future, Ready};
@@ -68,29 +71,6 @@ pub struct StateData {
     pub content_type: Option<String>,
 }
 
-/// Deterministic identifier for a state node.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-pub struct StateNodeId(ContentHash);
-
-impl StateNodeId {
-    /// Wraps a content hash as a node identifier.
-    fn from_hash(hash: ContentHash) -> Self {
-        Self(hash)
-    }
-
-    /// Returns the underlying content hash.
-    pub fn hash(&self) -> &ContentHash {
-        &self.0
-    }
-}
-
-impl fmt::Display for StateNodeId {
-    /// Formats the state node identifier as an algorithm-prefixed hash string.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
 /// Metadata recorded alongside each state node.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StateMetadata {
@@ -98,6 +78,32 @@ pub struct StateMetadata {
     pub created_at: OffsetDateTime,
     /// Optional label used for snapshot policies or debugging.
     pub label: Option<String>,
+    /// Tenant that owns this state commit, when committed from a runtime tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<TenantId>,
+    /// Agent that owns this state commit, when committed from a runtime tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<AgentId>,
+    /// Run that produced this state commit, when committed from a runtime tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<RunId>,
+    /// Trace event that records this state commit, when known before commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_event_id: Option<TraceEventId>,
+}
+
+impl StateMetadata {
+    /// Creates metadata with no runtime identity fields populated.
+    pub fn new(created_at: OffsetDateTime, label: Option<String>) -> Self {
+        Self {
+            created_at,
+            label,
+            tenant_id: None,
+            agent_id: None,
+            run_id: None,
+            trace_event_id: None,
+        }
+    }
 }
 
 /// Node in the state graph DAG.
@@ -124,6 +130,15 @@ pub struct StateSnapshot {
     pub state: StateData,
 }
 
+/// Result of importing a handoff snapshot into a local state store.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ImportedStateSnapshot {
+    /// Receiver-local state node created from the imported snapshot bytes.
+    pub node_id: StateNodeId,
+    /// Snapshot identifier verified from the imported bytes.
+    pub snapshot_id: SnapshotId,
+}
+
 /// Stable serialization payload used when hashing state nodes.
 #[derive(Serialize)]
 struct StateNodeHashInput<'a> {
@@ -131,6 +146,64 @@ struct StateNodeHashInput<'a> {
     parent_ids: &'a [StateNodeId],
     /// Hash of the serialized state bytes.
     data_hash: &'a ContentHash,
+}
+
+fn content_hash_from_display(value: &str) -> Result<ContentHash, StateStoreError> {
+    let (algorithm, hash) = value
+        .split_once(':')
+        .ok_or_else(|| StateStoreError::InvalidStateNodeId(value.to_string()))?;
+    let algorithm = HashAlgorithm::parse(algorithm)
+        .ok_or_else(|| StateStoreError::InvalidHashAlgorithm(algorithm.to_string()))?;
+    Ok(ContentHash::new(algorithm, hash))
+}
+
+fn state_node_id_from_display(value: &str) -> Result<StateNodeId, StateStoreError> {
+    Ok(StateNodeId::from_hash(content_hash_from_display(value)?))
+}
+
+fn state_node_id_for(
+    parent_ids: &[StateNodeId],
+    data_hash: &ContentHash,
+) -> Result<StateNodeId, StateStoreError> {
+    let hash_input = StateNodeHashInput {
+        parent_ids,
+        data_hash,
+    };
+    let encoded = serde_json::to_vec(&hash_input).map_err(StateStoreError::Serialization)?;
+    Ok(StateNodeId::from_hash(ContentHash::blake3(encoded)))
+}
+
+fn verify_handoff_snapshot(
+    snapshot: &StateHandoffSnapshot,
+) -> Result<Vec<StateNodeId>, StateStoreError> {
+    let expected_snapshot_id = SnapshotId::from_bytes(&snapshot.state_bytes);
+    if expected_snapshot_id != snapshot.snapshot_id {
+        return Err(StateStoreError::HashMismatch {
+            field: "snapshot_id",
+        });
+    }
+
+    let state_hash = ContentHash::blake3(&snapshot.state_bytes);
+    if state_hash != snapshot.state_hash {
+        return Err(StateStoreError::HashMismatch {
+            field: "state_hash",
+        });
+    }
+
+    let parent_ids = snapshot
+        .parent_state_node_ids
+        .iter()
+        .map(|value| state_node_id_from_display(value))
+        .collect::<Result<Vec<_>, _>>()?;
+    let declared_node_id = state_node_id_from_display(&snapshot.state_node_id)?;
+    let expected_node_id = state_node_id_for(&parent_ids, &state_hash)?;
+    if declared_node_id != expected_node_id {
+        return Err(StateStoreError::HashMismatch {
+            field: "state_node_id",
+        });
+    }
+
+    Ok(parent_ids)
 }
 
 /// Synchronous storage interface for state data and nodes.
@@ -152,6 +225,60 @@ pub trait StateStore: Send + Sync {
     fn snapshot(&self, node_id: &StateNodeId) -> Result<SnapshotId, StateStoreError>;
     /// Loads a `StateSnapshot` by `SnapshotId`.
     fn load_snapshot(&self, snapshot_id: &SnapshotId) -> Result<StateSnapshot, StateStoreError>;
+
+    /// Exports a snapshot with parent linkage and hashes for state handoff.
+    fn export_snapshot(
+        &self,
+        snapshot_id: &SnapshotId,
+    ) -> Result<StateHandoffSnapshot, StateStoreError> {
+        let snapshot = self.load_snapshot(snapshot_id)?;
+        let node = self.get_node(&snapshot.node_id)?;
+        let state_hash = ContentHash::blake3(&snapshot.state.bytes);
+        if node.data_hash != state_hash {
+            return Err(StateStoreError::HashMismatch {
+                field: "state_hash",
+            });
+        }
+
+        Ok(StateHandoffSnapshot {
+            snapshot_id: snapshot_id.clone(),
+            state_node_id: node.id.to_string(),
+            parent_state_node_ids: node.parent_ids.iter().map(ToString::to_string).collect(),
+            state_hash,
+            state_bytes: snapshot.state.bytes,
+            content_type: snapshot.state.content_type,
+        })
+    }
+
+    /// Imports a handoff snapshot after verifying hash and parent linkage.
+    fn import_handoff_snapshot(
+        &self,
+        snapshot: &StateHandoffSnapshot,
+        metadata: StateMetadata,
+    ) -> Result<ImportedStateSnapshot, StateStoreError> {
+        let parent_ids = verify_handoff_snapshot(snapshot)?;
+        let state = StateData {
+            bytes: snapshot.state_bytes.clone(),
+            content_type: snapshot.content_type.clone(),
+        };
+        let data_ref = self.put_state(state)?;
+        let node_id = self.commit_node(parent_ids, data_ref, metadata)?;
+        if node_id.to_string() != snapshot.state_node_id {
+            return Err(StateStoreError::HashMismatch {
+                field: "state_node_id",
+            });
+        }
+        let snapshot_id = self.snapshot(&node_id)?;
+        if snapshot_id != snapshot.snapshot_id {
+            return Err(StateStoreError::HashMismatch {
+                field: "snapshot_id",
+            });
+        }
+        Ok(ImportedStateSnapshot {
+            node_id,
+            snapshot_id,
+        })
+    }
 }
 
 /// Asynchronous storage interface for state data and nodes.
@@ -180,6 +307,18 @@ pub trait AsyncStateStore: Send + Sync {
     type LoadSnapshotFuture<'a>: Future<Output = Result<StateSnapshot, StateStoreError>> + Send + 'a
     where
         Self: 'a;
+    /// Future returned by `export_snapshot`.
+    type ExportSnapshotFuture<'a>: Future<Output = Result<StateHandoffSnapshot, StateStoreError>>
+        + Send
+        + 'a
+    where
+        Self: 'a;
+    /// Future returned by `import_handoff_snapshot`.
+    type ImportHandoffSnapshotFuture<'a>: Future<Output = Result<ImportedStateSnapshot, StateStoreError>>
+        + Send
+        + 'a
+    where
+        Self: 'a;
 
     /// Persists `StateData` and returns a `StateDataRef`.
     fn put_state<'a>(&'a self, state: StateData) -> Self::PutStateFuture<'a>;
@@ -198,6 +337,15 @@ pub trait AsyncStateStore: Send + Sync {
     fn snapshot<'a>(&'a self, node_id: &'a StateNodeId) -> Self::SnapshotFuture<'a>;
     /// Loads a `StateSnapshot` by `SnapshotId`.
     fn load_snapshot<'a>(&'a self, snapshot_id: &'a SnapshotId) -> Self::LoadSnapshotFuture<'a>;
+    /// Exports a handoff snapshot.
+    fn export_snapshot<'a>(&'a self, snapshot_id: &'a SnapshotId)
+        -> Self::ExportSnapshotFuture<'a>;
+    /// Imports a verified handoff snapshot.
+    fn import_handoff_snapshot<'a>(
+        &'a self,
+        snapshot: &'a StateHandoffSnapshot,
+        metadata: StateMetadata,
+    ) -> Self::ImportHandoffSnapshotFuture<'a>;
 }
 
 /// In-memory state store for tests and local runs.
@@ -251,13 +399,7 @@ impl StateStore for InMemoryStateStore {
             .cloned()
             .ok_or(StateStoreError::MissingState)?;
         let data_hash = ContentHash::blake3(&state_entry.bytes);
-        let hash_input = StateNodeHashInput {
-            parent_ids: &parent_ids,
-            data_hash: &data_hash,
-        };
-        let encoded = serde_json::to_vec(&hash_input).map_err(StateStoreError::Serialization)?;
-        let node_hash = ContentHash::blake3(encoded);
-        let node_id = StateNodeId::from_hash(node_hash);
+        let node_id = state_node_id_for(&parent_ids, &data_hash)?;
         let node = StateNode {
             id: node_id.clone(),
             parent_ids,
@@ -345,6 +487,14 @@ impl AsyncStateStore for InMemoryStateStore {
         = Ready<Result<StateSnapshot, StateStoreError>>
     where
         Self: 'a;
+    type ExportSnapshotFuture<'a>
+        = Ready<Result<StateHandoffSnapshot, StateStoreError>>
+    where
+        Self: 'a;
+    type ImportHandoffSnapshotFuture<'a>
+        = Ready<Result<ImportedStateSnapshot, StateStoreError>>
+    where
+        Self: 'a;
 
     /// Async wrapper around `put_state` for in-memory storage.
     fn put_state<'a>(&'a self, state: StateData) -> Self::PutStateFuture<'a> {
@@ -380,6 +530,25 @@ impl AsyncStateStore for InMemoryStateStore {
     /// Async wrapper around `load_snapshot` for in-memory storage.
     fn load_snapshot<'a>(&'a self, snapshot_id: &'a SnapshotId) -> Self::LoadSnapshotFuture<'a> {
         ready(StateStore::load_snapshot(self, snapshot_id))
+    }
+
+    /// Async wrapper around `export_snapshot` for in-memory storage.
+    fn export_snapshot<'a>(
+        &'a self,
+        snapshot_id: &'a SnapshotId,
+    ) -> Self::ExportSnapshotFuture<'a> {
+        ready(StateStore::export_snapshot(self, snapshot_id))
+    }
+
+    /// Async wrapper around `import_handoff_snapshot` for in-memory storage.
+    fn import_handoff_snapshot<'a>(
+        &'a self,
+        snapshot: &'a StateHandoffSnapshot,
+        metadata: StateMetadata,
+    ) -> Self::ImportHandoffSnapshotFuture<'a> {
+        ready(StateStore::import_handoff_snapshot(
+            self, snapshot, metadata,
+        ))
     }
 }
 
@@ -492,15 +661,7 @@ impl SqliteStateStore {
         connection: &Connection,
         node_id: &StateNodeId,
     ) -> Result<StateDataRef, StateStoreError> {
-        let (node_algo, node_value) = Self::hash_parts(node_id.hash());
-        let mut stmt = connection.prepare(
-            "SELECT data_ref FROM state_nodes WHERE node_hash_algo = ?1 AND node_hash_value = ?2",
-        )?;
-        let result: Option<String> = stmt
-            .query_row(params![node_algo, node_value], |row| row.get(0))
-            .optional()?;
-        let value = result.ok_or(StateStoreError::MissingNode)?;
-        Self::parse_data_ref(&value)
+        Ok(Self::fetch_node(connection, node_id)?.data_ref)
     }
 
     /// Fetches a complete state node by ID.
@@ -523,17 +684,17 @@ impl SqliteStateStore {
                 ))
             })
             .optional()?;
-        let (parents_raw, data_ref_raw, data_algo, data_value, metadata_raw) =
+        let (parent_ids, data_ref, data_hash_algo, data_hash_value, metadata) =
             result.ok_or(StateStoreError::MissingNode)?;
-        let parent_ids = serde_json::from_str(&parents_raw)?;
-        let data_ref = Self::parse_data_ref(&data_ref_raw)?;
-        let data_hash = Self::content_hash_from_parts(&data_algo, &data_value)?;
-        let metadata = serde_json::from_str(&metadata_raw)?;
+        let data_ref = Self::parse_data_ref(&data_ref)?;
+        let parent_ids =
+            serde_json::from_str(&parent_ids).map_err(StateStoreError::Serialization)?;
+        let metadata = serde_json::from_str(&metadata).map_err(StateStoreError::Serialization)?;
         Ok(StateNode {
             id: node_id.clone(),
             parent_ids,
             data_ref,
-            data_hash,
+            data_hash: Self::content_hash_from_parts(&data_hash_algo, &data_hash_value)?,
             metadata,
         })
     }
@@ -679,6 +840,14 @@ impl AsyncStateStore for SqliteStateStore {
         = Ready<Result<StateSnapshot, StateStoreError>>
     where
         Self: 'a;
+    type ExportSnapshotFuture<'a>
+        = Ready<Result<StateHandoffSnapshot, StateStoreError>>
+    where
+        Self: 'a;
+    type ImportHandoffSnapshotFuture<'a>
+        = Ready<Result<ImportedStateSnapshot, StateStoreError>>
+    where
+        Self: 'a;
 
     /// Async wrapper around `put_state` for SQLite storage.
     fn put_state<'a>(&'a self, state: StateData) -> Self::PutStateFuture<'a> {
@@ -715,6 +884,25 @@ impl AsyncStateStore for SqliteStateStore {
     fn load_snapshot<'a>(&'a self, snapshot_id: &'a SnapshotId) -> Self::LoadSnapshotFuture<'a> {
         ready(StateStore::load_snapshot(self, snapshot_id))
     }
+
+    /// Async wrapper around `export_snapshot` for SQLite storage.
+    fn export_snapshot<'a>(
+        &'a self,
+        snapshot_id: &'a SnapshotId,
+    ) -> Self::ExportSnapshotFuture<'a> {
+        ready(StateStore::export_snapshot(self, snapshot_id))
+    }
+
+    /// Async wrapper around `import_handoff_snapshot` for SQLite storage.
+    fn import_handoff_snapshot<'a>(
+        &'a self,
+        snapshot: &'a StateHandoffSnapshot,
+        metadata: StateMetadata,
+    ) -> Self::ImportHandoffSnapshotFuture<'a> {
+        ready(StateStore::import_handoff_snapshot(
+            self, snapshot, metadata,
+        ))
+    }
 }
 
 /// Errors returned by state store operations.
@@ -732,6 +920,12 @@ pub enum StateStoreError {
     /// Requested snapshot was not found.
     #[error("requested snapshot was not found")]
     MissingSnapshot,
+    /// State handoff hash or linkage validation failed.
+    #[error("state handoff hash mismatch for {field}")]
+    HashMismatch { field: &'static str },
+    /// State node identifier string could not be parsed.
+    #[error("invalid state node identifier: {0}")]
+    InvalidStateNodeId(String),
     /// Stored state reference could not be parsed.
     #[error("invalid state data reference: {0}")]
     InvalidDataRef(String),

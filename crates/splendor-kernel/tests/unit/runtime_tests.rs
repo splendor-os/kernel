@@ -1,5 +1,9 @@
 use super::*;
 use splendor_store::{InMemoryTraceStore, TraceStore};
+use splendor_types::{
+    AgentId, SnapshotId, StateHandoffAuthority, StateHandoffSnapshot, StateReference,
+    StateReferenceMode, TenantId,
+};
 use std::sync::{Arc, Mutex};
 use time::OffsetDateTime;
 
@@ -69,6 +73,34 @@ fn default_config_records_to_stdout_sink() {
 }
 
 #[test]
+fn runtime_rejects_mismatched_trace_identity_before_persistence() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = CapturingSink {
+        events: Arc::clone(&events),
+    };
+    let run_id = RunId::new();
+    let runtime = KernelRuntime::new(KernelRuntimeConfig {
+        trace_sink: Arc::new(sink),
+        run_id: Some(run_id.clone()),
+        ..KernelRuntimeConfig::default()
+    });
+
+    let error = runtime
+        .record_event_with_identity(
+            TraceIdentityContext::new(RunId::new()),
+            TraceEventKind::PolicyInvoked {
+                policy: "mismatch".to_string(),
+            },
+        )
+        .expect_err("identity mismatch");
+
+    assert!(matches!(error, TraceError::Identity(_)));
+    assert_eq!(runtime.run_id(), &run_id);
+    assert_eq!(runtime.next_sequence(), 0);
+    assert!(events.lock().expect("events lock").is_empty());
+}
+
+#[test]
 fn runtime_resumes_sequence_with_trace_store() {
     let store = Arc::new(InMemoryTraceStore::default());
     let run_id = RunId::new();
@@ -131,4 +163,188 @@ fn loop_tick_completed_integrity_matches_trace_store_record() {
     } else {
         panic!("missing completion integrity");
     }
+}
+
+#[test]
+fn runtime_records_state_handoff_source_and_receiver_events() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let runtime = KernelRuntime::new(KernelRuntimeConfig {
+        trace_sink: Arc::new(CapturingSink {
+            events: Arc::clone(&events),
+        }),
+        ..KernelRuntimeConfig::default()
+    });
+    let run_id = runtime.run_id().clone();
+    let bytes = b"handoff".to_vec();
+    let mut handoff = StateHandoff {
+        schema_version: "splendor.state_handoff.v0".to_string(),
+        handoff_id: "handoff_runtime".to_string(),
+        mode: StateReferenceMode::SnapshotImport,
+        authority: StateHandoffAuthority {
+            tenant_id: TenantId::new(),
+            agent_id: AgentId::new(),
+            run_id,
+            work_order_id: "wo_runtime".to_string(),
+        },
+        source_instance_id: Some("source".to_string()),
+        receiver_instance_id: Some("receiver".to_string()),
+        previous_state_node_id: Some("blake3:previous".to_string()),
+        snapshot: StateHandoffSnapshot {
+            snapshot_id: SnapshotId::from_bytes(&bytes),
+            state_node_id: ContentHash::blake3(&bytes).to_string(),
+            parent_state_node_ids: Vec::new(),
+            state_hash: ContentHash::blake3(&bytes),
+            state_bytes: bytes,
+            content_type: None,
+        },
+        source_trace_id: None,
+        created_at: OffsetDateTime::now_utc(),
+    };
+
+    let exported = runtime
+        .record_state_handoff_exported(&mut handoff)
+        .expect("export trace");
+    assert_eq!(
+        handoff.source_trace_id,
+        Some(exported.trace_event_id.clone())
+    );
+    runtime
+        .record_state_handoff_imported(&handoff, "blake3:receiver")
+        .expect("import trace");
+
+    let recorded = events.lock().expect("events lock");
+    assert!(matches!(
+        recorded[0].kind,
+        TraceEventKind::StateHandoffExported { .. }
+    ));
+    match &recorded[1].kind {
+        TraceEventKind::StateHandoffImported { handoff: context } => {
+            assert_eq!(context.source_trace_id, Some(exported.trace_event_id));
+            assert_eq!(
+                context.previous_state_node_id.as_deref(),
+                Some("blake3:previous")
+            );
+            assert_eq!(
+                context.receiver_state_node_id.as_deref(),
+                Some("blake3:receiver")
+            );
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn runtime_records_state_handoff_failure_and_read_only_reference_events() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let runtime = KernelRuntime::new(KernelRuntimeConfig {
+        trace_sink: Arc::new(CapturingSink {
+            events: Arc::clone(&events),
+        }),
+        ..KernelRuntimeConfig::default()
+    });
+    let run_id = runtime.run_id().clone();
+    let bytes = b"handoff".to_vec();
+    let authority = StateHandoffAuthority {
+        tenant_id: TenantId::new(),
+        agent_id: AgentId::new(),
+        run_id,
+        work_order_id: "wo_runtime".to_string(),
+    };
+    let handoff = StateHandoff {
+        schema_version: "splendor.state_handoff.v0".to_string(),
+        handoff_id: "handoff_failed".to_string(),
+        mode: StateReferenceMode::SnapshotImport,
+        authority: authority.clone(),
+        source_instance_id: Some("source".to_string()),
+        receiver_instance_id: Some("receiver".to_string()),
+        previous_state_node_id: Some("blake3:previous".to_string()),
+        snapshot: StateHandoffSnapshot {
+            snapshot_id: SnapshotId::from_bytes(&bytes),
+            state_node_id: ContentHash::blake3(&bytes).to_string(),
+            parent_state_node_ids: Vec::new(),
+            state_hash: ContentHash::blake3(&bytes),
+            state_bytes: bytes,
+            content_type: None,
+        },
+        source_trace_id: None,
+        created_at: OffsetDateTime::now_utc(),
+    };
+
+    let failed = runtime
+        .record_state_handoff_import_failed(&handoff, "corrupt snapshot")
+        .expect("failure trace");
+    let readonly_state_hash = ContentHash::blake3(b"readonly");
+    let readonly_snapshot_id = SnapshotId::from_bytes(b"readonly");
+
+    let reference = StateReference {
+        reference_id: "readonly_ref".to_string(),
+        mode: StateReferenceMode::ReadOnlyReference,
+        authority,
+        state_node_id: readonly_state_hash.to_string(),
+        snapshot_id: Some(readonly_snapshot_id.clone()),
+        state_hash: Some(readonly_state_hash.clone()),
+        source_trace_id: Some(failed.trace_event_id.clone()),
+        created_at: OffsetDateTime::now_utc(),
+    };
+    runtime
+        .record_read_only_state_referenced(&reference)
+        .expect("reference trace");
+
+    let recorded = events.lock().expect("events lock");
+    match &recorded[0].kind {
+        TraceEventKind::StateHandoffImportFailed { reason, .. } => {
+            assert_eq!(reason, "corrupt snapshot");
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+    match &recorded[1].kind {
+        TraceEventKind::ReadOnlyStateReferenced { handoff: context } => {
+            assert_eq!(context.mode, StateReferenceMode::ReadOnlyReference);
+            assert_eq!(context.receiver_state_node_id, None);
+            assert_eq!(
+                context.source_state_node_id,
+                readonly_state_hash.to_string()
+            );
+            assert_eq!(context.snapshot_id, Some(readonly_snapshot_id));
+            assert_eq!(context.source_trace_id, Some(failed.trace_event_id.clone()));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn runtime_rejects_handoff_trace_with_wrong_run_scope() {
+    let runtime = KernelRuntime::new(KernelRuntimeConfig::default());
+    let bytes = b"handoff".to_vec();
+    let mut handoff = StateHandoff {
+        schema_version: "splendor.state_handoff.v0".to_string(),
+        handoff_id: "handoff_wrong_run".to_string(),
+        mode: StateReferenceMode::SnapshotImport,
+        authority: StateHandoffAuthority {
+            tenant_id: TenantId::new(),
+            agent_id: AgentId::new(),
+            run_id: RunId::new(),
+            work_order_id: "wo_runtime".to_string(),
+        },
+        source_instance_id: None,
+        receiver_instance_id: None,
+        previous_state_node_id: None,
+        snapshot: StateHandoffSnapshot {
+            snapshot_id: SnapshotId::from_bytes(&bytes),
+            state_node_id: ContentHash::blake3(&bytes).to_string(),
+            parent_state_node_ids: Vec::new(),
+            state_hash: ContentHash::blake3(&bytes),
+            state_bytes: bytes,
+            content_type: None,
+        },
+        source_trace_id: None,
+        created_at: OffsetDateTime::now_utc(),
+    };
+
+    let error = runtime
+        .record_state_handoff_exported(&mut handoff)
+        .expect_err("run mismatch");
+
+    assert!(matches!(error, TraceError::HandoffRunMismatch { .. }));
+    assert!(handoff.source_trace_id.is_none());
 }

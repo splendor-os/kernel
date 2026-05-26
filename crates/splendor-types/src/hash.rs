@@ -21,6 +21,8 @@ use std::fmt;
 pub enum HashAlgorithm {
     /// BLAKE3 hashing for content-addressed identifiers.
     Blake3,
+    /// SHA-256 hashing for SDK-local state references that need portable identity strings.
+    Sha256,
 }
 
 /// Deterministic content hash used for state and snapshot IDs.
@@ -46,6 +48,15 @@ impl ContentHash {
         let hash = blake3::hash(bytes.as_ref());
         Self::new(HashAlgorithm::Blake3, hash.to_hex().to_string())
     }
+
+    /// Parses the canonical `algorithm:value` string representation.
+    pub fn parse(value: &str) -> Option<Self> {
+        let (algorithm, digest) = value.split_once(':')?;
+        if digest.trim().is_empty() {
+            return None;
+        }
+        Some(Self::new(HashAlgorithm::parse(algorithm)?, digest))
+    }
 }
 
 impl HashAlgorithm {
@@ -53,6 +64,7 @@ impl HashAlgorithm {
     pub fn as_str(&self) -> &'static str {
         match self {
             HashAlgorithm::Blake3 => "blake3",
+            HashAlgorithm::Sha256 => "sha256",
         }
     }
 
@@ -60,6 +72,7 @@ impl HashAlgorithm {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "blake3" => Some(HashAlgorithm::Blake3),
+            "sha256" => Some(HashAlgorithm::Sha256),
             _ => None,
         }
     }

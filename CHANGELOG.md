@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.03-dev — Resident nodes + fleet execution foundation
+
+### Implemented primitives
+
+- Added the 0.03-S1 distributed identity model with distinct fleet, node,
+  instance, tenant, agent, run, tick, action, state-node, trace-event, and
+  message IDs.
+- Renamed serialized trace event identity to `trace_event_id` while accepting
+  legacy `trace_id` during deserialization.
+- Added trace identity context fields and fail-closed gateway validation for
+  invalid action, tenant, agent, or run identity before adapter execution.
+- Added state metadata/commit linkage for tenant, agent, run, and trace-event
+  scope.
+- Added 0.03-S2 node and instance registry contracts with capabilities,
+  heartbeats, deterministic stale detection, and management audit events.
+- Added 0.03-S3 signed work-order schemas, detached reference signature
+  verification, local `splendorctl` ingestion, scoped runtime policy/quota
+  narrowing, and accepted/rejected work-order trace events.
+- `splendorctl run` now rejects missing work-order authority by default;
+  legacy local quickstarts must opt into `allow_unsigned_local_run: true` and are
+  visibly warned.
+- Added a 0.03-S4 placement v0 contract in Rust for deterministic target-class,
+  capability, data-locality, runtime-version, execution-mode, and
+  dedicated-instance matching with explicit rejection reasons and management
+  trace/audit evidence.
+- Added the 0.03-S6 trace aggregation reference path: `TraceSyncBatch`,
+  `CentralTraceIndex`, `InMemoryCentralTraceIndex`, hash-chain validation,
+  duplicate sync idempotency, missing segment detection, corruption quarantine,
+  and central trace queries by available identity metadata.
+- Added `TraceDurabilityGateway` so local policy can fail closed before
+  side-effectful adapter execution when central trace sync durability is
+  required and stale or failed.
+- Added 0.03-S7 state handoff v0 schemas, snapshot export/import validation,
+  read-only state references, source/receiver handoff trace events, and replay
+  handoff boundary inspection.
+- Added the 0.03-S8 fleet telemetry model and in-memory collector for node
+  heartbeat state, instance runtime reports, canonical run status counts, queue
+  depth, quota/denial signals, trace sync lag/failure, and failure taxonomy.
+- Added typed fleet/node/instance telemetry scope separation using the canonical
+  distributed identity types.
+
+### Explicitly not included
+
+- No autoscaling, multi-region optimizer, cost optimizer, Kubernetes operator,
+  remote dispatch, full PKI/OAuth product, governance approval workflow,
+  analytics dashboard, long-term warehouse, governance audit product, remote
+  trace transport, distributed consensus, central manager, telemetry dashboard,
+  distributed mutable state, CRDTs, automatic conflict merge, full runtime
+  migration engine, fleet scheduler, dashboard, anomaly detection, billing
+  metrics, fleet autoscaler, observability vendor integration, telemetry-derived
+  runtime authority, or physical/edge orchestration.
+
 ## 0.02-dev — Local multi-agent runtime + daemon control
 
 ### Release hygiene

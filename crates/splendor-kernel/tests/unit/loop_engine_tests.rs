@@ -5,8 +5,9 @@ use splendor_store::{
     StateNodeId, StateSnapshot, StateStore, StateStoreError,
 };
 use splendor_types::{
-    ConstraintKind, ConstraintScope, DelegatedAuthority, PerceptProvenance, QuotaUsage, RunId,
-    TraceEvent,
+    ConstraintKind, ConstraintScope, DelegatedAuthority, PerceptProvenance, QuotaUsage,
+    RevocationStatus, RunId, TraceEvent, WorkOrder, WorkOrderId, WorkOrderPlacement,
+    WorkOrderQuotaPolicy, WORK_ORDER_SCHEMA_VERSION,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -257,6 +258,27 @@ impl Policy for MultiActionPolicy {
     }
 }
 
+fn work_order_for(agent: &AgentContext, run_id: RunId) -> WorkOrder {
+    let now = OffsetDateTime::now_utc();
+    WorkOrder {
+        schema_version: WORK_ORDER_SCHEMA_VERSION.to_string(),
+        work_order_id: WorkOrderId::try_new("wo_loop").expect("work order id"),
+        tenant_id: agent.tenant_id.clone(),
+        agent_id: agent.agent_id.clone(),
+        run_id: Some(run_id),
+        objective: "record work order metadata".to_string(),
+        allowed_actions: vec!["noop".to_string()],
+        allowed_adapters: vec!["stub".to_string()],
+        allowed_permissions: Vec::new(),
+        data_refs: Vec::new(),
+        quotas: WorkOrderQuotaPolicy::default(),
+        placement: WorkOrderPlacement::default(),
+        issued_at: now - time::Duration::minutes(1),
+        expires_at: now + time::Duration::hours(1),
+        revocation: RevocationStatus::Active,
+    }
+}
+
 struct RecordingOutcomeEvaluator;
 
 impl OutcomeEvaluator for RecordingOutcomeEvaluator {
@@ -345,9 +367,11 @@ fn loop_engine_emits_ordered_trace_events() {
         bytes: vec![1],
         content_type: None,
     };
+    let agent_id = splendor_types::AgentId::new();
+    let tenant_id = splendor_types::TenantId::new();
     let agent = AgentContext::new(
-        splendor_types::AgentId::new(),
-        splendor_types::TenantId::new(),
+        agent_id.clone(),
+        tenant_id.clone(),
         crate::AgentRuntimeConfig::default(),
     );
     let gateway = Arc::new(StubGateway);
@@ -369,14 +393,21 @@ fn loop_engine_emits_ordered_trace_events() {
     let recorded = events.lock().expect("events lock");
     let trace_ids = recorded
         .iter()
-        .map(|event| event.trace_id.to_string())
+        .map(|event| event.trace_event_id.to_string())
         .collect::<HashSet<_>>();
     assert_eq!(trace_ids.len(), recorded.len());
     for (sequence, event) in recorded.iter().enumerate() {
         assert_eq!(event.sequence, sequence as u64);
         assert_eq!(
-            event.trace_id,
-            splendor_types::TraceId::from_run_sequence(&event.run_id, event.sequence)
+            event.trace_event_id,
+            splendor_types::TraceEventId::from_run_sequence(&event.run_id, event.sequence)
+        );
+        assert_eq!(event.identity.run_id, event.run_id);
+        assert_eq!(event.identity.tenant_id.as_ref(), Some(&tenant_id));
+        assert_eq!(event.identity.agent_id.as_ref(), Some(&agent_id));
+        assert_eq!(
+            event.identity.tick_id,
+            Some(splendor_types::TickId::from(1))
         );
     }
     let kinds = recorded
@@ -405,8 +436,32 @@ fn loop_engine_emits_ordered_trace_events() {
         .iter()
         .find(|event| matches!(event.kind, TraceEventKind::StateCommitted { .. }))
         .expect("state committed");
+    assert_eq!(
+        state_event.identity.state_node_id.as_ref(),
+        Some(&outcome.state_commit.node_id)
+    );
+    assert_eq!(
+        outcome.state_commit.trace_event_id.as_ref(),
+        Some(&state_event.trace_event_id)
+    );
     if let TraceEventKind::StateCommitted { state_hash, .. } = &state_event.kind {
         assert_eq!(state_hash, outcome.state_commit.node_id.hash());
+    }
+
+    for event in recorded.iter().filter(|event| {
+        matches!(
+            event.kind,
+            TraceEventKind::ActionVerificationStarted { .. }
+                | TraceEventKind::ActionVerificationCompleted { .. }
+                | TraceEventKind::ActionExecuted { .. }
+                | TraceEventKind::ActionDenied { .. }
+                | TraceEventKind::ActionFailed { .. }
+        )
+    }) {
+        assert_eq!(
+            event.identity.action_id.as_ref(),
+            Some(&outcome.action_outcomes[0].action_id)
+        );
     }
 }
 
@@ -907,6 +962,10 @@ fn loop_engine_new_sets_head_from_graph() {
             splendor_store::StateMetadata {
                 created_at: OffsetDateTime::now_utc(),
                 label: None,
+                tenant_id: None,
+                agent_id: None,
+                run_id: None,
+                trace_event_id: None,
             },
         )
         .expect("commit");
@@ -931,9 +990,62 @@ fn loop_engine_new_sets_head_from_graph() {
     assert_eq!(engine.agent.state_head.as_ref(), Some(&head));
 }
 
+#[test]
+fn loop_engine_records_validated_work_order_metadata() {
+    let trace_store = Arc::new(InMemoryTraceStore::default());
+    let store = Arc::new(InMemoryStateStore::default());
+    let graph = StateGraph::new(store, SnapshotPolicy::default());
+    let run_id = RunId::new();
+    let agent = AgentContext::new(
+        splendor_types::AgentId::new(),
+        splendor_types::TenantId::new(),
+        crate::AgentRuntimeConfig::default(),
+    );
+    let work_order = work_order_for(&agent, run_id.clone());
+    let context = RunTraceContext::new(Some(run_id.clone())).with_work_order(work_order.clone());
+
+    let engine = LoopEngine::with_trace_store_and_work_order(
+        agent,
+        graph,
+        StateData {
+            bytes: Vec::new(),
+            content_type: None,
+        },
+        Box::new(StaticPolicy),
+        Arc::new(StubGateway),
+        trace_store.clone(),
+        context,
+    )
+    .expect("engine");
+
+    assert_eq!(
+        engine.agent.config.metadata.get("work_order_id"),
+        Some(&"wo_loop".to_string())
+    );
+    let records = trace_store.read(&run_id.to_string()).expect("records");
+    assert_eq!(records.len(), 2);
+    let accepted: TraceEvent = serde_json::from_value(records[1].payload.clone()).unwrap();
+    match accepted.kind {
+        TraceEventKind::WorkOrderAccepted {
+            work_order_id,
+            tenant_id,
+            agent_id,
+            run_id: accepted_run,
+        } => {
+            assert_eq!(work_order_id.as_str(), "wo_loop");
+            assert_eq!(tenant_id, work_order.tenant_id);
+            assert_eq!(agent_id, work_order.agent_id);
+            assert_eq!(accepted_run, Some(run_id));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
 fn event_kind_label(kind: &TraceEventKind) -> &'static str {
     match kind {
         TraceEventKind::RunStarted => "RunStarted",
+        TraceEventKind::WorkOrderAccepted { .. } => "WorkOrderAccepted",
+        TraceEventKind::WorkOrderRejected { .. } => "WorkOrderRejected",
         TraceEventKind::RunPaused { .. } => "RunPaused",
         TraceEventKind::RunResumed { .. } => "RunResumed",
         TraceEventKind::RunStopped { .. } => "RunStopped",
@@ -953,11 +1065,22 @@ fn event_kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::ActionFailed { .. } => "ActionFailed",
         TraceEventKind::OutcomeRecorded { .. } => "OutcomeRecorded",
         TraceEventKind::StateCommitted { .. } => "StateCommitted",
+        TraceEventKind::StateHandoffExported { .. } => "StateHandoffExported",
+        TraceEventKind::StateHandoffImported { .. } => "StateHandoffImported",
+        TraceEventKind::StateHandoffImportFailed { .. } => "StateHandoffImportFailed",
+        TraceEventKind::ReadOnlyStateReferenced { .. } => "ReadOnlyStateReferenced",
         TraceEventKind::MessageQueued { .. } => "MessageQueued",
         TraceEventKind::MessageDelivered { .. } => "MessageDelivered",
         TraceEventKind::MessageRejected { .. } => "MessageRejected",
         TraceEventKind::MessageExpired { .. } => "MessageExpired",
         TraceEventKind::MessageConsumed { .. } => "MessageConsumed",
+        TraceEventKind::RemoteMessageSent { .. } => "RemoteMessageSent",
+        TraceEventKind::RemoteMessageAccepted { .. } => "RemoteMessageAccepted",
+        TraceEventKind::RemoteMessageRejected { .. } => "RemoteMessageRejected",
+        TraceEventKind::RemoteMessageDelivered { .. } => "RemoteMessageDelivered",
+        TraceEventKind::RemoteMessageTimedOut { .. } => "RemoteMessageTimedOut",
+        TraceEventKind::RemoteMessageDuplicate { .. } => "RemoteMessageDuplicate",
+        TraceEventKind::RemoteMessageTransportFailed { .. } => "RemoteMessageTransportFailed",
         TraceEventKind::DelegationRequested { .. } => "DelegationRequested",
         TraceEventKind::DelegationRejected { .. } => "DelegationRejected",
         TraceEventKind::ParentRunCancelled { .. } => "ParentRunCancelled",
