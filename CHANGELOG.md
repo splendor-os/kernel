@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.03-dev — Resident nodes + fleet execution foundation
+
+### Implemented primitives
+
+- Added the 0.03-S8 fleet telemetry model and in-memory collector for node
+  heartbeat state, instance runtime reports, canonical run status counts, queue
+  depth, quota/denial signals, trace sync lag/failure, and failure taxonomy.
+- Added typed `FleetId`, `NodeId`, and `InstanceId` identities for fleet
+  telemetry scope separation.
+
+### Explicitly not included
+
+- No dashboard, anomaly detection, billing metrics, fleet autoscaler,
+  observability vendor integration, or telemetry-derived runtime authority.
+
 ## 0.02-dev — Local multi-agent runtime + daemon control
 
 ### Implemented primitives

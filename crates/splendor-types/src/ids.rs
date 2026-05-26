@@ -19,6 +19,117 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use uuid::Uuid;
 
+/// Unique identifier for a governed fleet boundary.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct FleetId(Uuid);
+
+impl FleetId {
+    /// Creates a new fleet identifier.
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    /// Returns the underlying UUID.
+    pub fn as_uuid(&self) -> &Uuid {
+        &self.0
+    }
+}
+
+impl Default for FleetId {
+    /// Creates a new fleet identifier using a random UUID.
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for FleetId {
+    /// Formats the fleet identifier as a UUID string.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl From<Uuid> for FleetId {
+    /// Wraps an existing UUID as a fleet identifier.
+    fn from(value: Uuid) -> Self {
+        Self(value)
+    }
+}
+
+/// Unique identifier for a physical, virtual, or logical node.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct NodeId(Uuid);
+
+impl NodeId {
+    /// Creates a new node identifier.
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    /// Returns the underlying UUID.
+    pub fn as_uuid(&self) -> &Uuid {
+        &self.0
+    }
+}
+
+impl Default for NodeId {
+    /// Creates a new node identifier using a random UUID.
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for NodeId {
+    /// Formats the node identifier as a UUID string.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl From<Uuid> for NodeId {
+    /// Wraps an existing UUID as a node identifier.
+    fn from(value: Uuid) -> Self {
+        Self(value)
+    }
+}
+
+/// Unique identifier for one Splendor runtime process/instance.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct InstanceId(Uuid);
+
+impl InstanceId {
+    /// Creates a new instance identifier.
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    /// Returns the underlying UUID.
+    pub fn as_uuid(&self) -> &Uuid {
+        &self.0
+    }
+}
+
+impl Default for InstanceId {
+    /// Creates a new instance identifier using a random UUID.
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for InstanceId {
+    /// Formats the instance identifier as a UUID string.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl From<Uuid> for InstanceId {
+    /// Wraps an existing UUID as an instance identifier.
+    fn from(value: Uuid) -> Self {
+        Self(value)
+    }
+}
+
 /// Unique identifier for a tenant boundary.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct TenantId(Uuid);

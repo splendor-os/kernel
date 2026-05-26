@@ -10,6 +10,24 @@ impl AsUuid for TenantId {
     }
 }
 
+impl AsUuid for FleetId {
+    fn as_uuid(&self) -> &Uuid {
+        FleetId::as_uuid(self)
+    }
+}
+
+impl AsUuid for NodeId {
+    fn as_uuid(&self) -> &Uuid {
+        NodeId::as_uuid(self)
+    }
+}
+
+impl AsUuid for InstanceId {
+    fn as_uuid(&self) -> &Uuid {
+        InstanceId::as_uuid(self)
+    }
+}
+
 impl AsUuid for AgentId {
     fn as_uuid(&self) -> &Uuid {
         AgentId::as_uuid(self)
@@ -46,6 +64,12 @@ where
 
 #[test]
 fn id_round_trips() {
+    assert_uuid(FleetId::new());
+    assert_uuid(FleetId::default());
+    assert_uuid(NodeId::new());
+    assert_uuid(NodeId::default());
+    assert_uuid(InstanceId::new());
+    assert_uuid(InstanceId::default());
     assert_uuid(TenantId::new());
     assert_uuid(TenantId::default());
     assert_uuid(AgentId::new());

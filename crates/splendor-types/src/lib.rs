@@ -31,6 +31,7 @@
 //! ```
 
 mod daemon_security;
+mod fleet_telemetry;
 mod hash;
 mod ids;
 mod message;
@@ -45,8 +46,16 @@ pub use daemon_security::{
     InsecureDevMode, LocalTransportBinding, RevocationStatus, WorkOrderAuthorization,
     WorkOrderSignature,
 };
+pub use fleet_telemetry::{
+    DenialSignal, FailureCategory, FailureSignal, FleetTelemetrySnapshot, InstanceTelemetry,
+    NodeOnlineState, NodeTelemetry, QueueTelemetry, QuotaSignal, RunStatus, RunStatusCount,
+    RunStatusCounts, RunTelemetry, RuntimeMode, TelemetryAuthority, TraceSyncFailure,
+    TraceSyncTelemetry, FLEET_TELEMETRY_SCHEMA_VERSION,
+};
 pub use hash::{ContentHash, HashAlgorithm};
-pub use ids::{AgentId, MessageId, RunId, SnapshotId, TenantId, TraceId};
+pub use ids::{
+    AgentId, FleetId, InstanceId, MessageId, NodeId, RunId, SnapshotId, TenantId, TraceId,
+};
 pub use message::{
     Message, MessageDeliveryStatus, MessageEnvelope, MessageSchemaVersion, MessageTraceContext,
     MessageTraceLinks, MessageValidationError,

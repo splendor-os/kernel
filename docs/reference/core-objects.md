@@ -7,6 +7,9 @@ This document describes the canonical data structures defined in
 
 | Type | Backing | Purpose | Determinism |
 | --- | --- | --- | --- |
+| `FleetId` | UUID v4 | Governed fleet boundary identifier. | Random per fleet. |
+| `NodeId` | UUID v4 | Physical, virtual, or logical host identifier. | Random per node. |
+| `InstanceId` | UUID v4 | Splendor runtime process/instance identifier. | Random per instance. |
 | `TenantId` | UUID v4 | Tenant boundary identifier. | Random per instance. |
 | `AgentId` | UUID v4 | Agent identity within a tenant. | Random per instance. |
 | `RunId` | UUID v4 | Runtime execution session identifier. | Random per instance. |
