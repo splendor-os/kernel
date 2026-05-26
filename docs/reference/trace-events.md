@@ -91,6 +91,7 @@ or replay inspection.
 - `ChildRunStarted { delegation: LocalDelegationTraceContext }`
 - `ChildRunCompleted { delegation: LocalDelegationTraceContext }`
 - `ChildRunFailed { delegation: LocalDelegationTraceContext, failure: TaskFailure }`
+- `ChildRunLinked { parent_run_id, child_run_id, parent_agent_id, child_agent_id, causal_parent, source_message_id }`
 - `LoopTickCompleted { tick_id, integrity: Option<TraceIntegrity> }`
 
 ## Message Events
@@ -118,9 +119,26 @@ All message events carry `MessageTraceContext`:
 
 0.02-S1 defines these event payloads and serialization behavior. 0.02-S2 local
 router behavior emits the lifecycle events for accepted, rejected, expired, and
-consumed local messages. Replayed trace records preserve `causal_parent`,
-allowing future multi-agent replay to rebuild message causality without executing
-message side effects or adapter actions.
+consumed local messages. 0.02-S7 replay preserves `causal_parent` and rebuilds
+message causality without re-delivering messages or executing adapter actions.
+
+## Parent/child run links
+
+`ChildRunLinked` is an explicit local replay/audit event for 0.02 parent/child
+run relationships. It does not start, resume, or execute a child run. It records
+only the relationship needed for inspect-only replay:
+
+| Field | Purpose |
+| --- | --- |
+| `parent_run_id` | Run that delegated local work. |
+| `child_run_id` | Child run receiving scoped local work. |
+| `parent_agent_id` | Agent that owns the parent side. |
+| `child_agent_id` | Agent that owns the child side. |
+| `causal_parent` | Optional trace event that caused the delegation link. |
+| `source_message_id` | Optional message carrying the local delegation request. |
+
+Replay reports these links with `side_effects_replayed: false`; child adapter
+actions are never executed by replay.
 
 ## Local Delegation Events
 

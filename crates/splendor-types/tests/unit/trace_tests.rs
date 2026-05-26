@@ -218,3 +218,50 @@ fn local_delegation_trace_events_round_trip() {
         assert_eq!(decoded, event);
     }
 }
+
+#[test]
+fn child_run_link_trace_event_round_trips_with_source_message() {
+    let parent_run_id = RunId::new();
+    let child_run_id = RunId::new();
+    let parent_agent_id = AgentId::new();
+    let child_agent_id = AgentId::new();
+    let causal_parent = TraceId::from_run_sequence(&parent_run_id, 3);
+    let source_message_id = MessageId::new();
+
+    let event = TraceEvent::new(
+        parent_run_id.clone(),
+        4,
+        OffsetDateTime::now_utc(),
+        TraceEventKind::ChildRunLinked {
+            parent_run_id: parent_run_id.clone(),
+            child_run_id: child_run_id.clone(),
+            parent_agent_id: parent_agent_id.clone(),
+            child_agent_id: child_agent_id.clone(),
+            causal_parent: Some(causal_parent.clone()),
+            source_message_id: Some(source_message_id.clone()),
+        },
+    );
+
+    let payload = serde_json::to_vec(&event).expect("serialize");
+    let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+    assert_eq!(decoded, event);
+
+    match decoded.kind {
+        TraceEventKind::ChildRunLinked {
+            parent_run_id: decoded_parent_run,
+            child_run_id: decoded_child_run,
+            parent_agent_id: decoded_parent_agent,
+            child_agent_id: decoded_child_agent,
+            causal_parent: decoded_causal_parent,
+            source_message_id: decoded_source_message,
+        } => {
+            assert_eq!(decoded_parent_run, parent_run_id);
+            assert_eq!(decoded_child_run, child_run_id);
+            assert_eq!(decoded_parent_agent, parent_agent_id);
+            assert_eq!(decoded_child_agent, child_agent_id);
+            assert_eq!(decoded_causal_parent, Some(causal_parent));
+            assert_eq!(decoded_source_message, Some(source_message_id));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}

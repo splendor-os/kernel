@@ -242,6 +242,21 @@ pub enum TraceEventKind {
         /// Structured child failure outcome.
         failure: TaskFailure,
     },
+    /// Records an explicit local parent/child run relationship for replay.
+    ChildRunLinked {
+        /// Parent run that delegated local work.
+        parent_run_id: RunId,
+        /// Child run receiving scoped local work.
+        child_run_id: RunId,
+        /// Agent that owns the parent run side of the relationship.
+        parent_agent_id: AgentId,
+        /// Agent that owns the child run side of the relationship.
+        child_agent_id: AgentId,
+        /// Optional trace event that caused the child run link.
+        causal_parent: Option<TraceId>,
+        /// Optional message that carried the local delegation request.
+        source_message_id: Option<MessageId>,
+    },
     /// Marks the end of a loop tick.
     LoopTickCompleted {
         /// Tick counter within the run.

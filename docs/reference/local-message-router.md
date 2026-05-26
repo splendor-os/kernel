@@ -140,6 +140,7 @@ Replay remains inspect-only. The router's trace events preserve message identity
 source/target agent identity, schema, rejection reason, and causal parent data.
 `splendorctl replay` includes these persisted message decisions without
 re-delivering messages or executing adapters.
+0.02-S7 multi-agent replay uses the same events to reconstruct local causality.
 
 ## Non-goals
 

@@ -963,6 +963,7 @@ fn event_kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::ChildRunStarted { .. } => "ChildRunStarted",
         TraceEventKind::ChildRunCompleted { .. } => "ChildRunCompleted",
         TraceEventKind::ChildRunFailed { .. } => "ChildRunFailed",
+        TraceEventKind::ChildRunLinked { .. } => "ChildRunLinked",
         TraceEventKind::LoopTickCompleted { .. } => "LoopTickCompleted",
     }
 }

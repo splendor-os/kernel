@@ -31,13 +31,17 @@
 - Added the 0.02-S6 TypeScript surface with `@splendor/types`, a thin
   authenticated `@splendor/client`, schema parity tests, SDK docs, and a minimal
   daemon-client example.
+- Added 0.02-S7 inspect-only multi-agent replay output for message lifecycle
+  causality, local parent/child run links, and permission-laundering denial
+  evidence without re-executing side effects.
 
 ### Explicitly not included
 
 - No production OAuth/OIDC provider, PKI management, fleet mTLS rollout, node
   bootstrap, governance workflow, message broker, remote transport, fleet
   scheduler, fleet placement, long-lived child services, native Node binding,
-  browser runtime, or TypeScript runtime enforcement.
+  browser runtime, cross-instance replay, distributed trace sync, or TypeScript
+  runtime enforcement.
 
 ## 0.01-dev — Local kernel baseline
 
