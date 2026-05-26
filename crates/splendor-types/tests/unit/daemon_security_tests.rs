@@ -188,7 +188,7 @@ fn tenant_binding_and_audience_are_enforced() {
         now,
     );
     wrong_audience_credential.audience = CredentialAudience::Instance {
-        instance_id: "instance_other".to_string(),
+        instance_id: InstanceId::new(),
     };
     let wrong_audience = run_create_request(
         requested_tenant.clone(),
@@ -213,7 +213,7 @@ fn tenant_endpoint_rejects_fleet_bound_credential() {
     let tenant_id = TenantId::new();
     let mut fleet_bound = credential(tenant_id.clone(), vec![EndpointScope::RunsCreate], now);
     fleet_bound.binding = CredentialBinding::Fleet {
-        fleet_id: "fleet_local".to_string(),
+        fleet_id: FleetId::new(),
     };
     let request = run_create_request(
         tenant_id.clone(),

@@ -12,7 +12,7 @@ fn valid_message() -> Message {
             "task": "forecast revenue for Q3",
             "input_ref": "dataset:finance.revenue_monthly_v4"
         }),
-        Some(TraceId::new()),
+        Some(TraceEventId::new()),
         true,
         OffsetDateTime::now_utc(),
     )
@@ -138,7 +138,7 @@ fn causal_parent_and_trace_links_round_trip_for_replay() {
         schema_version: MessageSchemaVersion::V1,
         delivery_status: MessageDeliveryStatus::Queued,
         trace_links: MessageTraceLinks {
-            queued_trace_id: Some(TraceId::new()),
+            queued_trace_id: Some(TraceEventId::new()),
             ..MessageTraceLinks::default()
         },
     };

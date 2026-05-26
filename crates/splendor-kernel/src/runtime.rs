@@ -1,8 +1,8 @@
 //! # Kernel Runtime
 //!
 //! `KernelRuntime` is the minimal execution context used to emit ordered trace
-//! events. It owns a run identifier, sequence counter, and a configurable trace
-//! sink.
+//! events. It owns a run identifier, runtime identity context, sequence counter,
+//! and a configurable trace sink.
 //!
 //! ## Example
 //! ```rust,no_run
@@ -17,7 +17,10 @@
 
 use crate::{StdoutTraceSink, TraceError, TraceSink, TraceStoreSink};
 use splendor_store::TraceStore;
-use splendor_types::{ContentHash, RunId, TraceEvent, TraceEventKind, TraceIntegrity};
+use splendor_types::{
+    ContentHash, RunId, RuntimeIdentityContext, TraceEvent, TraceEventKind, TraceIdentityContext,
+    TraceIntegrity,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use time::OffsetDateTime;
@@ -29,6 +32,8 @@ pub struct KernelRuntimeConfig {
     pub trace_sink: Arc<dyn TraceSink>,
     /// Optional run identifier to resume an existing run.
     pub run_id: Option<RunId>,
+    /// Optional fleet/node/instance/tenant/agent identity fields for emitted traces.
+    pub identity: RuntimeIdentityContext,
     /// Initial sequence counter value for trace events.
     pub initial_sequence: u64,
     /// Initial event hash used to seed the integrity chain.
@@ -41,6 +46,7 @@ impl Default for KernelRuntimeConfig {
         Self {
             trace_sink: Arc::new(StdoutTraceSink),
             run_id: None,
+            identity: RuntimeIdentityContext::default(),
             initial_sequence: 0,
             initial_prev_hash: None,
         }
@@ -51,6 +57,8 @@ impl Default for KernelRuntimeConfig {
 pub struct KernelRuntime {
     /// Run identifier associated with this runtime instance.
     run_id: RunId,
+    /// Base identity context embedded into each trace event.
+    identity: TraceIdentityContext,
     /// Monotonic sequence counter for trace events.
     sequence: AtomicU64,
     /// Trace sink used to emit serialized events.
@@ -63,8 +71,10 @@ impl KernelRuntime {
     /// Creates a runtime with a new run identifier and sequence counter.
     pub fn new(config: KernelRuntimeConfig) -> Self {
         let run_id = config.run_id.unwrap_or_default();
+        let identity = TraceIdentityContext::from_runtime(run_id.clone(), &config.identity);
         Self {
             run_id,
+            identity,
             sequence: AtomicU64::new(config.initial_sequence),
             trace_sink: config.trace_sink,
             prev_event_hash: Mutex::new(config.initial_prev_hash),
@@ -88,6 +98,7 @@ impl KernelRuntime {
         Ok(Self::new(KernelRuntimeConfig {
             trace_sink: Arc::new(sink),
             run_id: Some(run_id),
+            identity: RuntimeIdentityContext::default(),
             initial_sequence,
             initial_prev_hash,
         }))
@@ -105,6 +116,11 @@ impl KernelRuntime {
         &self.run_id
     }
 
+    /// Returns the base trace identity associated with this runtime.
+    pub fn trace_identity(&self) -> TraceIdentityContext {
+        self.identity.clone()
+    }
+
     /// Returns the next trace sequence that will be assigned.
     pub fn next_sequence(&self) -> u64 {
         self.sequence.load(Ordering::SeqCst)
@@ -112,13 +128,19 @@ impl KernelRuntime {
 
     /// Records a `TraceEventKind` and returns the emitted `TraceEvent`.
     pub fn record_event(&self, kind: TraceEventKind) -> Result<TraceEvent, TraceError> {
+        self.record_event_with_identity(self.trace_identity(), kind)
+    }
+
+    /// Records a `TraceEventKind` with explicit identity context.
+    pub fn record_event_with_identity(
+        &self,
+        identity: TraceIdentityContext,
+        kind: TraceEventKind,
+    ) -> Result<TraceEvent, TraceError> {
+        identity.ensure_run(&self.run_id)?;
         let sequence = self.sequence.fetch_add(1, Ordering::SeqCst);
-        let mut event = TraceEvent::new(
-            self.run_id.clone(),
-            sequence,
-            OffsetDateTime::now_utc(),
-            kind,
-        );
+        let mut event =
+            TraceEvent::try_new_with_identity(identity, sequence, OffsetDateTime::now_utc(), kind)?;
         let mut prev_hash = self
             .prev_event_hash
             .lock()

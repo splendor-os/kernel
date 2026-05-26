@@ -21,7 +21,7 @@
 //! ```
 
 use splendor_store::{TraceStore, TraceStoreError};
-use splendor_types::{ContentHash, RunId, TraceEvent};
+use splendor_types::{ContentHash, IdentityValidationError, RunId, TraceEvent};
 use std::future::{ready, Future, Ready};
 use std::sync::Arc;
 
@@ -127,6 +127,9 @@ pub enum TraceError {
     /// JSON serialization failure for trace events.
     #[error("failed to serialize trace event: {0}")]
     Serialization(#[from] serde_json::Error),
+    /// Trace identity validation failed before persistence.
+    #[error("trace identity error: {0}")]
+    Identity(#[from] IdentityValidationError),
     /// Trace store failure while persisting events.
     #[error("trace store error: {0}")]
     Store(#[from] TraceStoreError),

@@ -6,7 +6,7 @@
 //! It intentionally does not implement routing, inbox/outbox storage, remote
 //! transport, or delivery guarantees.
 
-use crate::{AgentId, MessageId, RunId, TraceId};
+use crate::{AgentId, MessageId, RunId, TraceEventId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -130,7 +130,7 @@ pub struct Message {
     /// payload validation belongs to the schema owner.
     pub payload: serde_json::Value,
     /// Optional trace event that causally produced this message.
-    pub causal_parent: Option<TraceId>,
+    pub causal_parent: Option<TraceEventId>,
     /// Whether the sender expects a response message.
     pub requires_response: bool,
     /// Timestamp when the message was created.
@@ -147,7 +147,7 @@ impl Message {
         run_id: RunId,
         schema: impl Into<String>,
         payload: serde_json::Value,
-        causal_parent: Option<TraceId>,
+        causal_parent: Option<TraceEventId>,
         requires_response: bool,
         created_at: OffsetDateTime,
     ) -> Result<Self, MessageValidationError> {
@@ -207,15 +207,15 @@ pub enum MessageDeliveryStatus {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MessageTraceLinks {
     /// Trace event that records `message.queued`.
-    pub queued_trace_id: Option<TraceId>,
+    pub queued_trace_id: Option<TraceEventId>,
     /// Trace event that records `message.delivered`.
-    pub delivered_trace_id: Option<TraceId>,
+    pub delivered_trace_id: Option<TraceEventId>,
     /// Trace event that records `message.rejected`.
-    pub rejected_trace_id: Option<TraceId>,
+    pub rejected_trace_id: Option<TraceEventId>,
     /// Trace event that records `message.expired`.
-    pub expired_trace_id: Option<TraceId>,
+    pub expired_trace_id: Option<TraceEventId>,
     /// Trace event that records `message.consumed`.
-    pub consumed_trace_id: Option<TraceId>,
+    pub consumed_trace_id: Option<TraceEventId>,
 }
 
 /// Strict message envelope used by local routing code in later 0.02 sprints.
@@ -267,7 +267,7 @@ pub struct MessageTraceContext {
     /// Message payload schema.
     pub schema: String,
     /// Optional trace event that causally produced the message.
-    pub causal_parent: Option<TraceId>,
+    pub causal_parent: Option<TraceEventId>,
 }
 
 impl MessageTraceContext {

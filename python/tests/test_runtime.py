@@ -168,6 +168,68 @@ def test_trace_subscription_and_tail() -> None:
     assert tail[0]["run_id"] == run_id
 
 
+def test_runtime_traces_include_canonical_identity_context() -> None:
+    runtime = KernelRuntime()
+    tenant_id = runtime.create_tenant(
+        allowed_actions=["noop"],
+        allowed_adapters=["noop"],
+    )
+    agent_id = runtime.create_agent(tenant_id)
+    run_id = runtime.agent_run_id(agent_id)
+
+    runtime.register_adapter("noop", lambda action: {"output": {"ok": True}})
+    runtime.register_perceptor(agent_id, lambda agent: [])
+
+    def policy(state: bytes, percepts: list[dict[str, object]]):
+        return [
+            {
+                "name": "noop",
+                "params": {},
+                "side_effect_class": "read_only",
+                "adapter": "noop",
+            }
+        ]
+
+    runtime.register_policy(agent_id, policy)
+    runtime.run_once(agent_id)
+    events = list(runtime.tail_traces(run_id))
+
+    for sequence, event in enumerate(events):
+        assert event["sequence"] == sequence
+        assert "trace_event_id" in event
+        assert event["identity"]["run_id"] == run_id
+        assert event["identity"].get("tenant_id") == tenant_id
+        assert event["identity"].get("agent_id") == agent_id
+
+    action_events = [
+        event for event in events if event["kind"].startswith("Action")
+    ]
+    assert action_events
+    action_id = action_events[0]["identity"]["action_id"]
+    assert all(event["identity"]["action_id"] == action_id for event in action_events)
+
+    state_event = next(event for event in events if event["kind"] == "StateCommitted")
+    assert state_event["identity"]["state_node_id"].startswith("sha256:")
+
+
+def test_identity_validation_rejects_invalid_python_ids() -> None:
+    runtime = KernelRuntime()
+    try:
+        runtime.create_tenant(tenant_id="not-a-uuid")
+    except ValueError as exc:
+        assert "tenant_id is invalid" in str(exc)
+    else:
+        raise AssertionError("expected invalid tenant_id")
+
+    tenant_id = runtime.create_tenant()
+    try:
+        runtime.create_agent(tenant_id, run_id="00000000-0000-0000-0000-000000000000")
+    except ValueError as exc:
+        assert "run_id is required" in str(exc)
+    else:
+        raise AssertionError("expected missing run_id")
+
+
 def test_replay_run_does_not_repeat_adapter_side_effects() -> None:
     runtime = KernelRuntime()
     tenant_id = runtime.create_tenant(

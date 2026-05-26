@@ -12,7 +12,16 @@ fn trace_event_uses_deterministic_trace_id() {
         OffsetDateTime::now_utc(),
         TraceEventKind::LoopTickStarted { tick_id: 1 },
     );
-    assert_eq!(event.trace_id, TraceId::from_run_sequence(&run_id, 5));
+    assert_eq!(
+        event.trace_event_id,
+        TraceEventId::from_run_sequence(&run_id, 5)
+    );
+    assert_eq!(event.identity.run_id, run_id);
+    assert_eq!(event.identity.tick_id, Some(TickId::from(1)));
+    let payload = serde_json::to_value(&event).expect("serialize");
+    assert!(payload.get("trace_event_id").is_some());
+    assert!(payload.get("trace_id").is_none());
+    assert_eq!(payload["identity"]["tick_id"], serde_json::json!(1));
 }
 
 #[test]
@@ -63,7 +72,7 @@ fn trace_event_round_trip() {
 #[test]
 fn message_rejection_trace_event_preserves_causal_parent() {
     let run_id = RunId::new();
-    let causal_parent = TraceId::from_run_sequence(&run_id, 3);
+    let causal_parent = TraceEventId::from_run_sequence(&run_id, 3);
     let message = Message::new(
         MessageId::new(),
         AgentId::new(),

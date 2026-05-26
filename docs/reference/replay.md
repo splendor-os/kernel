@@ -32,7 +32,7 @@ Before reconstructing ticks, replay validates:
 - trace records are scoped to the requested run;
 - sequence numbers are contiguous from zero;
 - each serialized `TraceEvent` run and sequence match the stored record;
-- each `trace_id` matches the deterministic run/sequence derivation;
+- each `trace_event_id` matches the deterministic run/sequence derivation;
 - trace hash-chain continuity through `prev_event_hash`;
 - referenced snapshots can be loaded from the state store.
 

@@ -69,6 +69,34 @@ fn default_config_records_to_stdout_sink() {
 }
 
 #[test]
+fn runtime_rejects_mismatched_trace_identity_before_persistence() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = CapturingSink {
+        events: Arc::clone(&events),
+    };
+    let run_id = RunId::new();
+    let runtime = KernelRuntime::new(KernelRuntimeConfig {
+        trace_sink: Arc::new(sink),
+        run_id: Some(run_id.clone()),
+        ..KernelRuntimeConfig::default()
+    });
+
+    let error = runtime
+        .record_event_with_identity(
+            TraceIdentityContext::new(RunId::new()),
+            TraceEventKind::PolicyInvoked {
+                policy: "mismatch".to_string(),
+            },
+        )
+        .expect_err("identity mismatch");
+
+    assert!(matches!(error, TraceError::Identity(_)));
+    assert_eq!(runtime.run_id(), &run_id);
+    assert_eq!(runtime.next_sequence(), 0);
+    assert!(events.lock().expect("events lock").is_empty());
+}
+
+#[test]
 fn runtime_resumes_sequence_with_trace_store() {
     let store = Arc::new(InMemoryTraceStore::default());
     let run_id = RunId::new();

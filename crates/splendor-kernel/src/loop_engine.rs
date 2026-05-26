@@ -13,7 +13,7 @@ use splendor_gateway::{
 use splendor_store::{StateData, StateMetadata, TraceStore, TraceStoreError};
 use splendor_types::{
     Action, Constraint, ContentHash, Feedback, Percept, QuotaUsage, Reward, RunId, SnapshotId,
-    TraceEvent, TraceEventKind, VerificationResult,
+    TickId, TraceEvent, TraceEventId, TraceEventKind, TraceIdentityContext, VerificationResult,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -177,10 +177,7 @@ impl PolicyDecision {
         Self {
             actions,
             next_state,
-            metadata: StateMetadata {
-                created_at: OffsetDateTime::now_utc(),
-                label,
-            },
+            metadata: StateMetadata::new(OffsetDateTime::now_utc(), label),
         }
     }
 }
@@ -345,6 +342,36 @@ impl LoopEngine {
         &self.agent.tenant_id
     }
 
+    fn trace_identity(&self, tick_id: u64) -> TraceIdentityContext {
+        self.runtime
+            .trace_identity()
+            .with_tenant_agent(self.agent.tenant_id.clone(), self.agent.agent_id.clone())
+            .with_tick_id(TickId::from(tick_id))
+    }
+
+    fn record_tick_event(
+        &self,
+        tick_id: u64,
+        kind: TraceEventKind,
+    ) -> Result<TraceEvent, LoopError> {
+        Ok(self
+            .runtime
+            .record_event_with_identity(self.trace_identity(tick_id), kind)?)
+    }
+
+    fn record_action_event(
+        &self,
+        tick_id: u64,
+        action_id: &ActionId,
+        kind: TraceEventKind,
+    ) -> Result<TraceEvent, LoopError> {
+        Ok(self.runtime.record_event_with_identity(
+            self.trace_identity(tick_id)
+                .with_action_id(action_id.clone()),
+            kind,
+        )?)
+    }
+
     /// Restores state from a snapshot and updates the agent head pointer.
     pub fn restore_snapshot(&mut self, snapshot_id: &SnapshotId) -> Result<(), LoopError> {
         let snapshot = self.state_graph.restore_snapshot(snapshot_id)?;
@@ -371,55 +398,72 @@ impl LoopEngine {
     /// Executes a single tick of the loop engine.
     pub fn tick(&mut self, tick_id: u64) -> Result<TickOutcome, LoopError> {
         let start = Instant::now();
-        self.runtime
-            .record_event(TraceEventKind::LoopTickStarted { tick_id })?;
+        self.record_tick_event(tick_id, TraceEventKind::LoopTickStarted { tick_id })?;
 
         let percepts = self.collect_percepts()?;
-        self.runtime
-            .record_event(TraceEventKind::PerceptsReceived {
+        self.record_tick_event(
+            tick_id,
+            TraceEventKind::PerceptsReceived {
                 percepts: percepts.clone(),
-            })?;
+            },
+        )?;
 
-        self.runtime.record_event(TraceEventKind::StateLoaded {
-            state_hash: Some(ContentHash::blake3(&self.state.bytes)),
-        })?;
+        self.record_tick_event(
+            tick_id,
+            TraceEventKind::StateLoaded {
+                state_hash: Some(ContentHash::blake3(&self.state.bytes)),
+            },
+        )?;
 
         let policy_name = self.policy.name().to_string();
-        self.runtime.record_event(TraceEventKind::PolicyInvoked {
-            policy: policy_name.clone(),
-        })?;
+        self.record_tick_event(
+            tick_id,
+            TraceEventKind::PolicyInvoked {
+                policy: policy_name.clone(),
+            },
+        )?;
         let decision = self.policy.decide(&self.state, &percepts)?;
-        self.runtime.record_event(TraceEventKind::PolicyCompleted {
-            policy: policy_name,
-        })?;
+        self.record_tick_event(
+            tick_id,
+            TraceEventKind::PolicyCompleted {
+                policy: policy_name,
+            },
+        )?;
 
         let candidate_actions = decision
             .actions
             .iter()
             .map(|candidate| candidate.action.clone())
             .collect::<Vec<_>>();
-        self.runtime
-            .record_event(TraceEventKind::CandidatesProposed {
+        self.record_tick_event(
+            tick_id,
+            TraceEventKind::CandidatesProposed {
                 actions: candidate_actions,
-            })?;
+            },
+        )?;
 
         let constraint_evaluation =
             self.constraint_engine
                 .evaluate(&self.state, &percepts, &decision.actions);
-        self.runtime
-            .record_event(TraceEventKind::ConstraintsEvaluated {
+        self.record_tick_event(
+            tick_id,
+            TraceEventKind::ConstraintsEvaluated {
                 constraints: constraint_evaluation.constraints.clone(),
                 result: constraint_evaluation.result.clone(),
-            })?;
+            },
+        )?;
 
         let mut outcomes = Vec::new();
         for candidate in &decision.actions {
             let action = candidate.action.clone();
             let action_id = ActionId::new();
-            self.runtime
-                .record_event(TraceEventKind::ActionVerificationStarted {
+            self.record_action_event(
+                tick_id,
+                &action_id,
+                TraceEventKind::ActionVerificationStarted {
                     action: action.clone(),
-                })?;
+                },
+            )?;
 
             let outcome = if !constraint_evaluation.result.allowed {
                 ActionOutcome {
@@ -436,6 +480,7 @@ impl LoopEngine {
                     action_id: action_id.clone(),
                     tenant_id: self.agent.tenant_id.clone(),
                     agent_id: self.agent.agent_id.clone(),
+                    run_id: self.runtime.run_id().clone(),
                     action: action.clone(),
                     adapter: candidate.adapter.clone(),
                     quota_usage: candidate.usage,
@@ -449,31 +494,46 @@ impl LoopEngine {
                 }
             };
 
-            self.runtime
-                .record_event(TraceEventKind::ActionVerificationCompleted {
+            self.record_action_event(
+                tick_id,
+                &action_id,
+                TraceEventKind::ActionVerificationCompleted {
                     action: action.clone(),
                     result: outcome.verification.clone(),
-                })?;
+                },
+            )?;
 
             match outcome.status {
                 ActionStatus::Executed => {
-                    self.runtime.record_event(TraceEventKind::ActionExecuted {
-                        action: action.clone(),
-                        outcome: outcome.output.clone().unwrap_or(serde_json::Value::Null),
-                    })?;
+                    self.record_action_event(
+                        tick_id,
+                        &action_id,
+                        TraceEventKind::ActionExecuted {
+                            action: action.clone(),
+                            outcome: outcome.output.clone().unwrap_or(serde_json::Value::Null),
+                        },
+                    )?;
                 }
                 ActionStatus::Denied => {
-                    self.runtime.record_event(TraceEventKind::ActionDenied {
-                        action: action.clone(),
-                        result: outcome.verification.clone(),
-                    })?;
+                    self.record_action_event(
+                        tick_id,
+                        &action_id,
+                        TraceEventKind::ActionDenied {
+                            action: action.clone(),
+                            result: outcome.verification.clone(),
+                        },
+                    )?;
                 }
                 ActionStatus::Failed => {
                     if outcome.output.is_some() {
-                        self.runtime.record_event(TraceEventKind::ActionExecuted {
-                            action: action.clone(),
-                            outcome: outcome.output.clone().unwrap_or(serde_json::Value::Null),
-                        })?;
+                        self.record_action_event(
+                            tick_id,
+                            &action_id,
+                            TraceEventKind::ActionExecuted {
+                                action: action.clone(),
+                                outcome: outcome.output.clone().unwrap_or(serde_json::Value::Null),
+                            },
+                        )?;
                     }
                     let denial = outcome
                         .post_verification
@@ -487,14 +547,18 @@ impl LoopEngine {
                                     .unwrap_or_else(|| "action_failed".to_string()),
                             )
                         });
-                    self.runtime.record_event(TraceEventKind::ActionFailed {
-                        action: action.clone(),
-                        error: outcome
-                            .error
-                            .clone()
-                            .unwrap_or_else(|| "action_failed".to_string()),
-                        result: denial,
-                    })?;
+                    self.record_action_event(
+                        tick_id,
+                        &action_id,
+                        TraceEventKind::ActionFailed {
+                            action: action.clone(),
+                            error: outcome
+                                .error
+                                .clone()
+                                .unwrap_or_else(|| "action_failed".to_string()),
+                            result: denial,
+                        },
+                    )?;
                 }
             }
 
@@ -520,28 +584,44 @@ impl LoopEngine {
                 .collect::<Vec<_>>(),
         });
 
-        self.runtime.record_event(TraceEventKind::OutcomeRecorded {
-            outcome: outcome_payload,
-            feedback,
-            reward,
-        })?;
+        self.record_tick_event(
+            tick_id,
+            TraceEventKind::OutcomeRecorded {
+                outcome: outcome_payload,
+                feedback,
+                reward,
+            },
+        )?;
 
+        let state_trace_event_id =
+            TraceEventId::from_run_sequence(self.runtime.run_id(), self.runtime.next_sequence());
+        let mut metadata = decision.metadata.clone();
+        metadata.tenant_id = Some(self.agent.tenant_id.clone());
+        metadata.agent_id = Some(self.agent.agent_id.clone());
+        metadata.run_id = Some(self.runtime.run_id().clone());
+        metadata.trace_event_id = Some(state_trace_event_id);
         let commit = self
             .state_graph
-            .commit(decision.next_state.clone(), decision.metadata.clone())?;
+            .commit(decision.next_state.clone(), metadata)?;
         self.state = decision.next_state;
         self.agent.set_state_head(commit.node_id.clone());
 
-        self.runtime.record_event(TraceEventKind::StateCommitted {
-            state_hash: commit.node_id.hash().clone(),
-            snapshot_id: commit.snapshot_id.clone(),
-        })?;
+        self.runtime.record_event_with_identity(
+            self.trace_identity(tick_id)
+                .with_state_node_id(commit.node_id.clone()),
+            TraceEventKind::StateCommitted {
+                state_hash: commit.node_id.hash().clone(),
+                snapshot_id: commit.snapshot_id.clone(),
+            },
+        )?;
 
-        self.runtime
-            .record_event(TraceEventKind::LoopTickCompleted {
+        self.record_tick_event(
+            tick_id,
+            TraceEventKind::LoopTickCompleted {
                 tick_id,
                 integrity: None,
-            })?;
+            },
+        )?;
 
         Ok(TickOutcome {
             tick_id,

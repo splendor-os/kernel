@@ -141,7 +141,7 @@ fn optional_hash_parts_none_returns_none() {
 
 #[test]
 fn parse_algorithm_rejects_unknown() {
-    let error = SqliteTraceStore::parse_algorithm("sha256").expect_err("error");
+    let error = SqliteTraceStore::parse_algorithm("unknown").expect_err("error");
     assert!(matches!(error, TraceStoreError::InvalidHashAlgorithm(_)));
 }
 

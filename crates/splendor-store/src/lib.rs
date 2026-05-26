@@ -17,10 +17,10 @@
 mod state;
 mod trace;
 
-pub use splendor_types::SnapshotId;
+pub use splendor_types::{SnapshotId, StateNodeId};
 pub use state::{
     AsyncStateStore, InMemoryStateStore, SqliteStateStore, StateData, StateDataRef, StateMetadata,
-    StateNode, StateNodeId, StateSnapshot, StateStore, StateStoreError,
+    StateNode, StateSnapshot, StateStore, StateStoreError,
 };
 pub use trace::{
     AsyncTraceStore, InMemoryTraceStore, SqliteTraceStore, TraceRecord, TraceStore, TraceStoreError,

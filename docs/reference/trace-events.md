@@ -7,10 +7,11 @@ sequence number within a `RunId` and must be emitted in strict tick order.
 
 **Fields**
 
-- `trace_id` (`TraceId`): deterministic identifier derived from `RunId` + sequence.
+- `trace_event_id` (`TraceEventId`): deterministic identifier derived from `RunId` + sequence. Deserialization accepts legacy `trace_id` as an input alias during the 0.02 migration window.
 - `run_id` (`RunId`): owning run.
 - `sequence` (`u64`): monotonic per-run sequence number.
 - `timestamp` (`OffsetDateTime`): capture time at emission.
+- `identity` (`TraceIdentityContext`): runtime identity context containing required `run_id` and optional fleet, node, instance, tenant, agent, tick, action, state, and message IDs when applicable.
 - `kind` (`TraceEventKind`): event payload.
 
 Trace events are serialized into `TraceRecord` entries within a `TraceStore`.
@@ -50,6 +51,15 @@ Message lifecycle events are also trace events. They are ordered by the same
 per-run sequence counter and do not replace the required tick event ordering.
 The local message router emits them when a message is queued, delivered,
 rejected, expired, or consumed.
+
+## Identity context
+
+Every trace event carries `identity.run_id`; runtime emission validates that it
+matches the top-level `run_id` before persistence. Loop events emitted by the
+kernel include tenant, agent, run, and tick identity where applicable. Action
+events include `action_id`; state commit events include `state_node_id`; message
+lifecycle events include `message_id`. Fleet, node, and instance IDs are optional
+until later 0.03 registry and transport sprints populate them.
 
 ## TraceEventKind Payloads
 
@@ -126,11 +136,12 @@ let event = TraceEvent::new(
     TraceEventKind::LoopTickStarted { tick_id: 1 },
 );
 assert_eq!(event.sequence, 0);
+assert_eq!(event.trace_event_id.to_string().len(), 36);
 ```
 
 ## Replay validation contract
 
-0.01-dev replay validates that stored trace records are contiguous, scoped to
-the requested run, use deterministic trace IDs, and preserve hash-chain
+Replay validates that stored trace records are contiguous, scoped to the
+requested run, use deterministic `trace_event_id` values, and preserve hash-chain
 continuity. A missing or corrupted segment causes replay to fail rather than
 silently continuing.

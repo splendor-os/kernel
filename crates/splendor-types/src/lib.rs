@@ -46,7 +46,11 @@ pub use daemon_security::{
     WorkOrderSignature,
 };
 pub use hash::{ContentHash, HashAlgorithm};
-pub use ids::{AgentId, MessageId, RunId, SnapshotId, TenantId, TraceId};
+pub use ids::{
+    ActionId, AgentId, FleetId, IdentityValidationError, InstanceId, MessageId, NodeId, RunId,
+    RuntimeIdentityContext, SnapshotId, StateNodeId, TenantId, TickId, TraceEventId, TraceId,
+    TraceIdentityContext,
+};
 pub use message::{
     Message, MessageDeliveryStatus, MessageEnvelope, MessageSchemaVersion, MessageTraceContext,
     MessageTraceLinks, MessageValidationError,

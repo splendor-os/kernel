@@ -3,8 +3,8 @@
 Messages are the transport-neutral primitive for local agent-to-agent
 coordination in Splendor 0.02. A message is not a chat transcript and it is not a
 transport packet. It is a typed, versioned runtime object scoped by explicit
-agent and run identity so later local routing, delegation, and replay work can
-preserve causality without inheriting permissions implicitly.
+agent, run, and trace-event identity so later local routing, delegation, and
+replay work can preserve causality without inheriting permissions implicitly.
 
 Implemented in Rust as `splendor_types::{Message, MessageEnvelope}`.
 
@@ -35,7 +35,7 @@ or shared mutable state channel is part of the message object.
 | `run_id` | `RunId` | yes | Run that scopes the message and trace causality. The nil UUID is rejected. |
 | `schema` | `String` | yes | Versioned payload schema, such as `splendor.message.task_request.v1`. |
 | `payload` | `serde_json::Value` | yes | Typed JSON payload. JSON `null` is rejected at the envelope layer. |
-| `causal_parent` | `Option<TraceId>` | no | Trace event that causally produced the message. Preserved by serialization/replay inputs. |
+| `causal_parent` | `Option<TraceEventId>` | no | Trace event that causally produced the message. Preserved by serialization/replay inputs. |
 | `requires_response` | `bool` | yes | Whether the sender expects a response message. |
 | `created_at` | `OffsetDateTime` | yes | Message creation timestamp. |
 
@@ -101,7 +101,7 @@ event with the message trace context and reason.
 
 ## Trace and replay behavior
 
-Messages carry an optional `causal_parent: TraceId`. The value identifies the
+Messages carry an optional `causal_parent: TraceEventId`. The value identifies the
 trace event that caused the message to be proposed or produced. Serialization
 round trips preserve this field, allowing replay and future multi-agent causal
 graph inspection to reconstruct message lineage without re-executing side

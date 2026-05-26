@@ -10,8 +10,8 @@ graph.
 | --------------- | ------------------------------------------------------------ |
 | `StateData`     | Serialized state bytes with an optional `content_type`.      |
 | `StateDataRef`  | UUID reference for stored state bytes.                       |
-| `StateNodeId`   | Content hash identifying a state graph node.                 |
-| `StateMetadata` | Metadata stored with each state node.                        |
+| `StateNodeId`   | Content hash identifying a state graph node; canonical type lives in `splendor-types` and is re-exported by `splendor-store`. |
+| `StateMetadata` | Metadata stored with each state node, including optional tenant/agent/run/trace-event linkage for runtime-owned commits. |
 | `StateNode`     | Node payload containing parents, data reference, and hashes. |
 | `StateSnapshot` | Snapshot payload containing node ID and `StateData`.         |
 
@@ -56,7 +56,7 @@ let temp = NamedTempFile::new().expect("temp");
 let store = SqliteStateStore::open(temp.path()).expect("open");
 let data = StateData { bytes: vec![1, 2, 3], content_type: None };
 let data_ref = StateStore::put_state(&store, data).expect("put");
-let metadata = StateMetadata { created_at: OffsetDateTime::now_utc(), label: Some("seed".into()) };
+let metadata = StateMetadata::new(OffsetDateTime::now_utc(), Some("seed".into()));
 let node_id = StateStore::commit_node(&store, Vec::new(), data_ref, metadata).expect("commit");
 let snapshot_id = StateStore::snapshot(&store, &node_id).expect("snapshot");
 let snapshot = StateStore::load_snapshot(&store, &snapshot_id).expect("load");

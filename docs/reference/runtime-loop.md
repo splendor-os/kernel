@@ -35,7 +35,11 @@ Percepts -> Policy -> Constraints -> Gateway -> Adapter -> Outcome -> State Comm
 - `tick_id`: loop cycle identifier.
 - `action_id`: assigned per proposed action before gateway submission.
 - `state_node_id`: content-addressed committed state node.
-- `trace_id`: deterministic ID from run ID and trace sequence.
+- `trace_event_id`: deterministic ID from run ID and trace sequence.
+
+Each emitted trace event also carries `identity.run_id` and optional tenant,
+agent, tick, action, state, message, fleet, node, and instance identity fields as
+documented in [`identity.md`](identity.md).
 
 ## Failure behavior
 

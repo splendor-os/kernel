@@ -10,6 +10,40 @@ import time
 import uuid
 
 
+CANONICAL_ID_FIELDS = (
+    "fleet_id",
+    "node_id",
+    "instance_id",
+    "tenant_id",
+    "agent_id",
+    "run_id",
+    "tick_id",
+    "action_id",
+    "state_node_id",
+    "trace_event_id",
+    "message_id",
+)
+
+
+def _new_uuid() -> str:
+    return str(uuid.uuid4())
+
+
+def _validate_uuid_id(value: str, field: str) -> str:
+    try:
+        parsed = uuid.UUID(str(value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} is invalid") from exc
+    if parsed.int == 0:
+        raise ValueError(f"{field} is required")
+    return str(parsed)
+
+
+def _trace_event_id(run_id: str, sequence: int) -> str:
+    run_id = _validate_uuid_id(run_id, "run_id")
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, f"{run_id}:{sequence}"))
+
+
 @dataclass(frozen=True)
 class KernelRuntimeConfig:
     name: str = "splendor"
@@ -122,6 +156,7 @@ class ActionOutcome:
     post_verification: Optional[VerificationResult]
     output: Optional[dict[str, Any]]
     error: Optional[str]
+    action_id: Optional[str] = None
 
 
 @dataclass
@@ -309,7 +344,7 @@ class KernelRuntime:
         allowed_adapters: Optional[list[str]] = None,
         quotas: Optional[QuotaPolicy] = None,
     ) -> str:
-        tenant_id = tenant_id or str(uuid.uuid4())
+        tenant_id = _validate_uuid_id(tenant_id or _new_uuid(), "tenant_id")
         policy = TenantPolicy(
             allowed_actions=allowed_actions or [],
             allowed_adapters=allowed_adapters or [],
@@ -332,8 +367,8 @@ class KernelRuntime:
     ) -> str:
         if tenant_id not in self._tenants:
             raise ValueError("tenant not found")
-        agent_id = str(uuid.uuid4())
-        run_id = run_id or str(uuid.uuid4())
+        agent_id = _new_uuid()
+        run_id = _validate_uuid_id(run_id or _new_uuid(), "run_id")
         self._agents[agent_id] = AgentContext(
             agent_id=agent_id,
             tenant_id=tenant_id,
@@ -469,10 +504,11 @@ class KernelRuntime:
         needs_intervention = False
 
         for candidate in actions:
+            action_id = _new_uuid()
             self._record_trace(
                 agent.run_id,
                 "ActionVerificationStarted",
-                {"tick_id": tick_id, "action": candidate.action.name},
+                {"tick_id": tick_id, "action_id": action_id, "action": candidate.action.name},
             )
 
             if not constraint_eval[1].allowed:
@@ -482,6 +518,7 @@ class KernelRuntime:
                     post_verification=None,
                     output=None,
                     error=None,
+                    action_id=action_id,
                 )
                 outcomes.append(outcome)
                 self._record_trace(
@@ -489,6 +526,7 @@ class KernelRuntime:
                     "ActionVerificationCompleted",
                     {
                         "tick_id": tick_id,
+                        "action_id": action_id,
                         "action": candidate.action.name,
                         "result": None,
                     },
@@ -498,6 +536,7 @@ class KernelRuntime:
                     "ActionDenied",
                     {
                         "tick_id": tick_id,
+                        "action_id": action_id,
                         "action": candidate.action.name,
                         "result": outcome.verification.__dict__,
                     },
@@ -512,6 +551,7 @@ class KernelRuntime:
                     post_verification=None,
                     output=None,
                     error="permission denied",
+                    action_id=action_id,
                 )
                 outcomes.append(outcome)
                 self._record_trace(
@@ -519,6 +559,7 @@ class KernelRuntime:
                     "ActionVerificationCompleted",
                     {
                         "tick_id": tick_id,
+                        "action_id": action_id,
                         "action": candidate.action.name,
                         "result": None,
                     },
@@ -528,6 +569,7 @@ class KernelRuntime:
                     "ActionDenied",
                     {
                         "tick_id": tick_id,
+                        "action_id": action_id,
                         "action": candidate.action.name,
                         "result": outcome.verification.__dict__,
                     },
@@ -547,6 +589,7 @@ class KernelRuntime:
                     post_verification=None,
                     output=None,
                     error="quota denied",
+                    action_id=action_id,
                 )
                 outcomes.append(outcome)
                 self._record_trace(
@@ -554,6 +597,7 @@ class KernelRuntime:
                     "ActionVerificationCompleted",
                     {
                         "tick_id": tick_id,
+                        "action_id": action_id,
                         "action": candidate.action.name,
                         "result": None,
                     },
@@ -563,6 +607,7 @@ class KernelRuntime:
                     "ActionDenied",
                     {
                         "tick_id": tick_id,
+                        "action_id": action_id,
                         "action": candidate.action.name,
                         "result": outcome.verification.__dict__,
                     },
@@ -577,6 +622,7 @@ class KernelRuntime:
                     post_verification=None,
                     output=None,
                     error="precondition missing",
+                    action_id=action_id,
                 )
                 outcomes.append(outcome)
                 self._record_trace(
@@ -584,6 +630,7 @@ class KernelRuntime:
                     "ActionVerificationCompleted",
                     {
                         "tick_id": tick_id,
+                        "action_id": action_id,
                         "action": candidate.action.name,
                         "result": None,
                     },
@@ -593,6 +640,7 @@ class KernelRuntime:
                     "ActionDenied",
                     {
                         "tick_id": tick_id,
+                        "action_id": action_id,
                         "action": candidate.action.name,
                         "result": outcome.verification.__dict__,
                     },
@@ -612,6 +660,7 @@ class KernelRuntime:
                 post_verification=post,
                 output=output,
                 error=error,
+                action_id=action_id,
             )
             outcomes.append(outcome)
             self._record_trace(
@@ -619,6 +668,7 @@ class KernelRuntime:
                 "ActionVerificationCompleted",
                 {
                     "tick_id": tick_id,
+                    "action_id": action_id,
                     "action": candidate.action.name,
                     "result": post.__dict__ if post is not None else None,
                 },
@@ -629,6 +679,7 @@ class KernelRuntime:
                     "ActionExecuted",
                     {
                         "tick_id": tick_id,
+                        "action_id": action_id,
                         "action": candidate.action.name,
                         "output": outcome.output,
                     },
@@ -639,6 +690,7 @@ class KernelRuntime:
                     "ActionFailed",
                     {
                         "tick_id": tick_id,
+                        "action_id": action_id,
                         "action": candidate.action.name,
                         "error": outcome.error or "action_failed",
                         "result": (
@@ -652,6 +704,7 @@ class KernelRuntime:
                     "ActionDenied",
                     {
                         "tick_id": tick_id,
+                        "action_id": action_id,
                         "action": candidate.action.name,
                         "result": (
                             post or VerificationResult.deny("action_failed")
@@ -677,10 +730,16 @@ class KernelRuntime:
             snapshot_id = str(uuid.uuid4())
             self._snapshots[snapshot_id] = next_state
         state_hash = hashlib.sha256(next_state).hexdigest()
+        state_node_id = f"sha256:{state_hash}"
         self._record_trace(
             agent.run_id,
             "StateCommitted",
-            {"tick_id": tick_id, "state_hash": state_hash, "snapshot_id": snapshot_id},
+            {
+                "tick_id": tick_id,
+                "state_hash": state_hash,
+                "state_node_id": state_node_id,
+                "snapshot_id": snapshot_id,
+            },
         )
         self._record_trace(agent.run_id, "LoopTickCompleted", {"tick_id": tick_id})
 
@@ -721,6 +780,7 @@ class KernelRuntime:
         events = self._trace_by_run.get(run_id)
         if not events:
             raise ValueError("run not found")
+        run_id = _validate_uuid_id(run_id, "run_id")
         for expected, event in enumerate(events):
             if event.get("sequence") != expected:
                 raise ValueError(
@@ -729,6 +789,11 @@ class KernelRuntime:
                 )
             if event.get("run_id") != run_id:
                 raise ValueError("trace run mismatch")
+            if event.get("trace_event_id") != _trace_event_id(run_id, expected):
+                raise ValueError("trace event identity mismatch")
+            identity = event.get("identity") or {}
+            if identity.get("run_id") != run_id:
+                raise ValueError("trace identity run mismatch")
         return copy.deepcopy(events)
 
     def _agent_or_raise(self, agent_id: str) -> AgentContext:
@@ -738,12 +803,18 @@ class KernelRuntime:
         return agent
 
     def _record_trace(
-        self, run_id: str, kind: str, payload: dict[str, Any]
+        self,
+        run_id: str,
+        kind: str,
+        payload: dict[str, Any],
     ) -> dict[str, Any]:
+        run_id = _validate_uuid_id(run_id, "run_id")
         sequence = self._sequence_by_run.get(run_id, 0)
         event = {
             "sequence": sequence,
+            "trace_event_id": _trace_event_id(run_id, sequence),
             "run_id": run_id,
+            "identity": self._trace_identity(run_id, payload),
             "kind": kind,
             "payload": payload,
         }
@@ -753,6 +824,19 @@ class KernelRuntime:
         for callback in self._trace_subscribers.get(run_id, []):
             callback(event)
         return event
+
+    def _trace_identity(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        identity: dict[str, Any] = {"run_id": run_id}
+        for agent in self._agents.values():
+            if agent.run_id == run_id:
+                identity["tenant_id"] = _validate_uuid_id(agent.tenant_id, "tenant_id")
+                identity["agent_id"] = _validate_uuid_id(agent.agent_id, "agent_id")
+                break
+        for field in ("tick_id", "action_id", "state_node_id", "message_id"):
+            value = payload.get(field)
+            if value is not None:
+                identity[field] = value
+        return identity
 
     def _collect_percepts(self, agent: AgentContext) -> list[dict[str, Any]]:
         percepts: list[dict[str, Any]] = []
@@ -960,6 +1044,7 @@ class KernelRuntime:
             else None,
             "output": outcome.output,
             "error": outcome.error,
+            "action_id": outcome.action_id,
         }
 
     def _default_trace_sink(self, event: dict[str, Any]) -> None:

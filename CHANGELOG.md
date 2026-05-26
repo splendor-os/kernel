@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.03-dev — Resident nodes + fleet execution foundation
+
+### Implemented primitives
+
+- Added the 0.03-S1 distributed identity model with distinct fleet, node,
+  instance, tenant, agent, run, tick, action, state-node, trace-event, and
+  message IDs.
+- Renamed serialized trace event identity to `trace_event_id` while accepting
+  legacy `trace_id` during deserialization.
+- Added trace identity context fields and fail-closed gateway validation for
+  invalid action, tenant, agent, or run identity before adapter execution.
+- Added state metadata/commit linkage for tenant, agent, run, and trace-event
+  scope.
+
+### Explicitly not included
+
+- No node/instance registry, remote messaging, placement engine, distributed
+  consensus, central manager, governance workflow, or physical/edge adapter
+  behavior.
+
 ## 0.02-dev — Local multi-agent runtime + daemon control
 
 ### Implemented primitives

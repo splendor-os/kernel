@@ -47,6 +47,10 @@ fn state_store_commits_and_snapshots() {
     let metadata = StateMetadata {
         created_at: OffsetDateTime::now_utc(),
         label: Some("seed".to_string()),
+        tenant_id: None,
+        agent_id: None,
+        run_id: None,
+        trace_event_id: None,
     };
     let node_id = StateStore::commit_node(&store, Vec::new(), data_ref.clone(), metadata)
         .expect("commit node");
@@ -80,6 +84,10 @@ fn state_store_error_paths() {
     let metadata = StateMetadata {
         created_at: OffsetDateTime::now_utc(),
         label: None,
+        tenant_id: None,
+        agent_id: None,
+        run_id: None,
+        trace_event_id: None,
     };
     assert!(matches!(
         StateStore::commit_node(&store, Vec::new(), missing_ref, metadata),
@@ -122,6 +130,10 @@ fn sqlite_store_persists_state() {
     let metadata = StateMetadata {
         created_at: OffsetDateTime::now_utc(),
         label: Some("sqlite".to_string()),
+        tenant_id: None,
+        agent_id: None,
+        run_id: None,
+        trace_event_id: None,
     };
     let node_id =
         StateStore::commit_node(&store, Vec::new(), data_ref, metadata).expect("commit node");
@@ -155,6 +167,10 @@ fn async_inmemory_commit_snapshot_round_trip() {
     let metadata = StateMetadata {
         created_at: OffsetDateTime::now_utc(),
         label: Some("snapshot".to_string()),
+        tenant_id: None,
+        agent_id: None,
+        run_id: None,
+        trace_event_id: None,
     };
     let node_id = block_on(AsyncStateStore::commit_node(
         &store,
@@ -257,6 +273,10 @@ fn async_sqlite_commit_snapshot_round_trip() {
     let metadata = StateMetadata {
         created_at: OffsetDateTime::now_utc(),
         label: None,
+        tenant_id: None,
+        agent_id: None,
+        run_id: None,
+        trace_event_id: None,
     };
     let node_id = block_on(AsyncStateStore::commit_node(
         &store,

@@ -12,7 +12,7 @@ where
 #[test]
 fn round_trip_core_types() {
     let run_id = RunId::new();
-    let trace_id = TraceId::from_run_sequence(&run_id, 1);
+    let trace_id = TraceEventId::from_run_sequence(&run_id, 1);
     let message = Message::new(
         MessageId::new(),
         AgentId::new(),

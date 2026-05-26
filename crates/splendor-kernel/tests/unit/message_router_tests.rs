@@ -61,7 +61,7 @@ fn envelope(
     sequence: u64,
     created_at: OffsetDateTime,
 ) -> MessageEnvelope {
-    let causal_parent = TraceId::from_run_sequence(&run_id, sequence);
+    let causal_parent = TraceEventId::from_run_sequence(&run_id, sequence);
     let message = Message::new(
         MessageId::new(),
         source_agent_id,

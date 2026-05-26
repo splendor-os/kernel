@@ -20,8 +20,8 @@
 //! ```
 
 use crate::{
-    Action, Constraint, ContentHash, Feedback, MessageTraceContext, Reward, RunId, SnapshotId,
-    TraceId, VerificationResult,
+    Action, Constraint, ContentHash, Feedback, IdentityValidationError, MessageTraceContext,
+    Reward, RunId, SnapshotId, TickId, TraceEventId, TraceIdentityContext, VerificationResult,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -30,13 +30,16 @@ use time::OffsetDateTime;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TraceEvent {
     /// Deterministic identifier for this event.
-    pub trace_id: TraceId,
+    #[serde(rename = "trace_event_id", alias = "trace_id")]
+    pub trace_event_id: TraceEventId,
     /// Run identifier that scopes the event stream.
     pub run_id: RunId,
     /// Monotonic sequence number for ordering.
     pub sequence: u64,
     /// Timestamp captured at emission.
     pub timestamp: OffsetDateTime,
+    /// Identity context needed to locate the runtime boundary that emitted this event.
+    pub identity: TraceIdentityContext,
     /// Event payload describing the loop step.
     pub kind: TraceEventKind,
 }
@@ -49,15 +52,61 @@ impl TraceEvent {
         timestamp: OffsetDateTime,
         kind: TraceEventKind,
     ) -> Self {
-        let trace_id = TraceId::from_run_sequence(&run_id, sequence);
+        let identity = apply_kind_identity(TraceIdentityContext::new(run_id.clone()), &kind);
+        let trace_event_id = TraceEventId::from_run_sequence(&run_id, sequence);
         Self {
-            trace_id,
+            trace_event_id,
             run_id,
             sequence,
             timestamp,
+            identity,
             kind,
         }
     }
+
+    /// Creates and validates a trace event from an explicit identity context.
+    pub fn try_new_with_identity(
+        identity: TraceIdentityContext,
+        sequence: u64,
+        timestamp: OffsetDateTime,
+        kind: TraceEventKind,
+    ) -> Result<Self, IdentityValidationError> {
+        let identity = apply_kind_identity(identity, &kind);
+        identity.validate()?;
+        let run_id = identity.run_id.clone();
+        let trace_event_id = TraceEventId::from_run_sequence(&run_id, sequence);
+        Ok(Self {
+            trace_event_id,
+            run_id,
+            sequence,
+            timestamp,
+            identity,
+            kind,
+        })
+    }
+}
+
+fn apply_kind_identity(
+    mut identity: TraceIdentityContext,
+    kind: &TraceEventKind,
+) -> TraceIdentityContext {
+    match kind {
+        TraceEventKind::LoopTickStarted { tick_id }
+        | TraceEventKind::LoopTickCompleted { tick_id, .. } => {
+            identity.tick_id.get_or_insert(TickId::from(*tick_id));
+        }
+        TraceEventKind::MessageQueued { message }
+        | TraceEventKind::MessageDelivered { message }
+        | TraceEventKind::MessageRejected { message, .. }
+        | TraceEventKind::MessageExpired { message, .. }
+        | TraceEventKind::MessageConsumed { message } => {
+            identity
+                .message_id
+                .get_or_insert_with(|| message.message_id.clone());
+        }
+        _ => {}
+    }
+    identity
 }
 
 /// Ordered event taxonomy for a kernel tick.

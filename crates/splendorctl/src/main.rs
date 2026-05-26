@@ -19,7 +19,7 @@ use splendor_kernel::{
 use splendor_store::{SqliteStateStore, SqliteTraceStore, StateStore, TraceRecord, TraceStore};
 use splendor_types::{
     Action, ContentHash, HashAlgorithm, Percept, PerceptProvenance, QuotaUsage, SideEffectClass,
-    SnapshotId, TraceEvent, TraceEventKind, TraceId,
+    SnapshotId, TraceEvent, TraceEventId, TraceEventKind,
 };
 use std::env;
 use std::fs;
@@ -593,8 +593,8 @@ fn decode_and_validate_trace_records(
                 record.sequence, event.sequence
             ));
         }
-        let expected_trace_id = TraceId::from_run_sequence(&event.run_id, event.sequence);
-        if event.trace_id != expected_trace_id {
+        let expected_trace_id = TraceEventId::from_run_sequence(&event.run_id, event.sequence);
+        if event.trace_event_id != expected_trace_id {
             return Err(format!(
                 "Trace id mismatch at sequence {} for run '{run_id}'",
                 event.sequence

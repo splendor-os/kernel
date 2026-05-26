@@ -6,6 +6,10 @@ fn metadata(label: Option<&str>) -> StateMetadata {
     StateMetadata {
         created_at: OffsetDateTime::now_utc(),
         label: label.map(|value| value.to_string()),
+        tenant_id: None,
+        agent_id: None,
+        run_id: None,
+        trace_event_id: None,
     }
 }
 

@@ -5,7 +5,7 @@
 //! the 0.02-S0 boundary rules that later daemon/API work must call before a
 //! request can mutate runtime state or reach the action gateway.
 
-use crate::{AgentId, RunId, TenantId};
+use crate::{AgentId, FleetId, InstanceId, RunId, TenantId};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use thiserror::Error;
@@ -102,7 +102,7 @@ pub enum CredentialBinding {
     /// Credential is bound to one tenant context.
     Tenant { tenant_id: TenantId },
     /// Credential is bound to one fleet context.
-    Fleet { fleet_id: String },
+    Fleet { fleet_id: FleetId },
 }
 
 /// Audience binding for caller credentials.
@@ -112,9 +112,9 @@ pub enum CredentialAudience {
     /// Credential is scoped to a daemon listener or sidecar.
     Daemon { daemon_id: String },
     /// Credential is scoped to a concrete runtime instance.
-    Instance { instance_id: String },
+    Instance { instance_id: InstanceId },
     /// Credential is scoped to a fleet management surface.
-    Fleet { fleet_id: String },
+    Fleet { fleet_id: FleetId },
     /// Credential is scoped to a central manager.
     CentralManager { manager_id: String },
 }

@@ -13,7 +13,7 @@
 use crate::{AgentContext, KernelRuntime, TraceError};
 use splendor_types::{
     AgentId, MessageDeliveryStatus, MessageEnvelope, MessageId, MessageTraceContext,
-    MessageValidationError, RunId, TraceEventKind, TraceId,
+    MessageValidationError, RunId, TraceEventId, TraceEventKind,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
@@ -29,7 +29,10 @@ pub trait MessageTraceRecorder: Send + Sync {
     fn run_id(&self) -> &RunId;
 
     /// Records a message lifecycle trace event and returns its trace ID.
-    fn record_message_event(&self, kind: TraceEventKind) -> Result<TraceId, MessageRouterError>;
+    fn record_message_event(
+        &self,
+        kind: TraceEventKind,
+    ) -> Result<TraceEventId, MessageRouterError>;
 }
 
 impl MessageTraceRecorder for KernelRuntime {
@@ -37,8 +40,11 @@ impl MessageTraceRecorder for KernelRuntime {
         self.run_id()
     }
 
-    fn record_message_event(&self, kind: TraceEventKind) -> Result<TraceId, MessageRouterError> {
-        Ok(self.record_event(kind)?.trace_id)
+    fn record_message_event(
+        &self,
+        kind: TraceEventKind,
+    ) -> Result<TraceEventId, MessageRouterError> {
+        Ok(self.record_event(kind)?.trace_event_id)
     }
 }
 
@@ -566,7 +572,7 @@ fn record_rejection(
     recorder: &dyn MessageTraceRecorder,
     envelope: &MessageEnvelope,
     reason: &str,
-) -> Result<TraceId, MessageRouterError> {
+) -> Result<TraceEventId, MessageRouterError> {
     ensure_recorder_run(recorder, &envelope.message.run_id)?;
     let context = MessageTraceContext::from_message(&envelope.message);
     recorder.record_message_event(TraceEventKind::MessageRejected {
@@ -579,7 +585,7 @@ fn record_expiration(
     recorder: &dyn MessageTraceRecorder,
     envelope: &MessageEnvelope,
     reason: &str,
-) -> Result<TraceId, MessageRouterError> {
+) -> Result<TraceEventId, MessageRouterError> {
     ensure_recorder_run(recorder, &envelope.message.run_id)?;
     let context = MessageTraceContext::from_message(&envelope.message);
     recorder.record_message_event(TraceEventKind::MessageExpired {

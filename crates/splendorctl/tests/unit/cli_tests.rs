@@ -2,7 +2,8 @@ use super::*;
 use splendor_store::{SqliteStateStore, StateData, StateMetadata, StateStore};
 use splendor_types::{
     Action, AgentId, ContentHash, Feedback, Percept, PerceptProvenance, Reward, RunId,
-    SideEffectClass, SnapshotId, TenantId, TraceEvent, TraceEventKind, TraceId, VerificationResult,
+    SideEffectClass, SnapshotId, TenantId, TraceEvent, TraceEventId, TraceEventKind,
+    VerificationResult,
 };
 use tempfile::NamedTempFile;
 use time::OffsetDateTime;
@@ -295,6 +296,10 @@ fn replay_succeeds_with_snapshot() {
     let metadata = StateMetadata {
         created_at: OffsetDateTime::now_utc(),
         label: None,
+        tenant_id: None,
+        agent_id: None,
+        run_id: None,
+        trace_event_id: None,
     };
     let node_id = state_store
         .commit_node(Vec::new(), data_ref, metadata)
@@ -433,7 +438,7 @@ fn decode_trace_records_rejects_trace_id_mismatch() {
     let run_id = RunId::new();
     let mut records = valid_trace_records_for(&run_id);
     let mut event: TraceEvent = serde_json::from_value(records[0].payload.clone()).unwrap();
-    event.trace_id = TraceId::new();
+    event.trace_event_id = TraceEventId::new();
     records[0].payload = serde_json::to_value(event).expect("event");
 
     let error = decode_and_validate_trace_records(&records, &run_id.to_string())
@@ -977,6 +982,10 @@ fn apply_event_to_tick_populates_fields() {
     let metadata = StateMetadata {
         created_at: OffsetDateTime::now_utc(),
         label: None,
+        tenant_id: None,
+        agent_id: None,
+        run_id: None,
+        trace_event_id: None,
     };
     let node_id = store
         .commit_node(Vec::new(), data_ref, metadata)
@@ -1215,6 +1224,10 @@ fn run_with_args_replay_succeeds() {
             StateMetadata {
                 created_at: OffsetDateTime::now_utc(),
                 label: None,
+                tenant_id: None,
+                agent_id: None,
+                run_id: None,
+                trace_event_id: None,
             },
         )
         .expect("commit");
@@ -1426,6 +1439,7 @@ fn build_gateway_success() {
         },
         tenant_id: TenantId::new(),
         agent_id: AgentId::new(),
+        run_id: splendor_types::RunId::new(),
         adapter: Some("filesystem".to_string()),
         quota_usage: QuotaUsage::single_action(),
         satisfied_preconditions: Vec::new(),
