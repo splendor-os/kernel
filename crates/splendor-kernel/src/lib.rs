@@ -24,6 +24,7 @@
 //! assert_eq!(event.sequence, 0);
 //! ```
 
+mod fleet_telemetry;
 mod loop_engine;
 mod message_router;
 mod node_registry;
@@ -35,6 +36,7 @@ mod tenancy;
 mod trace;
 mod trace_durability;
 
+pub use fleet_telemetry::{FleetTelemetryCollector, TelemetryThresholds};
 pub use loop_engine::{
     ActionCandidate, AllowAllConstraintEngine, ConstraintEngine, ConstraintEvaluation, LoopEngine,
     LoopError, NoopOutcomeEvaluator, OutcomeEvaluator, OutcomeSignal, Perceptor, Policy,
@@ -68,7 +70,10 @@ pub use splendor_types::{
     RuntimeMode, SideEffectClass, SnapshotId, StateHandoff, StateHandoffAuthority,
     StateHandoffSnapshot, StateHandoffTraceContext, StateNodeId, StateReference,
     StateReferenceMode, TenantId, TickId, TraceEvent, TraceEventId, TraceEventKind, TraceId,
-    TraceIdentityContext, VerificationResult,
+    TraceIdentityContext, VerificationResult, DenialSignal, FailureCategory, FailureSignal,
+    FleetTelemetrySnapshot, InstanceTelemetry, NodeOnlineState, NodeTelemetry, QueueTelemetry,
+    QuotaSignal, RunStatus, RunStatusCount, RunStatusCounts, RunTelemetry, TelemetryAuthority,
+    TelemetryRuntimeMode, TraceSyncFailure, TraceSyncTelemetry, FLEET_TELEMETRY_SCHEMA_VERSION,
 };
 pub use state::{
     SnapshotPolicy, StateCommit, StateGraph, StateGraphError, StateHandoffExportRequest,

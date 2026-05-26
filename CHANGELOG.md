@@ -35,6 +35,11 @@
 - Added 0.03-S7 state handoff v0 schemas, snapshot export/import validation,
   read-only state references, source/receiver handoff trace events, and replay
   handoff boundary inspection.
+- Added the 0.03-S8 fleet telemetry model and in-memory collector for node
+  heartbeat state, instance runtime reports, canonical run status counts, queue
+  depth, quota/denial signals, trace sync lag/failure, and failure taxonomy.
+- Added typed fleet/node/instance telemetry scope separation using the canonical
+  distributed identity types.
 
 ### Explicitly not included
 
@@ -43,7 +48,9 @@
   analytics dashboard, long-term warehouse, governance audit product, remote
   trace transport, distributed consensus, central manager, telemetry dashboard,
   distributed mutable state, CRDTs, automatic conflict merge, full runtime
-  migration engine, fleet scheduler, or physical/edge orchestration.
+  migration engine, fleet scheduler, dashboard, anomaly detection, billing
+  metrics, fleet autoscaler, observability vendor integration, telemetry-derived
+  runtime authority, or physical/edge orchestration.
 
 ## 0.02-dev — Local multi-agent runtime + daemon control
 

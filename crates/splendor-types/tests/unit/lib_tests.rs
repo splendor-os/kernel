@@ -13,6 +13,9 @@ where
 fn round_trip_core_types() {
     let run_id = RunId::new();
     let trace_id = TraceEventId::from_run_sequence(&run_id, 1);
+    let fleet_id = FleetId::new();
+    let node_id = NodeId::new();
+    let instance_id = InstanceId::new();
     let message = Message::new(
         MessageId::new(),
         AgentId::new(),
@@ -67,6 +70,25 @@ fn round_trip_core_types() {
     };
     let verification = VerificationResult::allow();
     let quota_usage = QuotaUsage::single_action();
+    let mut fleet_telemetry =
+        FleetTelemetrySnapshot::new(fleet_id.clone(), time::OffsetDateTime::now_utc());
+    fleet_telemetry.nodes.push(NodeTelemetry::from_heartbeat(
+        fleet_id,
+        node_id.clone(),
+        Some(time::OffsetDateTime::now_utc()),
+        time::OffsetDateTime::now_utc(),
+        time::Duration::seconds(30),
+        time::Duration::seconds(120),
+        vec![instance_id.clone()],
+    ));
+    fleet_telemetry.instances.push(InstanceTelemetry::new(
+        node_id,
+        instance_id,
+        "splendor-0.03-dev",
+        TelemetryRuntimeMode::Resident,
+        vec!["trace.sync".to_string()],
+        time::OffsetDateTime::now_utc(),
+    ));
     let trace_event = TraceEvent::new(
         run_id.clone(),
         0,
@@ -79,6 +101,9 @@ fn round_trip_core_types() {
     );
 
     round_trip(&run_id);
+    round_trip(&fleet_telemetry.fleet_id);
+    round_trip(&fleet_telemetry.nodes[0].node_id);
+    round_trip(&fleet_telemetry.instances[0].instance_id);
     round_trip(&message.message_id);
     round_trip(&trace_id);
     round_trip(&SnapshotId::from_bytes(b"snapshot"));
@@ -91,6 +116,7 @@ fn round_trip_core_types() {
     round_trip(&constraint);
     round_trip(&verification);
     round_trip(&quota_usage);
+    round_trip(&fleet_telemetry);
     round_trip(&feedback);
     round_trip(&reward);
     round_trip(&trace_event);

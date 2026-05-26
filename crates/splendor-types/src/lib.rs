@@ -32,6 +32,7 @@
 
 mod capabilities;
 mod daemon_security;
+mod fleet_telemetry;
 mod hash;
 mod ids;
 mod message;
@@ -53,6 +54,12 @@ pub use daemon_security::{
     DaemonSecurityError, DaemonSecurityRequest, EndpointScope, GatewayVerificationState,
     InsecureDevMode, LocalTransportBinding, RevocationStatus, WorkOrderAuthorization,
     WorkOrderSignature,
+};
+pub use fleet_telemetry::{
+    DenialSignal, FailureCategory, FailureSignal, FleetTelemetrySnapshot, InstanceTelemetry,
+    NodeOnlineState, NodeTelemetry, QueueTelemetry, QuotaSignal, RunStatus, RunStatusCount,
+    RunStatusCounts, RunTelemetry, RuntimeMode as TelemetryRuntimeMode, TelemetryAuthority,
+    TraceSyncFailure, TraceSyncTelemetry, FLEET_TELEMETRY_SCHEMA_VERSION,
 };
 pub use hash::{ContentHash, HashAlgorithm};
 pub use ids::{

@@ -71,8 +71,11 @@ where
 #[test]
 fn id_round_trips() {
     assert_uuid(FleetId::new());
+    assert_uuid(FleetId::default());
     assert_uuid(NodeId::new());
+    assert_uuid(NodeId::default());
     assert_uuid(InstanceId::new());
+    assert_uuid(InstanceId::default());
     assert_uuid(TenantId::new());
     assert_uuid(TenantId::default());
     assert_uuid(FleetId::new());
