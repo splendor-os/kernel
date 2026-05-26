@@ -35,8 +35,10 @@ semantics in Rust.
   schema/security types.
 - New package `@splendor/client` exports `SplendorClient`, request option types,
   and `SplendorClientError`.
-- New npm workspace scripts: `npm run build`, `npm run typecheck`, and
-  `npm test`.
+- New npm workspace scripts: `npm run build`, `npm run typecheck`, `npm test`,
+  and `npm run coverage`.
+- CI now runs the TypeScript package build, typecheck, tests, and coverage gate
+  through the repository `typescript` runner job.
 - New docs:
   - `docs/sdk/typescript/index.md`
   - `docs/sdk/typescript/client.md`
@@ -101,7 +103,8 @@ semantics in Rust.
 | Negative tests | Reject blank token, missing work order/audit, missing trace redaction policy; preserve daemon 403 details | `typescript/tests/client.test.ts` |
 | Contract tests | Compare TS schema metadata to canonical Rust structs/enums | `typescript/tests/schema-parity.test.ts` |
 | Build | Emit package declarations/JS without runtime kernel code | `npm run build` |
-| Coverage | Enforce TypeScript client/schema test line coverage | `node --test --experimental-test-coverage --test-coverage-lines=95 typescript/tests/dist/*.test.js` |
+| Coverage | Enforce TypeScript client/schema test line coverage | `npm run coverage` |
+| CI runner | Keep the TypeScript surface validated with Rust/Python runners | `.github/workflows/ci.yml` `typescript` job |
 
 ## Example or fixture
 

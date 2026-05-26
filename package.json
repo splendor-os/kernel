@@ -11,6 +11,7 @@
     "build": "tsc -b typescript/packages/types typescript/packages/client",
     "typecheck": "tsc -b --pretty false typescript/packages/types typescript/packages/client typescript/tests",
     "test": "npm run build && npm run typecheck && node --test typescript/tests/dist/*.test.js",
+    "coverage": "npm run build && npm run typecheck && node --test --experimental-test-coverage --test-coverage-lines=95 typescript/tests/dist/*.test.js",
     "clean": "tsc -b --clean typescript/packages/types typescript/packages/client typescript/tests"
   },
   "devDependencies": {

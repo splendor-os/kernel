@@ -37,10 +37,11 @@ logic.
 From the repository root:
 
 ```bash
-npm install
+npm ci
 npm run build
 npm run typecheck
 npm test
+npm run coverage
 ```
 
 The tests use local fixtures and `fetch` stubs. They do not require fleet

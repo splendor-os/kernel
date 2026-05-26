@@ -31,6 +31,9 @@
 - Added the 0.02-S6 TypeScript surface with `@splendor/types`, a thin
   authenticated `@splendor/client`, schema parity tests, SDK docs, and a minimal
   daemon-client example.
+- Added CI coverage for the 0.02-S6 TypeScript runner so package build,
+  typecheck, schema/client tests, and Node coverage gates run with Rust and
+  Python release checks.
 - Added 0.02-S7 inspect-only multi-agent replay output for message lifecycle
   causality, local parent/child run links, and permission-laundering denial
   evidence without re-executing side effects.
