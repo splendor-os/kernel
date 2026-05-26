@@ -28,13 +28,16 @@
   replay, gateway-mediated action submission, health, and capabilities.
 - Added state-node lookup through `StateStore::get_node` so daemon state-head
   responses verify that returned nodes exist in the state graph.
+- Added the 0.02-S6 TypeScript surface with `@splendor/types`, a thin
+  authenticated `@splendor/client`, schema parity tests, SDK docs, and a minimal
+  daemon-client example.
 
 ### Explicitly not included
 
 - No production OAuth/OIDC provider, PKI management, fleet mTLS rollout, node
   bootstrap, governance workflow, message broker, remote transport, fleet
-  scheduler, fleet placement, long-lived child services, or TypeScript runtime
-  enforcement.
+  scheduler, fleet placement, long-lived child services, native Node binding,
+  browser runtime, or TypeScript runtime enforcement.
 
 ## 0.01-dev — Local kernel baseline
 
