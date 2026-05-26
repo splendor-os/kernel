@@ -253,7 +253,7 @@ impl LocalDelegationManager {
         agent: AgentContext,
         authority: DelegatedAuthority,
     ) -> Result<(), LocalDelegationError> {
-        self.router.register_agent(agent.agent_id.clone())?;
+        self.router.register_agent_context(&agent)?;
         let mut state = self.lock_state()?;
         state.agents.insert(
             agent.agent_id.clone(),

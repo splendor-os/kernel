@@ -1,5 +1,7 @@
 use super::*;
-use crate::{AgentRuntimeConfig, KernelRuntime, KernelRuntimeConfig, TraceSink};
+use crate::{
+    AgentIsolationPolicy, AgentRuntimeConfig, KernelRuntime, KernelRuntimeConfig, TraceSink,
+};
 use splendor_types::{TraceEvent, TASK_REQUEST_SCHEMA, TASK_RESPONSE_SCHEMA};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::Duration as StdDuration;
@@ -85,12 +87,32 @@ fn setup_manager() -> (
 ) {
     let manager = LocalDelegationManager::new();
     let tenant_id = TenantId::new();
+    let parent_id = AgentId::new();
+    let child_id = AgentId::new();
     let parent = AgentContext::new(
-        AgentId::new(),
+        parent_id.clone(),
         tenant_id.clone(),
-        AgentRuntimeConfig::default(),
+        AgentRuntimeConfig {
+            isolation: AgentIsolationPolicy {
+                allowed_message_schemas: vec![TASK_REQUEST_SCHEMA.to_string()],
+                allowed_message_recipients: vec![child_id.clone()],
+                ..AgentIsolationPolicy::default()
+            },
+            ..AgentRuntimeConfig::default()
+        },
     );
-    let child = AgentContext::new(AgentId::new(), tenant_id, AgentRuntimeConfig::default());
+    let child = AgentContext::new(
+        child_id,
+        tenant_id,
+        AgentRuntimeConfig {
+            isolation: AgentIsolationPolicy {
+                allowed_message_schemas: vec![TASK_RESPONSE_SCHEMA.to_string()],
+                allowed_message_recipients: vec![parent_id],
+                ..AgentIsolationPolicy::default()
+            },
+            ..AgentRuntimeConfig::default()
+        },
+    );
     manager
         .register_agent(
             parent.clone(),

@@ -98,13 +98,28 @@ fn envelope_with_schema(
     schema: &str,
     created_at: OffsetDateTime,
 ) -> MessageEnvelope {
+    let payload = if schema == TASK_REQUEST_SCHEMA {
+        serde_json::to_value(
+            TaskRequest::new(
+                run_id.clone(),
+                RunId::new(),
+                target_agent_id.clone(),
+                "forecast",
+                DelegatedAuthority::empty(),
+            )
+            .expect("valid task request"),
+        )
+        .expect("task request payload")
+    } else {
+        serde_json::json!({"task": "forecast"})
+    };
     let message = Message::new(
         MessageId::new(),
         source_agent_id,
         target_agent_id,
         run_id,
         schema,
-        serde_json::json!({"task": "forecast"}),
+        payload,
         None,
         true,
         created_at,
