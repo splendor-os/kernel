@@ -6,7 +6,7 @@
 
 use splendor_gateway::TenantAccess;
 use splendor_store::StateNodeId;
-use splendor_types::{Action, AgentId, QuotaUsage, TenantId, VerificationResult};
+use splendor_types::{Action, AgentId, QuotaUsage, TenantId, VerificationResult, WorkOrder};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use time::{Duration, OffsetDateTime};
@@ -86,6 +86,25 @@ impl TenantPolicy {
             artifacts: serde_json::Value::Object(artifacts),
         }
     }
+
+    /// Narrows this tenant policy to the authority delegated by a validated work
+    /// order. Intersections intentionally never broaden tenant permissions.
+    pub fn constrain_to_work_order(&self, work_order: &WorkOrder) -> Self {
+        Self {
+            allowed_actions: intersect_allowlists(
+                &self.allowed_actions,
+                &work_order.allowed_actions,
+            ),
+            allowed_adapters: intersect_allowlists(
+                &self.allowed_adapters,
+                &work_order.allowed_adapters,
+            ),
+            allowed_permissions: intersect_allowlists(
+                &self.allowed_permissions,
+                &work_order.allowed_permissions,
+            ),
+        }
+    }
 }
 
 /// Read/write byte caps for a specific adapter category.
@@ -110,6 +129,49 @@ pub struct QuotaPolicy {
     pub network: AdapterQuota,
     /// Maximum HTTP requests allowed per minute.
     pub max_http_requests_per_minute: Option<u32>,
+}
+
+impl QuotaPolicy {
+    /// Narrows this quota policy to work-order limits. Missing work-order limits
+    /// leave existing tenant limits intact; present work-order limits choose the
+    /// smaller value so scoped delegation cannot increase quota.
+    pub fn constrain_to_work_order(&self, work_order: &WorkOrder) -> Self {
+        let quotas = &work_order.quotas;
+        Self {
+            max_actions_per_tick: min_optional(
+                self.max_actions_per_tick,
+                quotas.max_actions_per_tick,
+            ),
+            max_action_duration_ms: min_optional(
+                self.max_action_duration_ms,
+                quotas.max_action_duration_ms,
+            ),
+            filesystem: AdapterQuota {
+                max_read_bytes: min_optional(
+                    self.filesystem.max_read_bytes,
+                    quotas.max_filesystem_read_bytes,
+                ),
+                max_write_bytes: min_optional(
+                    self.filesystem.max_write_bytes,
+                    quotas.max_filesystem_write_bytes,
+                ),
+            },
+            network: AdapterQuota {
+                max_read_bytes: min_optional(
+                    self.network.max_read_bytes,
+                    quotas.max_network_read_bytes,
+                ),
+                max_write_bytes: min_optional(
+                    self.network.max_write_bytes,
+                    quotas.max_network_write_bytes,
+                ),
+            },
+            max_http_requests_per_minute: min_optional(
+                self.max_http_requests_per_minute,
+                quotas.max_http_requests_per_minute,
+            ),
+        }
+    }
 }
 
 /// Runtime configuration scoped to an agent instance.
@@ -449,6 +511,22 @@ fn allowlisted(allowlist: &[String], value: &str) -> bool {
         return false;
     }
     allowlist.iter().any(|item| item == value)
+}
+
+fn intersect_allowlists(left: &[String], right: &[String]) -> Vec<String> {
+    left.iter()
+        .filter(|item| right.iter().any(|candidate| candidate == *item))
+        .cloned()
+        .collect()
+}
+
+fn min_optional<T: Ord + Copy>(tenant_limit: Option<T>, work_order_limit: Option<T>) -> Option<T> {
+    match (tenant_limit, work_order_limit) {
+        (Some(tenant), Some(work_order)) => Some(tenant.min(work_order)),
+        (Some(tenant), None) => Some(tenant),
+        (None, Some(work_order)) => Some(work_order),
+        (None, None) => None,
+    }
 }
 
 fn check_bytes_quota(

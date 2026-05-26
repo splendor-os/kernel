@@ -5,7 +5,9 @@ use splendor_store::{
     StateSnapshot, StateStore, StateStoreError,
 };
 use splendor_types::{
-    ConstraintKind, ConstraintScope, PerceptProvenance, QuotaUsage, RunId, TraceEvent,
+    ConstraintKind, ConstraintScope, PerceptProvenance, QuotaUsage, RevocationStatus, RunId,
+    TraceEvent, WorkOrder, WorkOrderId, WorkOrderPlacement, WorkOrderQuotaPolicy,
+    WORK_ORDER_SCHEMA_VERSION,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -220,6 +222,27 @@ impl Policy for MultiActionPolicy {
             next_state,
             None,
         ))
+    }
+}
+
+fn work_order_for(agent: &AgentContext, run_id: RunId) -> WorkOrder {
+    let now = OffsetDateTime::now_utc();
+    WorkOrder {
+        schema_version: WORK_ORDER_SCHEMA_VERSION.to_string(),
+        work_order_id: WorkOrderId::try_new("wo_loop").expect("work order id"),
+        tenant_id: agent.tenant_id.clone(),
+        agent_id: agent.agent_id.clone(),
+        run_id: Some(run_id),
+        objective: "record work order metadata".to_string(),
+        allowed_actions: vec!["noop".to_string()],
+        allowed_adapters: vec!["stub".to_string()],
+        allowed_permissions: Vec::new(),
+        data_refs: Vec::new(),
+        quotas: WorkOrderQuotaPolicy::default(),
+        placement: WorkOrderPlacement::default(),
+        issued_at: now - time::Duration::minutes(1),
+        expires_at: now + time::Duration::hours(1),
+        revocation: RevocationStatus::Active,
     }
 }
 
@@ -739,9 +762,62 @@ fn loop_engine_new_sets_head_from_graph() {
     assert_eq!(engine.agent.state_head.as_ref(), Some(&head));
 }
 
+#[test]
+fn loop_engine_records_validated_work_order_metadata() {
+    let trace_store = Arc::new(InMemoryTraceStore::default());
+    let store = Arc::new(InMemoryStateStore::default());
+    let graph = StateGraph::new(store, SnapshotPolicy::default());
+    let run_id = RunId::new();
+    let agent = AgentContext::new(
+        splendor_types::AgentId::new(),
+        splendor_types::TenantId::new(),
+        crate::AgentRuntimeConfig::default(),
+    );
+    let work_order = work_order_for(&agent, run_id.clone());
+    let context = RunTraceContext::new(Some(run_id.clone())).with_work_order(work_order.clone());
+
+    let engine = LoopEngine::with_trace_store_and_work_order(
+        agent,
+        graph,
+        StateData {
+            bytes: Vec::new(),
+            content_type: None,
+        },
+        Box::new(StaticPolicy),
+        Arc::new(StubGateway),
+        trace_store.clone(),
+        context,
+    )
+    .expect("engine");
+
+    assert_eq!(
+        engine.agent.config.metadata.get("work_order_id"),
+        Some(&"wo_loop".to_string())
+    );
+    let records = trace_store.read(&run_id.to_string()).expect("records");
+    assert_eq!(records.len(), 2);
+    let accepted: TraceEvent = serde_json::from_value(records[1].payload.clone()).unwrap();
+    match accepted.kind {
+        TraceEventKind::WorkOrderAccepted {
+            work_order_id,
+            tenant_id,
+            agent_id,
+            run_id: accepted_run,
+        } => {
+            assert_eq!(work_order_id.as_str(), "wo_loop");
+            assert_eq!(tenant_id, work_order.tenant_id);
+            assert_eq!(agent_id, work_order.agent_id);
+            assert_eq!(accepted_run, Some(run_id));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
 fn event_kind_label(kind: &TraceEventKind) -> &'static str {
     match kind {
         TraceEventKind::RunStarted => "RunStarted",
+        TraceEventKind::WorkOrderAccepted { .. } => "WorkOrderAccepted",
+        TraceEventKind::WorkOrderRejected { .. } => "WorkOrderRejected",
         TraceEventKind::LoopTickStarted { .. } => "LoopTickStarted",
         TraceEventKind::PerceptsReceived { .. } => "PerceptsReceived",
         TraceEventKind::StateLoaded { .. } => "StateLoaded",

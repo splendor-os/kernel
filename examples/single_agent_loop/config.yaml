@@ -3,6 +3,7 @@ state_db: ./examples/single_agent_loop/data/state.db
 run_id: "22222222-2222-2222-2222-222222222222"
 tick_interval_ms: 200
 cycles: 2
+allow_unsigned_local_run: true
 tenants:
   - id: "11111111-1111-1111-1111-111111111111"
     allowed_actions:

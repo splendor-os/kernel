@@ -9,6 +9,11 @@ percept -> policy -> constraints -> gateway -> filesystem adapter -> outcome -> 
 The filesystem write is mediated by the action gateway; the example does not
 perform side effects directly from policy code.
 
+For compatibility with the 0.01-dev quickstart, this config explicitly enables
+`allow_unsigned_local_run: true`. New resident/distributed run examples should
+prefer a signed `work_order` instead; omitting both is rejected before runtime
+execution.
+
 ## Run exactly
 
 From a clean checkout:

@@ -19,8 +19,11 @@ The store records additional integrity hashes for audit validation.
 ## Ordering Rules
 
 When a new persisted local run trace stream is created, `RunStarted` is emitted
-before the first tick. Events MUST then be emitted in the following order for
-each tick:
+before the first tick. If the run was authorized by a validated 0.03-S3 work
+order, `WorkOrderAccepted` follows `RunStarted` and precedes the first tick. If
+work-order validation fails, `WorkOrderRejected` is emitted as a management/audit
+trace and no tick events are emitted. Events MUST then be emitted in the
+following order for each tick:
 
 1. `LoopTickStarted`
 2. `PerceptsReceived`
@@ -54,6 +57,8 @@ rejected, expired, or consumed.
 ## TraceEventKind Payloads
 
 - `RunStarted`
+- `WorkOrderAccepted { work_order_id, tenant_id, agent_id, run_id }`
+- `WorkOrderRejected { work_order_id: Option<WorkOrderId>, tenant_id: Option<TenantId>, agent_id: Option<AgentId>, run_id: Option<RunId>, reason: String }`
 - `LoopTickStarted { tick_id }`
 - `PerceptsReceived { percepts: Vec<Percept> }`
 - `StateLoaded { state_hash: Option<ContentHash> }`
@@ -103,6 +108,20 @@ router behavior emits the lifecycle events for accepted, rejected, expired, and
 consumed local messages. Replayed trace records preserve `causal_parent`,
 allowing future multi-agent replay to rebuild message causality without executing
 message side effects or adapter actions.
+
+## Work-order Events
+
+Work-order events correspond to the 0.03-S3 signed work-order lifecycle:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `WorkOrderAccepted` | `work_order.accepted` | A signed work order validated and scoped a run. |
+| `WorkOrderRejected` | `work_order.rejected` | Work-order ingestion failed closed before runtime execution. |
+
+`WorkOrderAccepted` carries only identity metadata (`work_order_id`, `tenant_id`,
+`agent_id`, and optional `run_id`). `WorkOrderRejected` carries those fields when
+parseable plus a sanitized reason code. Neither event records signature material,
+verification secrets, caller tokens, or broad credentials.
 
 ### TraceIntegrity
 

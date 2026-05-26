@@ -167,6 +167,52 @@ impl From<Uuid> for MessageId {
     }
 }
 
+/// Stable identifier for a signed work order.
+///
+/// Work-order IDs are issued by external managers and may use prefixed strings
+/// such as `wo_123`; they are deliberately distinct from run, action, trace,
+/// state, and message IDs.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct WorkOrderId(String);
+
+impl WorkOrderId {
+    /// Creates a work-order identifier after rejecting empty values.
+    pub fn try_new(value: impl Into<String>) -> Result<Self, WorkOrderIdError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(WorkOrderIdError::Empty);
+        }
+        Ok(Self(value))
+    }
+
+    /// Returns the raw work-order ID string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for WorkOrderId {
+    /// Formats the work-order identifier as its manager-issued string.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl From<WorkOrderId> for String {
+    /// Converts the work-order identifier into its raw string.
+    fn from(value: WorkOrderId) -> Self {
+        value.0
+    }
+}
+
+/// Work-order identifier validation failure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkOrderIdError {
+    /// Empty IDs are not valid authority objects.
+    Empty,
+}
+
 /// Deterministic identifier for a trace event within a run.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct TraceId(Uuid);

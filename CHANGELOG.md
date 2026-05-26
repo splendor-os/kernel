@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.03-dev — Resident nodes + fleet execution foundation
+
+### Implemented primitives
+
+- Added 0.03-S3 signed work-order schemas, detached reference signature
+  verification, local `splendorctl` ingestion, scoped runtime policy/quota
+  narrowing, and accepted/rejected work-order trace events.
+- `splendorctl run` now rejects missing work-order authority by default;
+  legacy local quickstarts must opt into `allow_unsigned_local_run: true` and are
+  visibly warned.
+
+### Explicitly not included
+
+- No fleet dispatch, placement engine, full PKI/OAuth product, governance
+  approval workflow, remote transport, or physical/edge orchestration.
+
 ## 0.02-dev — Local multi-agent runtime + daemon control
 
 ### Implemented primitives

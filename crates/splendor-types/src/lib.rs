@@ -36,6 +36,7 @@ mod ids;
 mod message;
 mod primitives;
 mod trace;
+mod work_order;
 
 pub use daemon_security::{
     validate_client_connection_policy, validate_daemon_request, validate_insecure_dev_mode,
@@ -46,7 +47,9 @@ pub use daemon_security::{
     WorkOrderSignature,
 };
 pub use hash::{ContentHash, HashAlgorithm};
-pub use ids::{AgentId, MessageId, RunId, SnapshotId, TenantId, TraceId};
+pub use ids::{
+    AgentId, MessageId, RunId, SnapshotId, TenantId, TraceId, WorkOrderId, WorkOrderIdError,
+};
 pub use message::{
     Message, MessageDeliveryStatus, MessageEnvelope, MessageSchemaVersion, MessageTraceContext,
     MessageTraceLinks, MessageValidationError,
@@ -56,6 +59,11 @@ pub use primitives::{
     PerceptProvenance, QuotaUsage, Reward, SideEffectClass, VerificationResult,
 };
 pub use trace::{TraceEvent, TraceEventKind, TraceIntegrity};
+pub use work_order::{
+    validate_work_order, ValidatedWorkOrder, WorkOrder, WorkOrderEnvelope, WorkOrderKeyring,
+    WorkOrderPlacement, WorkOrderQuotaPolicy, WorkOrderValidationContext, WorkOrderValidationError,
+    WORK_ORDER_SCHEMA_VERSION, WORK_ORDER_SIGNATURE_ALGORITHM,
+};
 
 #[cfg(test)]
 #[path = "../tests/unit/lib_tests.rs"]

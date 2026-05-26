@@ -36,6 +36,10 @@ Before reconstructing ticks, replay validates:
 - trace hash-chain continuity through `prev_event_hash`;
 - referenced snapshots can be loaded from the state store.
 
+Work-order acceptance/rejection events are replayed as trace facts only. Replay
+does not re-verify signatures, call revocation sources, refresh key material, or
+authorize a new run from historical work-order data.
+
 ## Failure modes
 
 Replay fails with a clear error when:
