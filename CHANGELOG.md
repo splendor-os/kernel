@@ -11,12 +11,17 @@
 - Added a 0.02-S1 message schema contract in Rust for `MessageId`, `Message`,
   `MessageEnvelope`, schema-version validation, delivery status vocabulary,
   message trace links, and message lifecycle trace event definitions.
+- Added a 0.02-S2 local message router for in-process inbox/outbox delivery with
+  trace-linked queued, delivered, rejected, expired, and consumed events.
+- Added a 0.02-S3 agent isolation ledger for per-agent permission checks,
+  per-agent quota counters, local message schema/recipient grants, denial trace
+  artifacts, and replay-visible message decisions.
 
 ### Explicitly not included
 
 - No daemon server, HTTP listener, OAuth/OIDC provider, PKI management, fleet
-  mTLS rollout, node bootstrap, governance workflow, message router, message
-  broker, remote transport, or TypeScript runtime enforcement.
+  mTLS rollout, node bootstrap, governance workflow, message broker, remote
+  transport, or TypeScript runtime enforcement.
 
 ## 0.01-dev — Local kernel baseline
 

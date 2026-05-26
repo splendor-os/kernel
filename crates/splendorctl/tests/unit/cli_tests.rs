@@ -1,8 +1,9 @@
 use super::*;
 use splendor_store::{SqliteStateStore, StateData, StateMetadata, StateStore};
 use splendor_types::{
-    Action, AgentId, ContentHash, Feedback, Percept, PerceptProvenance, Reward, RunId,
-    SideEffectClass, SnapshotId, TenantId, TraceEvent, TraceEventKind, TraceId, VerificationResult,
+    Action, AgentId, ContentHash, Feedback, MessageId, MessageTraceContext, Percept,
+    PerceptProvenance, Reward, RunId, SideEffectClass, SnapshotId, TenantId, TraceEvent,
+    TraceEventKind, TraceId, VerificationResult,
 };
 use tempfile::NamedTempFile;
 use time::OffsetDateTime;
@@ -820,6 +821,9 @@ fn build_gateway_rejects_missing_adapter() {
             snapshot_interval: None,
             initial_state: None,
             resume: None,
+            allowed_permissions: None,
+            allowed_message_schemas: None,
+            allowed_message_recipients: None,
             percepts: None,
             policy: PolicyConfig::Static {
                 actions: vec![ActionConfig {
@@ -1004,6 +1008,16 @@ fn apply_event_to_tick_populates_fields() {
         postconditions: Vec::new(),
     };
     let outcome_value = serde_json::json!({"result": "ok"});
+    let source_agent_id = AgentId::new();
+    let target_agent_id = AgentId::new();
+    let message = MessageTraceContext {
+        message_id: MessageId::new(),
+        source_agent_id: source_agent_id.clone(),
+        target_agent_id: target_agent_id.clone(),
+        run_id: run_id.clone(),
+        schema: "splendor.message.task_request.v1".to_string(),
+        causal_parent: Some(TraceId::from_run_sequence(&run_id, 5)),
+    };
     let feedback = Feedback {
         kind: "signal".to_string(),
         payload: serde_json::json!({"k": 1}),
@@ -1090,6 +1104,15 @@ fn apply_event_to_tick_populates_fields() {
             run_id.clone(),
             8,
             timestamp,
+            TraceEventKind::MessageRejected {
+                message: message.clone(),
+                reason: "agent_isolation_ledger denied message_schema_not_allowed".to_string(),
+            },
+        ),
+        TraceEvent::new(
+            run_id.clone(),
+            9,
+            timestamp,
             TraceEventKind::OutcomeRecorded {
                 outcome: outcome_value.clone(),
                 feedback: Some(feedback.clone()),
@@ -1098,7 +1121,7 @@ fn apply_event_to_tick_populates_fields() {
         ),
         TraceEvent::new(
             run_id.clone(),
-            9,
+            10,
             timestamp,
             TraceEventKind::StateCommitted {
                 state_hash: node_id.hash().clone(),
@@ -1127,6 +1150,15 @@ fn apply_event_to_tick_populates_fields() {
     assert_eq!(tick.actions[0].status, "executed");
     assert_eq!(tick.actions[1].status, "denied");
     assert_eq!(tick.actions[2].status, "failed");
+    assert_eq!(tick.messages.len(), 1);
+    assert_eq!(tick.messages[0].status, "rejected");
+    assert_eq!(tick.messages[0].message.source_agent_id, source_agent_id);
+    assert_eq!(tick.messages[0].message.target_agent_id, target_agent_id);
+    assert!(tick.messages[0]
+        .reason
+        .as_deref()
+        .unwrap_or_default()
+        .contains("agent_isolation_ledger"));
     assert_eq!(tick.outcome, Some(outcome_value));
     assert_eq!(tick.feedback.as_ref().unwrap().kind, "signal");
     assert_eq!(tick.reward.as_ref().unwrap().value, 1.0);
@@ -1384,6 +1416,9 @@ fn build_gateway_success() {
             snapshot_interval: None,
             initial_state: None,
             resume: None,
+            allowed_permissions: None,
+            allowed_message_schemas: None,
+            allowed_message_recipients: None,
             percepts: None,
             policy: PolicyConfig::Static {
                 actions: vec![ActionConfig {

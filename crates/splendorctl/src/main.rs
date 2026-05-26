@@ -12,9 +12,9 @@ use splendor_adapter_filesystem::{FilesystemAdapter, FilesystemAdapterConfig};
 use splendor_adapter_http::{HttpAdapter, HttpAdapterConfig, HttpMethod};
 use splendor_gateway::{ActionAdapter, ActionGateway, VerifiedActionGateway};
 use splendor_kernel::{
-    ActionCandidate, AdapterQuota, AgentContext, AgentRuntimeConfig, LoopEngine, Perceptor, Policy,
-    PolicyDecision, QuotaPolicy, Scheduler, SchedulerConfig, SnapshotPolicy, StateGraph,
-    TenantContext, TenantPolicy, TenantRegistry,
+    ActionCandidate, AdapterQuota, AgentContext, AgentIsolationPolicy, AgentRuntimeConfig,
+    LoopEngine, Perceptor, Policy, PolicyDecision, QuotaPolicy, Scheduler, SchedulerConfig,
+    SnapshotPolicy, StateGraph, TenantContext, TenantPolicy, TenantRegistry,
 };
 use splendor_store::{SqliteStateStore, SqliteTraceStore, StateStore, TraceRecord, TraceStore};
 use splendor_types::{
@@ -410,6 +410,7 @@ enum ReplayOutput {
         candidates: Vec<splendor_types::Action>,
         constraints: Box<Option<splendor_types::VerificationResult>>,
         actions: Vec<ReplayAction>,
+        messages: Vec<ReplayMessage>,
         outcome: Option<serde_json::Value>,
         feedback: Box<Option<splendor_types::Feedback>>,
         reward: Box<Option<splendor_types::Reward>>,
@@ -428,6 +429,13 @@ struct ReplayAction {
     result: Option<splendor_types::VerificationResult>,
 }
 
+#[derive(Serialize)]
+struct ReplayMessage {
+    message: splendor_types::MessageTraceContext,
+    status: String,
+    reason: Option<String>,
+}
+
 #[derive(Default)]
 struct ReplayTick {
     tick_id: u64,
@@ -436,6 +444,7 @@ struct ReplayTick {
     candidates: Vec<splendor_types::Action>,
     constraints: Option<splendor_types::VerificationResult>,
     actions: Vec<ReplayAction>,
+    messages: Vec<ReplayMessage>,
     outcome: Option<serde_json::Value>,
     feedback: Option<splendor_types::Feedback>,
     reward: Option<splendor_types::Reward>,
@@ -526,6 +535,7 @@ fn replay_run(
                         candidates: tick.candidates,
                         constraints: Box::new(tick.constraints),
                         actions: tick.actions,
+                        messages: tick.messages,
                         outcome: tick.outcome,
                         feedback: Box::new(tick.feedback),
                         reward: Box::new(tick.reward),
@@ -645,6 +655,31 @@ fn apply_event_to_tick(
                 result: Some(result.clone()),
             });
         }
+        TraceEventKind::MessageQueued { message } => tick.messages.push(ReplayMessage {
+            message: message.clone(),
+            status: "queued".to_string(),
+            reason: None,
+        }),
+        TraceEventKind::MessageDelivered { message } => tick.messages.push(ReplayMessage {
+            message: message.clone(),
+            status: "delivered".to_string(),
+            reason: None,
+        }),
+        TraceEventKind::MessageRejected { message, reason } => tick.messages.push(ReplayMessage {
+            message: message.clone(),
+            status: "rejected".to_string(),
+            reason: Some(reason.clone()),
+        }),
+        TraceEventKind::MessageExpired { message, reason } => tick.messages.push(ReplayMessage {
+            message: message.clone(),
+            status: "expired".to_string(),
+            reason: reason.clone(),
+        }),
+        TraceEventKind::MessageConsumed { message } => tick.messages.push(ReplayMessage {
+            message: message.clone(),
+            status: "consumed".to_string(),
+            reason: None,
+        }),
         TraceEventKind::OutcomeRecorded {
             outcome,
             feedback,
@@ -747,6 +782,9 @@ struct AgentConfig {
     snapshot_interval: Option<u64>,
     initial_state: Option<String>,
     resume: Option<bool>,
+    allowed_permissions: Option<Vec<String>>,
+    allowed_message_schemas: Option<Vec<String>>,
+    allowed_message_recipients: Option<Vec<String>>,
     percepts: Option<Vec<PerceptConfig>>,
     policy: PolicyConfig,
 }
@@ -974,7 +1012,18 @@ fn run_from_config(
                 .to_vec(),
             content_type: None,
         };
-        let agent = AgentContext::new(agent_id, tenant_id, AgentRuntimeConfig::default());
+        let isolation = build_agent_isolation(agent_config)?;
+        let agent = AgentContext::new(
+            agent_id,
+            tenant_id.clone(),
+            AgentRuntimeConfig {
+                isolation,
+                ..AgentRuntimeConfig::default()
+            },
+        );
+        registry
+            .with_tenant_mut(&tenant_id, |tenant| tenant.register_agent_context(&agent))
+            .ok_or_else(|| format!("agent references unknown tenant: {tenant_id}"))?;
         let policy = ConfigPolicy {
             name: format!("{}-policy", agent_config.tenant_id),
             policy: agent_config.policy.clone(),
@@ -1085,6 +1134,22 @@ fn build_registry(config: &RunConfig) -> Result<TenantRegistry, String> {
         registry.insert(TenantContext::new(tenant_id, policy, quotas));
     }
     Ok(registry)
+}
+
+fn build_agent_isolation(config: &AgentConfig) -> Result<AgentIsolationPolicy, String> {
+    let allowed_message_recipients = config
+        .allowed_message_recipients
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|value| parse_agent_id(&value))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(AgentIsolationPolicy {
+        allowed_permissions: config.allowed_permissions.clone().unwrap_or_default(),
+        allowed_message_schemas: config.allowed_message_schemas.clone().unwrap_or_default(),
+        allowed_message_recipients,
+    })
 }
 
 fn build_adapters(

@@ -13,14 +13,16 @@ Replay emits JSON Lines:
 
 - `replay_start`: requested run and optional starting snapshot.
 - `tick`: reconstructed policy name, percepts, candidate actions, verification
-  result, action statuses, outcome payload, feedback/reward, state hash, and
-  snapshot metadata.
+  result, action statuses, message lifecycle decisions, outcome payload,
+  feedback/reward, state hash, and snapshot metadata.
 
 ## Side-effect suppression
 
 Replay does not invoke perceptors, policies, gateways, verifiers, or adapters.
 Filesystem, HTTP, network, database, webhook, shell, and external-service side
 effects are never repeated by default.
+Local message decisions are reconstructed from trace events; replay does not
+re-deliver messages or mutate router inbox/outbox state.
 
 There is no side-effectful replay mode in 0.01-dev. Future safe simulation modes
 must be named explicitly, separately gated, and off by default.

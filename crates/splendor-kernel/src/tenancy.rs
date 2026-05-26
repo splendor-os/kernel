@@ -1,8 +1,8 @@
 //! # Tenancy and Quotas
 //!
 //! Tenant and agent contexts model isolation boundaries and quota enforcement.
-//! The quota ledger tracks per-tick usage across agents and ensures limits are
-//! respected before actions are executed.
+//! The quota ledger tracks per-tick usage per agent and ensures one agent cannot
+//! spend another agent's local runtime budget before actions are executed.
 
 use splendor_gateway::TenantAccess;
 use splendor_store::StateNodeId;
@@ -10,6 +10,11 @@ use splendor_types::{Action, AgentId, QuotaUsage, TenantId, VerificationResult};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use time::{Duration, OffsetDateTime};
+
+/// Structured source label embedded in agent-isolation denial artifacts.
+pub const AGENT_ISOLATION_LEDGER_SOURCE: &str = "agent_isolation_ledger";
+/// Structured source label embedded in quota-denial artifacts.
+pub const QUOTA_LEDGER_SOURCE: &str = "quota_ledger";
 
 /// Policy describing what a tenant is allowed to do.
 #[derive(Clone, Debug, Default)]
@@ -20,6 +25,119 @@ pub struct TenantPolicy {
     pub allowed_adapters: Vec<String>,
     /// Permission tokens granted to the tenant.
     pub allowed_permissions: Vec<String>,
+}
+
+/// Agent-scoped permission and message grants.
+///
+/// The tenant policy remains the upper bound for action names, adapters, and
+/// tenant-wide permission tokens. This profile is the narrower agent runtime
+/// context ledger used by 0.02-S3 to prevent one local agent from spending or
+/// inheriting another agent's permissions.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AgentIsolationPolicy {
+    /// Permission tokens explicitly granted to this agent runtime context.
+    pub allowed_permissions: Vec<String>,
+    /// Message schemas this agent may send through the local router.
+    pub allowed_message_schemas: Vec<String>,
+    /// Local recipients this agent may address through the local router.
+    pub allowed_message_recipients: Vec<AgentId>,
+}
+
+impl AgentIsolationPolicy {
+    /// Verifies the permission subset for an action proposed by this agent.
+    pub fn verify_action_permissions(
+        &self,
+        tenant_id: &TenantId,
+        agent_id: &AgentId,
+        required_permissions: &[String],
+    ) -> VerificationResult {
+        if required_permissions.is_empty() {
+            return VerificationResult::allow();
+        }
+
+        let missing = required_permissions
+            .iter()
+            .filter(|permission| !allowlisted(&self.allowed_permissions, permission))
+            .cloned()
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return VerificationResult::allow();
+        }
+
+        VerificationResult {
+            allowed: false,
+            reasons: vec!["agent_permission_denied".to_string()],
+            artifacts: serde_json::json!({
+                "context": agent_ledger_context(tenant_id, agent_id),
+                "permissions": {
+                    "required": required_permissions,
+                    "missing": missing,
+                    "allowed": &self.allowed_permissions,
+                }
+            }),
+        }
+    }
+
+    /// Verifies that this agent may send a schema to a local recipient.
+    pub fn verify_message(
+        &self,
+        source_agent_id: &AgentId,
+        target_agent_id: &AgentId,
+        schema: &str,
+    ) -> VerificationResult {
+        let mut reasons = Vec::new();
+        let mut artifacts = serde_json::Map::new();
+
+        if !allowlisted(&self.allowed_message_schemas, schema) {
+            reasons.push("message_schema_not_allowed".to_string());
+            artifacts.insert(
+                "schema".to_string(),
+                serde_json::json!({
+                    "requested": schema,
+                    "allowed": &self.allowed_message_schemas,
+                }),
+            );
+        }
+
+        if !self
+            .allowed_message_recipients
+            .iter()
+            .any(|allowed| allowed == target_agent_id)
+        {
+            reasons.push("message_recipient_not_allowed".to_string());
+            artifacts.insert(
+                "recipient".to_string(),
+                serde_json::json!({
+                    "requested": target_agent_id.to_string(),
+                    "allowed": self
+                        .allowed_message_recipients
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>(),
+                }),
+            );
+        }
+
+        if reasons.is_empty() {
+            return VerificationResult::allow();
+        }
+
+        artifacts.insert(
+            "context".to_string(),
+            serde_json::json!({
+                "source": AGENT_ISOLATION_LEDGER_SOURCE,
+                "agent_id": source_agent_id.to_string(),
+                "target_agent_id": target_agent_id.to_string(),
+                "schema": schema,
+            }),
+        );
+
+        VerificationResult {
+            allowed: false,
+            reasons,
+            artifacts: serde_json::Value::Object(artifacts),
+        }
+    }
 }
 
 impl TenantPolicy {
@@ -119,6 +237,8 @@ pub struct AgentRuntimeConfig {
     pub label: Option<String>,
     /// Additional metadata tags.
     pub metadata: HashMap<String, String>,
+    /// Agent-scoped permission and local-message grants.
+    pub isolation: AgentIsolationPolicy,
 }
 
 /// Agent-level execution context bound to a tenant.
@@ -168,6 +288,8 @@ pub struct TenantContext {
     pub policy: TenantPolicy,
     /// Quota policy enforced by the kernel.
     pub quotas: QuotaPolicy,
+    /// Agent-scoped permission/message profiles for local runtime contexts.
+    agent_policies: HashMap<AgentId, AgentIsolationPolicy>,
     /// Usage ledger tracking quota consumption.
     ledger: QuotaLedger,
 }
@@ -179,8 +301,19 @@ impl TenantContext {
             tenant_id,
             policy,
             quotas,
+            agent_policies: HashMap::new(),
             ledger: QuotaLedger::default(),
         }
+    }
+
+    /// Registers or replaces the agent isolation profile for a local agent.
+    pub fn register_agent_policy(&mut self, agent_id: AgentId, policy: AgentIsolationPolicy) {
+        self.agent_policies.insert(agent_id, policy);
+    }
+
+    /// Registers an agent context using its runtime isolation configuration.
+    pub fn register_agent_context(&mut self, agent: &AgentContext) {
+        self.register_agent_policy(agent.agent_id.clone(), agent.config.isolation.clone());
     }
 
     /// Resets per-tick quota counters.
@@ -202,12 +335,30 @@ impl TenantContext {
     /// Verifies action access against the tenant policy.
     pub fn verify_action(
         &self,
+        agent_id: &AgentId,
         action_name: &str,
         adapter: Option<&str>,
         required_permissions: &[String],
     ) -> VerificationResult {
-        self.policy
-            .verify_action(action_name, adapter, required_permissions)
+        let tenant_result = self
+            .policy
+            .verify_action(action_name, adapter, required_permissions);
+        let agent_result = if required_permissions.is_empty() {
+            VerificationResult::allow()
+        } else {
+            self.agent_policies
+                .get(agent_id)
+                .map(|policy| {
+                    policy.verify_action_permissions(
+                        &self.tenant_id,
+                        agent_id,
+                        required_permissions,
+                    )
+                })
+                .unwrap_or_else(|| missing_agent_policy(&self.tenant_id, agent_id))
+        };
+
+        combine_policy_results(tenant_result, agent_result)
     }
 
     /// Returns the current tick identifier tracked by the ledger.
@@ -272,11 +423,17 @@ impl TenantAccess for TenantRegistry {
     fn verify_policy(
         &self,
         tenant_id: &TenantId,
+        agent_id: &AgentId,
         action: &Action,
         adapter: Option<&str>,
     ) -> VerificationResult {
         self.with_tenant(tenant_id, |tenant| {
-            tenant.verify_action(&action.name, adapter, &action.required_permissions)
+            tenant.verify_action(
+                agent_id,
+                &action.name,
+                adapter,
+                &action.required_permissions,
+            )
         })
         .unwrap_or_else(|| VerificationResult::deny("tenant_not_found"))
     }
@@ -302,7 +459,7 @@ pub struct QuotaLedger {
     tick_usage: QuotaUsage,
     per_agent_usage: HashMap<AgentId, QuotaUsage>,
     http_window_start: OffsetDateTime,
-    http_requests: u32,
+    per_agent_http_requests: HashMap<AgentId, u32>,
 }
 
 impl Default for QuotaLedger {
@@ -314,7 +471,7 @@ impl Default for QuotaLedger {
             tick_usage: QuotaUsage::default(),
             per_agent_usage: HashMap::new(),
             http_window_start: epoch,
-            http_requests: 0,
+            per_agent_http_requests: HashMap::new(),
         }
     }
 }
@@ -340,6 +497,11 @@ impl QuotaLedger {
         self.roll_http_window(now);
         let mut reasons = Vec::new();
         let mut artifacts = serde_json::Map::new();
+        let current_agent_usage = self
+            .per_agent_usage
+            .get(agent_id)
+            .copied()
+            .unwrap_or_default();
 
         if let Some(limit) = policy.max_action_duration_ms {
             if usage.action_duration_ms > limit {
@@ -352,12 +514,12 @@ impl QuotaLedger {
         }
 
         if let Some(limit) = policy.max_actions_per_tick {
-            let next_total = self.tick_usage.actions.saturating_add(usage.actions);
+            let next_total = current_agent_usage.actions.saturating_add(usage.actions);
             if next_total > limit {
                 reasons.push("max_actions_per_tick".to_string());
                 artifacts.insert(
                     "actions_per_tick".to_string(),
-                    serde_json::json!({"limit": limit, "current": self.tick_usage.actions, "requested": usage.actions}),
+                    serde_json::json!({"limit": limit, "current": current_agent_usage.actions, "requested": usage.actions}),
                 );
             }
         }
@@ -365,7 +527,7 @@ impl QuotaLedger {
         check_bytes_quota(
             "filesystem_read_bytes",
             policy.filesystem.max_read_bytes,
-            self.tick_usage.filesystem_read_bytes,
+            current_agent_usage.filesystem_read_bytes,
             usage.filesystem_read_bytes,
             &mut reasons,
             &mut artifacts,
@@ -373,7 +535,7 @@ impl QuotaLedger {
         check_bytes_quota(
             "filesystem_write_bytes",
             policy.filesystem.max_write_bytes,
-            self.tick_usage.filesystem_write_bytes,
+            current_agent_usage.filesystem_write_bytes,
             usage.filesystem_write_bytes,
             &mut reasons,
             &mut artifacts,
@@ -381,7 +543,7 @@ impl QuotaLedger {
         check_bytes_quota(
             "network_read_bytes",
             policy.network.max_read_bytes,
-            self.tick_usage.network_read_bytes,
+            current_agent_usage.network_read_bytes,
             usage.network_read_bytes,
             &mut reasons,
             &mut artifacts,
@@ -389,21 +551,26 @@ impl QuotaLedger {
         check_bytes_quota(
             "network_write_bytes",
             policy.network.max_write_bytes,
-            self.tick_usage.network_write_bytes,
+            current_agent_usage.network_write_bytes,
             usage.network_write_bytes,
             &mut reasons,
             &mut artifacts,
         );
 
         if let Some(limit) = policy.max_http_requests_per_minute {
-            let next_total = self.http_requests.saturating_add(usage.http_requests);
+            let current = self
+                .per_agent_http_requests
+                .get(agent_id)
+                .copied()
+                .unwrap_or_default();
+            let next_total = current.saturating_add(usage.http_requests);
             if next_total > limit {
                 reasons.push("max_http_requests_per_minute".to_string());
                 artifacts.insert(
                     "http_requests_per_minute".to_string(),
                     serde_json::json!({
                         "limit": limit,
-                        "current": self.http_requests,
+                        "current": current,
                         "requested": usage.http_requests,
                         "window_start": self.http_window_start.unix_timestamp(),
                     }),
@@ -415,6 +582,7 @@ impl QuotaLedger {
             artifacts.insert(
                 "context".to_string(),
                 serde_json::json!({
+                    "source": QUOTA_LEDGER_SOURCE,
                     "tenant_id": tenant_id.to_string(),
                     "agent_id": agent_id.to_string(),
                     "tick_id": self.tick_id,
@@ -431,7 +599,11 @@ impl QuotaLedger {
         self.tick_usage.accumulate(usage);
         let entry = self.per_agent_usage.entry(agent_id.clone()).or_default();
         entry.accumulate(usage);
-        self.http_requests = self.http_requests.saturating_add(usage.http_requests);
+        let http_entry = self
+            .per_agent_http_requests
+            .entry(agent_id.clone())
+            .or_default();
+        *http_entry = http_entry.saturating_add(usage.http_requests);
 
         VerificationResult::allow()
     }
@@ -439,8 +611,59 @@ impl QuotaLedger {
     fn roll_http_window(&mut self, now: OffsetDateTime) {
         if now - self.http_window_start >= Duration::minutes(1) {
             self.http_window_start = now;
-            self.http_requests = 0;
+            self.per_agent_http_requests.clear();
         }
+    }
+}
+
+fn agent_ledger_context(tenant_id: &TenantId, agent_id: &AgentId) -> serde_json::Value {
+    serde_json::json!({
+        "source": AGENT_ISOLATION_LEDGER_SOURCE,
+        "tenant_id": tenant_id.to_string(),
+        "agent_id": agent_id.to_string(),
+    })
+}
+
+fn missing_agent_policy(tenant_id: &TenantId, agent_id: &AgentId) -> VerificationResult {
+    VerificationResult {
+        allowed: false,
+        reasons: vec!["agent_isolation_profile_missing".to_string()],
+        artifacts: serde_json::json!({
+            "context": agent_ledger_context(tenant_id, agent_id),
+        }),
+    }
+}
+
+fn combine_policy_results(
+    tenant_result: VerificationResult,
+    agent_result: VerificationResult,
+) -> VerificationResult {
+    if tenant_result.allowed && agent_result.allowed {
+        return VerificationResult::allow();
+    }
+
+    let mut reasons = Vec::new();
+    let mut artifacts = serde_json::Map::new();
+    if !tenant_result.allowed {
+        reasons.extend(tenant_result.reasons);
+        if !tenant_result.artifacts.is_null() {
+            artifacts.insert("tenant_policy".to_string(), tenant_result.artifacts);
+        }
+    }
+    if !agent_result.allowed {
+        reasons.extend(agent_result.reasons);
+        if !agent_result.artifacts.is_null() {
+            artifacts.insert(
+                AGENT_ISOLATION_LEDGER_SOURCE.to_string(),
+                agent_result.artifacts,
+            );
+        }
+    }
+
+    VerificationResult {
+        allowed: false,
+        reasons,
+        artifacts: serde_json::Value::Object(artifacts),
     }
 }
 

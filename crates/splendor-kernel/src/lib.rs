@@ -52,7 +52,8 @@ pub use splendor_types::{
 };
 pub use state::{SnapshotPolicy, StateCommit, StateGraph, StateGraphError};
 pub use tenancy::{
-    AdapterQuota, AgentContext, AgentRuntimeConfig, QuotaLedger, QuotaPolicy, TenantContext,
-    TenantPolicy, TenantRegistry,
+    AdapterQuota, AgentContext, AgentIsolationPolicy, AgentRuntimeConfig, QuotaLedger, QuotaPolicy,
+    TenantContext, TenantPolicy, TenantRegistry, AGENT_ISOLATION_LEDGER_SOURCE,
+    QUOTA_LEDGER_SOURCE,
 };
 pub use trace::{AsyncTraceSink, StdoutTraceSink, TraceError, TraceSink, TraceStoreSink};

@@ -161,7 +161,7 @@ fn build_engine_with_policy(
 }
 
 #[test]
-fn scheduler_runs_agents_in_order_and_enforces_tenant_quotas() {
+fn scheduler_runs_agents_in_order_and_keeps_agent_quotas_isolated() {
     let tenant_id = TenantId::new();
     let policy = crate::TenantPolicy {
         allowed_actions: vec!["alpha".to_string(), "beta".to_string()],
@@ -199,10 +199,10 @@ fn scheduler_runs_agents_in_order_and_enforces_tenant_quotas() {
     let first_status = &steps[0].outcome.action_outcomes[0].status;
     let second_status = &steps[1].outcome.action_outcomes[0].status;
     assert!(matches!(first_status, ActionStatus::Executed));
-    assert!(matches!(second_status, ActionStatus::Denied));
+    assert!(matches!(second_status, ActionStatus::Executed));
 
     let usage = scheduler.tenant_usage(&tenant_id).expect("usage");
-    assert_eq!(usage.actions, 1);
+    assert_eq!(usage.actions, 2);
 }
 
 #[test]
