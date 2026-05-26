@@ -82,6 +82,7 @@ The reference `EndpointScope` values map to daemon operations:
 | `splendor.traces.read` | read run traces |
 | `splendor.state.read` | read state-head data |
 | `splendor.replay.create` | create inspect-only replay work |
+| `splendor.messages.send` | send a typed message across a remote instance boundary |
 | `splendor.health.read` | read daemon health |
 | `splendor.capabilities.read` | read daemon capabilities |
 | `splendor.nodes.register` | register a node in the 0.03-S2 registry |

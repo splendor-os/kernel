@@ -61,7 +61,8 @@ pub use ids::{
 };
 pub use message::{
     Message, MessageDeliveryStatus, MessageEnvelope, MessageSchemaVersion, MessageTraceContext,
-    MessageTraceLinks, MessageValidationError,
+    MessageTraceLinks, MessageValidationError, RemoteMessageEnvelope, RemoteMessageEnvelopeVersion,
+    RemoteMessageRetryPolicy, RemoteMessageTraceContext, RemoteMessageValidationError,
 };
 pub use node_registry::{
     HealthStatus, InstanceHealth, InstanceHeartbeat, InstanceRegistration, ManagementAuditEvent,

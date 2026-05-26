@@ -288,6 +288,92 @@ impl LocalMessageRouter {
         self.register_agent(agent.agent_id.clone())
     }
 
+    /// Delivers a remote inbound message into the local target inbox without
+    /// treating the remote source agent as a local source context.
+    ///
+    /// Remote transport validation must run before calling this method. This
+    /// method preserves the local `MessageEnvelope` contract and emits the local
+    /// `message.delivered` trace event for the target delivery boundary, but it
+    /// does not write to a source outbox owned by a different instance.
+    pub fn deliver_remote_inbound_at(
+        &self,
+        recorder: &dyn MessageTraceRecorder,
+        envelope: MessageEnvelope,
+        now: OffsetDateTime,
+    ) -> Result<MessageEnvelope, MessageRouterError> {
+        self.deliver_remote_inbound_with_before_enqueue_at(recorder, envelope, now, |_| Ok(()))
+    }
+
+    /// Delivers a remote inbound message and invokes `before_enqueue` after all
+    /// delivery trace events are recorded but before mutating the target inbox.
+    /// Remote transport uses this hook to record `remote_message.delivered` so a
+    /// trace failure cannot leave an untraceable inbox mutation.
+    pub fn deliver_remote_inbound_with_before_enqueue_at(
+        &self,
+        recorder: &dyn MessageTraceRecorder,
+        envelope: MessageEnvelope,
+        now: OffsetDateTime,
+        before_enqueue: impl FnOnce(&MessageEnvelope) -> Result<(), MessageRouterError>,
+    ) -> Result<MessageEnvelope, MessageRouterError> {
+        if let Err(source) = envelope.validate() {
+            let error = MessageRouterError::InvalidMessage {
+                message_id: envelope.message.message_id.clone(),
+                source,
+            };
+            record_rejection(recorder, &envelope, &error.to_string())?;
+            return Err(error);
+        }
+
+        ensure_recorder_run(recorder, &envelope.message.run_id)?;
+
+        if let Some(reason) = expiration_reason(&self.config, &envelope, now) {
+            record_expiration(recorder, &envelope, &reason)?;
+            return Err(MessageRouterError::Expired {
+                message_id: envelope.message.message_id.clone(),
+                reason,
+            });
+        }
+
+        let mut state = self.lock_state()?;
+        let target_id = envelope.message.target_agent_id.clone();
+        if !state.registered_agents.contains(&target_id) {
+            let error = MessageRouterError::UnknownTargetAgent(target_id.clone());
+            record_rejection(recorder, &envelope, &error.to_string())?;
+            return Err(error);
+        }
+
+        let target_inbox_len = state
+            .mailboxes
+            .get(&target_id)
+            .map(|mailbox| mailbox.inbox.len())
+            .ok_or_else(|| MessageRouterError::UnknownTargetAgent(target_id.clone()))?;
+        if target_inbox_len >= self.config.max_inbox_messages {
+            let error = MessageRouterError::InboxFull {
+                agent_id: target_id.clone(),
+                limit: self.config.max_inbox_messages,
+            };
+            record_rejection(recorder, &envelope, &error.to_string())?;
+            return Err(error);
+        }
+
+        let mut delivered = envelope;
+        let context = MessageTraceContext::from_message(&delivered.message);
+        let delivered_trace_id =
+            recorder.record_message_event(TraceEventKind::MessageDelivered { message: context })?;
+        delivered.delivery_status = MessageDeliveryStatus::Delivered;
+        delivered.trace_links.delivered_trace_id = Some(delivered_trace_id);
+
+        before_enqueue(&delivered)?;
+
+        if let Some(target_mailbox) = state.mailboxes.get_mut(&target_id) {
+            target_mailbox.inbox.push_back(delivered.clone());
+        } else {
+            return Err(MessageRouterError::UnknownTargetAgent(target_id));
+        }
+
+        Ok(delivered)
+    }
+
     fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, RouterState>, MessageRouterError> {
         self.state
             .lock()

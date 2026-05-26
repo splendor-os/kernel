@@ -874,6 +874,13 @@ fn event_kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::MessageRejected { .. } => "MessageRejected",
         TraceEventKind::MessageExpired { .. } => "MessageExpired",
         TraceEventKind::MessageConsumed { .. } => "MessageConsumed",
+        TraceEventKind::RemoteMessageSent { .. } => "RemoteMessageSent",
+        TraceEventKind::RemoteMessageAccepted { .. } => "RemoteMessageAccepted",
+        TraceEventKind::RemoteMessageRejected { .. } => "RemoteMessageRejected",
+        TraceEventKind::RemoteMessageDelivered { .. } => "RemoteMessageDelivered",
+        TraceEventKind::RemoteMessageTimedOut { .. } => "RemoteMessageTimedOut",
+        TraceEventKind::RemoteMessageDuplicate { .. } => "RemoteMessageDuplicate",
+        TraceEventKind::RemoteMessageTransportFailed { .. } => "RemoteMessageTransportFailed",
         TraceEventKind::LoopTickCompleted { .. } => "LoopTickCompleted",
     }
 }

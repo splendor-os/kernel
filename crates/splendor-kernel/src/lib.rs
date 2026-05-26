@@ -27,6 +27,7 @@
 mod loop_engine;
 mod message_router;
 mod node_registry;
+mod remote_message_transport;
 mod runtime;
 mod scheduler;
 mod state;
@@ -47,6 +48,10 @@ pub use node_registry::{
     ManagementAuditError, ManagementAuditSink, NodeRecord, NodeRegistry, NodeRegistryConfig,
     NodeRegistryError, RegistryHealthStatus,
 };
+pub use remote_message_transport::{
+    send_remote_message, InMemoryRemoteMessageTransport, InMemoryRemoteTransportFault,
+    RemoteMessageReceiver, RemoteMessageTransport, RemoteMessageTransportError,
+};
 pub use runtime::{KernelRuntime, KernelRuntimeConfig};
 pub use scheduler::{Scheduler, SchedulerConfig, SchedulerError, SchedulerStep};
 pub use splendor_types::{
@@ -57,9 +62,10 @@ pub use splendor_types::{
     MessageDeliveryStatus, MessageEnvelope, MessageId, MessageSchemaVersion, MessageTraceContext,
     MessageTraceLinks, MessageValidationError, NodeHealth, NodeHeartbeat, NodeId, NodeKind,
     NodeRegistration, NodeRegistryValidationError, Percept, PerceptProvenance, QuotaUsage,
-    RegistryScope, Reward, RunId, RuntimeIdentityContext, RuntimeMode, SideEffectClass,
-    SnapshotId, StateNodeId, TenantId, TickId, TraceEvent, TraceEventId, TraceEventKind, TraceId,
-    TraceIdentityContext, VerificationResult,
+    RegistryScope, RemoteMessageEnvelope, RemoteMessageEnvelopeVersion, RemoteMessageRetryPolicy,
+    RemoteMessageTraceContext, RemoteMessageValidationError, Reward, RunId, RuntimeIdentityContext,
+    RuntimeMode, SideEffectClass, SnapshotId, StateNodeId, TenantId, TickId, TraceEvent,
+    TraceEventId, TraceEventKind, TraceId, TraceIdentityContext, VerificationResult,
 };
 pub use state::{SnapshotPolicy, StateCommit, StateGraph, StateGraphError};
 pub use tenancy::{

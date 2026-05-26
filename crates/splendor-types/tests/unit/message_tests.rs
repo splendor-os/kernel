@@ -19,6 +19,50 @@ fn valid_message() -> Message {
     .expect("valid message")
 }
 
+fn signed_remote_work_order(
+    tenant_id: TenantId,
+    agent_id: AgentId,
+    run_id: RunId,
+    now: OffsetDateTime,
+) -> WorkOrderAuthorization {
+    WorkOrderAuthorization {
+        work_order_id: "wo_remote_test".to_string(),
+        tenant_id,
+        agent_id,
+        run_id: Some(run_id),
+        allowed_scopes: vec![EndpointScope::MessagesSend],
+        signature: Some(crate::WorkOrderSignature {
+            key_id: "key_remote".to_string(),
+            signature: "sig_remote".to_string(),
+        }),
+        expires_at: now + time::Duration::hours(1),
+        revocation: RevocationStatus::Active,
+    }
+}
+
+fn valid_remote_envelope(now: OffsetDateTime) -> RemoteMessageEnvelope {
+    let message = valid_message();
+    let tenant_id = TenantId::new();
+    let work_order = signed_remote_work_order(
+        tenant_id.clone(),
+        message.target_agent_id.clone(),
+        message.run_id.clone(),
+        now,
+    );
+    let envelope = MessageEnvelope::new(message).expect("valid local envelope");
+    RemoteMessageEnvelope::new(
+        tenant_id,
+        "instance_source",
+        "instance_target",
+        work_order,
+        envelope,
+        RemoteMessageRetryPolicy::Never,
+        now,
+        Some(now + time::Duration::minutes(5)),
+    )
+    .expect("valid remote envelope")
+}
+
 #[test]
 fn message_requires_all_identity_scope_fields() {
     let message = valid_message();
@@ -176,4 +220,156 @@ fn message_schema_is_transport_neutral() {
             "message envelope must not contain transport-specific `{forbidden}` fields"
         );
     }
+}
+
+#[test]
+fn remote_message_envelope_wraps_canonical_message_without_mutating_payload() {
+    let now = OffsetDateTime::now_utc();
+    let remote = valid_remote_envelope(now);
+    let canonical_before = serde_json::to_value(&remote.message_envelope.message)
+        .expect("canonical message serializes");
+
+    let payload = serde_json::to_vec(&remote).expect("serialize remote envelope");
+    let decoded: RemoteMessageEnvelope =
+        serde_json::from_slice(&payload).expect("deserialize remote envelope");
+
+    decoded.validate_at(now).expect("decoded remains valid");
+    assert_eq!(decoded.message_envelope, remote.message_envelope);
+    assert_eq!(
+        serde_json::to_value(&decoded.message_envelope.message).expect("canonical message"),
+        canonical_before
+    );
+    assert_eq!(
+        decoded.remote_schema_version,
+        RemoteMessageEnvelopeVersion::V1
+    );
+}
+
+#[test]
+fn remote_message_validation_rejects_unsigned_expired_or_incompatible_work_order() {
+    let now = OffsetDateTime::now_utc();
+    let remote = valid_remote_envelope(now);
+
+    let mut unsigned = remote.clone();
+    unsigned.work_order.signature = None;
+    assert_eq!(
+        unsigned.validate_at(now),
+        Err(RemoteMessageValidationError::UnsignedWorkOrder)
+    );
+
+    let mut expired = remote.clone();
+    expired.work_order.expires_at = now;
+    assert_eq!(
+        expired.validate_at(now),
+        Err(RemoteMessageValidationError::ExpiredWorkOrder)
+    );
+
+    let mut wrong_agent = remote.clone();
+    wrong_agent.work_order.agent_id = AgentId::new();
+    assert_eq!(
+        wrong_agent.validate_at(now),
+        Err(RemoteMessageValidationError::IncompatibleWorkOrder)
+    );
+
+    let mut missing_scope = remote;
+    missing_scope.work_order.allowed_scopes = vec![EndpointScope::RunsCreate];
+    assert_eq!(
+        missing_scope.validate_at(now),
+        Err(RemoteMessageValidationError::IncompatibleWorkOrder)
+    );
+}
+
+#[test]
+fn remote_retry_requires_explicit_idempotency_marker() {
+    let now = OffsetDateTime::now_utc();
+    let mut remote = valid_remote_envelope(now);
+
+    assert!(!remote.can_retry_after_current_attempt());
+
+    remote.retry_policy = RemoteMessageRetryPolicy::Idempotent {
+        max_attempts: 1,
+        idempotency_key: "msg-key".to_string(),
+    };
+    assert_eq!(
+        remote.validate_at(now),
+        Err(RemoteMessageValidationError::InvalidRetryPolicy)
+    );
+
+    remote.retry_policy = RemoteMessageRetryPolicy::Idempotent {
+        max_attempts: 2,
+        idempotency_key: " ".to_string(),
+    };
+    assert_eq!(
+        remote.validate_at(now),
+        Err(RemoteMessageValidationError::MissingIdempotencyKey)
+    );
+
+    remote.retry_policy = RemoteMessageRetryPolicy::Idempotent {
+        max_attempts: 2,
+        idempotency_key: "msg-key".to_string(),
+    };
+    remote.validate_at(now).expect("idempotent retry is valid");
+    assert!(remote.can_retry_after_current_attempt());
+
+    remote.attempt = 2;
+    assert!(!remote.can_retry_after_current_attempt());
+}
+
+#[test]
+fn remote_message_validation_rejects_identity_expiry_and_revocation_failures() {
+    let now = OffsetDateTime::now_utc();
+    let remote = valid_remote_envelope(now);
+
+    let mut missing_tenant = remote.clone();
+    missing_tenant.tenant_id = TenantId::from(Uuid::nil());
+    assert_eq!(
+        missing_tenant.validate_at(now),
+        Err(RemoteMessageValidationError::MissingTenantId)
+    );
+
+    let mut missing_source_instance = remote.clone();
+    missing_source_instance.source_instance_id = " ".to_string();
+    assert_eq!(
+        missing_source_instance.validate_at(now),
+        Err(RemoteMessageValidationError::MissingSourceInstanceId)
+    );
+
+    let mut missing_target_instance = remote.clone();
+    missing_target_instance.target_instance_id = "".to_string();
+    assert_eq!(
+        missing_target_instance.validate_at(now),
+        Err(RemoteMessageValidationError::MissingTargetInstanceId)
+    );
+
+    let mut same_instance = remote.clone();
+    same_instance.target_instance_id = same_instance.source_instance_id.clone();
+    assert_eq!(
+        same_instance.validate_at(now),
+        Err(RemoteMessageValidationError::SameSourceAndTargetInstance)
+    );
+
+    let mut invalid_attempt = remote.clone();
+    invalid_attempt.attempt = 0;
+    assert_eq!(
+        invalid_attempt.validate_at(now),
+        Err(RemoteMessageValidationError::InvalidAttempt)
+    );
+
+    let mut expired_envelope = remote.clone();
+    expired_envelope.expires_at = Some(now);
+    assert_eq!(
+        expired_envelope.validate_at(now),
+        Err(RemoteMessageValidationError::ExpiredEnvelope)
+    );
+
+    let mut revoked = remote;
+    revoked.work_order.revocation = RevocationStatus::Revoked {
+        reason: "operator".to_string(),
+    };
+    assert_eq!(
+        revoked.validate_at(now),
+        Err(RemoteMessageValidationError::RevokedWorkOrder {
+            reason: "operator".to_string()
+        })
+    );
 }
