@@ -307,9 +307,11 @@ fn loop_engine_emits_ordered_trace_events() {
         bytes: vec![1],
         content_type: None,
     };
+    let agent_id = splendor_types::AgentId::new();
+    let tenant_id = splendor_types::TenantId::new();
     let agent = AgentContext::new(
-        splendor_types::AgentId::new(),
-        splendor_types::TenantId::new(),
+        agent_id.clone(),
+        tenant_id.clone(),
         crate::AgentRuntimeConfig::default(),
     );
     let gateway = Arc::new(StubGateway);
@@ -331,14 +333,21 @@ fn loop_engine_emits_ordered_trace_events() {
     let recorded = events.lock().expect("events lock");
     let trace_ids = recorded
         .iter()
-        .map(|event| event.trace_id.to_string())
+        .map(|event| event.trace_event_id.to_string())
         .collect::<HashSet<_>>();
     assert_eq!(trace_ids.len(), recorded.len());
     for (sequence, event) in recorded.iter().enumerate() {
         assert_eq!(event.sequence, sequence as u64);
         assert_eq!(
-            event.trace_id,
-            splendor_types::TraceId::from_run_sequence(&event.run_id, event.sequence)
+            event.trace_event_id,
+            splendor_types::TraceEventId::from_run_sequence(&event.run_id, event.sequence)
+        );
+        assert_eq!(event.identity.run_id, event.run_id);
+        assert_eq!(event.identity.tenant_id.as_ref(), Some(&tenant_id));
+        assert_eq!(event.identity.agent_id.as_ref(), Some(&agent_id));
+        assert_eq!(
+            event.identity.tick_id,
+            Some(splendor_types::TickId::from(1))
         );
     }
     let kinds = recorded
@@ -367,8 +376,32 @@ fn loop_engine_emits_ordered_trace_events() {
         .iter()
         .find(|event| matches!(event.kind, TraceEventKind::StateCommitted { .. }))
         .expect("state committed");
+    assert_eq!(
+        state_event.identity.state_node_id.as_ref(),
+        Some(&outcome.state_commit.node_id)
+    );
+    assert_eq!(
+        outcome.state_commit.trace_event_id.as_ref(),
+        Some(&state_event.trace_event_id)
+    );
     if let TraceEventKind::StateCommitted { state_hash, .. } = &state_event.kind {
         assert_eq!(state_hash, outcome.state_commit.node_id.hash());
+    }
+
+    for event in recorded.iter().filter(|event| {
+        matches!(
+            event.kind,
+            TraceEventKind::ActionVerificationStarted { .. }
+                | TraceEventKind::ActionVerificationCompleted { .. }
+                | TraceEventKind::ActionExecuted { .. }
+                | TraceEventKind::ActionDenied { .. }
+                | TraceEventKind::ActionFailed { .. }
+        )
+    }) {
+        assert_eq!(
+            event.identity.action_id.as_ref(),
+            Some(&outcome.action_outcomes[0].action_id)
+        );
     }
 }
 
@@ -715,6 +748,10 @@ fn loop_engine_new_sets_head_from_graph() {
             splendor_store::StateMetadata {
                 created_at: OffsetDateTime::now_utc(),
                 label: None,
+                tenant_id: None,
+                agent_id: None,
+                run_id: None,
+                trace_event_id: None,
             },
         )
         .expect("commit");

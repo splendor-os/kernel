@@ -15,13 +15,14 @@
 //! let policy = SnapshotPolicy { interval: Some(10), important_labels: vec![] };
 //! let mut graph = StateGraph::new(store, policy);
 //! let data = StateData { bytes: vec![1, 2], content_type: Some("application/octet-stream".into()) };
-//! let metadata = StateMetadata { created_at: OffsetDateTime::now_utc(), label: None };
+//! let metadata = StateMetadata::new(OffsetDateTime::now_utc(), None);
 //! let commit = graph.commit(data, metadata).expect("commit");
 //! assert_eq!(graph.head(), Some(&commit.node_id));
 //! ```
 
 use splendor_store::SnapshotId;
 use splendor_store::{StateData, StateMetadata, StateNodeId, StateStore, StateStoreError};
+use splendor_types::{AgentId, RunId, TenantId, TraceEventId};
 use std::sync::Arc;
 
 /// Policy describing when snapshots should be created.
@@ -52,6 +53,14 @@ impl SnapshotPolicy {
 pub struct StateCommit {
     /// Identifier for the newly committed state node.
     pub node_id: StateNodeId,
+    /// Tenant that owns this state commit, when known.
+    pub tenant_id: Option<TenantId>,
+    /// Agent that owns this state commit, when known.
+    pub agent_id: Option<AgentId>,
+    /// Run that produced this state commit, when known.
+    pub run_id: Option<RunId>,
+    /// Trace event that records this state commit, when known.
+    pub trace_event_id: Option<TraceEventId>,
     /// Optional snapshot identifier if one was created.
     pub snapshot_id: Option<SnapshotId>,
 }
@@ -139,10 +148,18 @@ impl StateGraph {
         } else {
             None
         };
+        let tenant_id = metadata.tenant_id.clone();
+        let agent_id = metadata.agent_id.clone();
+        let run_id = metadata.run_id.clone();
+        let trace_event_id = metadata.trace_event_id.clone();
         self.head = Some(node_id.clone());
         self.tick = next_tick;
         Ok(StateCommit {
             node_id,
+            tenant_id,
+            agent_id,
+            run_id,
+            trace_event_id,
             snapshot_id,
         })
     }

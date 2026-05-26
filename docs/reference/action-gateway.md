@@ -14,6 +14,7 @@ returns `ActionOutcome` results.
 - `action_id` (`ActionId`): action identifier.
 - `tenant_id` (`TenantId`): tenant owning the action.
 - `agent_id` (`AgentId`): agent submitting the action.
+- `run_id` (`RunId`): run that scopes the action and trace events.
 - `action` (`Action`): requested operation.
 - `adapter` (`Option<String>`): adapter identifier requested.
 - `quota_usage` (`QuotaUsage`): quota usage estimate.
@@ -60,7 +61,10 @@ conditions.
 ## VerifiedActionGateway
 
 `VerifiedActionGateway` runs permission, quota, and invariant checks before
-executing adapters and evaluates postconditions after execution.
+executing adapters and evaluates postconditions after execution. It first
+validates `action_id`, `tenant_id`, `agent_id`, and `run_id`; missing or nil
+identity returns a denied `ActionOutcome` with reason `identity_invalid` and does
+not call adapters.
 
 ## ActionGateway
 
@@ -96,6 +100,7 @@ let request = ActionRequest {
     action_id: Default::default(),
     tenant_id: splendor_types::TenantId::new(),
     agent_id: splendor_types::AgentId::new(),
+    run_id: splendor_types::RunId::new(),
     action: Action {
         name: "noop".into(),
         params: serde_json::json!({}),

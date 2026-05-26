@@ -44,11 +44,13 @@ pub use message_router::{
 pub use runtime::{KernelRuntime, KernelRuntimeConfig};
 pub use scheduler::{Scheduler, SchedulerConfig, SchedulerError, SchedulerStep};
 pub use splendor_types::{
-    Action, AgentId, Constraint, ConstraintKind, ConstraintScope, ContentHash, CostEstimate,
-    Feedback, HashAlgorithm, Message, MessageDeliveryStatus, MessageEnvelope, MessageId,
-    MessageSchemaVersion, MessageTraceContext, MessageTraceLinks, MessageValidationError, Percept,
-    PerceptProvenance, QuotaUsage, Reward, RunId, SideEffectClass, SnapshotId, TenantId,
-    TraceEvent, TraceEventKind, TraceId, VerificationResult,
+    Action, ActionId, AgentId, Constraint, ConstraintKind, ConstraintScope, ContentHash,
+    CostEstimate, Feedback, FleetId, HashAlgorithm, IdentityValidationError, InstanceId, Message,
+    MessageDeliveryStatus, MessageEnvelope, MessageId, MessageSchemaVersion, MessageTraceContext,
+    MessageTraceLinks, MessageValidationError, NodeId, Percept, PerceptProvenance, QuotaUsage,
+    Reward, RunId, RuntimeIdentityContext, SideEffectClass, SnapshotId, StateNodeId, TenantId,
+    TickId, TraceEvent, TraceEventId, TraceEventKind, TraceId, TraceIdentityContext,
+    VerificationResult,
 };
 pub use state::{SnapshotPolicy, StateCommit, StateGraph, StateGraphError};
 pub use tenancy::{

@@ -13,14 +13,16 @@
 //! let store = InMemoryStateStore::default();
 //! let data = StateData { bytes: vec![1, 2, 3], content_type: None };
 //! let data_ref = StateStore::put_state(&store, data).expect("put");
-//! let metadata = StateMetadata { created_at: OffsetDateTime::now_utc(), label: Some("seed".into()) };
+//! let metadata = StateMetadata::new(OffsetDateTime::now_utc(), Some("seed".into()));
 //! let node_id = StateStore::commit_node(&store, Vec::new(), data_ref, metadata).expect("commit");
 //! assert!(!node_id.to_string().is_empty());
 //! ```
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use splendor_types::{ContentHash, HashAlgorithm, SnapshotId};
+use splendor_types::{
+    AgentId, ContentHash, HashAlgorithm, RunId, SnapshotId, StateNodeId, TenantId, TraceEventId,
+};
 use std::collections::HashMap;
 use std::fmt;
 use std::future::{ready, Future, Ready};
@@ -68,29 +70,6 @@ pub struct StateData {
     pub content_type: Option<String>,
 }
 
-/// Deterministic identifier for a state node.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-pub struct StateNodeId(ContentHash);
-
-impl StateNodeId {
-    /// Wraps a content hash as a node identifier.
-    fn from_hash(hash: ContentHash) -> Self {
-        Self(hash)
-    }
-
-    /// Returns the underlying content hash.
-    pub fn hash(&self) -> &ContentHash {
-        &self.0
-    }
-}
-
-impl fmt::Display for StateNodeId {
-    /// Formats the state node identifier as an algorithm-prefixed hash string.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
 /// Metadata recorded alongside each state node.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StateMetadata {
@@ -98,6 +77,32 @@ pub struct StateMetadata {
     pub created_at: OffsetDateTime,
     /// Optional label used for snapshot policies or debugging.
     pub label: Option<String>,
+    /// Tenant that owns this state commit, when committed from a runtime tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<TenantId>,
+    /// Agent that owns this state commit, when committed from a runtime tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<AgentId>,
+    /// Run that produced this state commit, when committed from a runtime tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<RunId>,
+    /// Trace event that records this state commit, when known before commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_event_id: Option<TraceEventId>,
+}
+
+impl StateMetadata {
+    /// Creates metadata with no runtime identity fields populated.
+    pub fn new(created_at: OffsetDateTime, label: Option<String>) -> Self {
+        Self {
+            created_at,
+            label,
+            tenant_id: None,
+            agent_id: None,
+            run_id: None,
+            trace_event_id: None,
+        }
+    }
 }
 
 /// Node in the state graph DAG.

@@ -277,6 +277,10 @@ fn agent_context_tracks_interpreter_and_head() {
             StateMetadata {
                 created_at: OffsetDateTime::now_utc(),
                 label: None,
+                tenant_id: None,
+                agent_id: None,
+                run_id: None,
+                trace_event_id: None,
             },
         )
         .expect("commit");
