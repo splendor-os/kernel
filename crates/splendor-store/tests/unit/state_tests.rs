@@ -267,6 +267,42 @@ fn async_inmemory_commit_snapshot_round_trip() {
 }
 
 #[test]
+fn async_inmemory_exports_and_imports_handoff_snapshot() {
+    let source = InMemoryStateStore::default();
+    let state_data = StateData {
+        bytes: vec![4, 2, 0],
+        content_type: Some("application/octet-stream".to_string()),
+    };
+    let data_ref =
+        block_on(AsyncStateStore::put_state(&source, state_data.clone())).expect("put state");
+    let metadata = StateMetadata::new(OffsetDateTime::now_utc(), Some("source".to_string()));
+    let node_id = block_on(AsyncStateStore::commit_node(
+        &source,
+        Vec::new(),
+        data_ref,
+        metadata,
+    ))
+    .expect("commit node");
+    let node = block_on(AsyncStateStore::get_node(&source, &node_id)).expect("get node");
+    assert_eq!(node.parent_ids, Vec::<StateNodeId>::new());
+
+    let snapshot_id = block_on(AsyncStateStore::snapshot(&source, &node_id)).expect("snapshot");
+    let exported =
+        block_on(AsyncStateStore::export_snapshot(&source, &snapshot_id)).expect("export snapshot");
+    assert_eq!(exported.state_bytes, state_data.bytes);
+
+    let receiver = InMemoryStateStore::default();
+    let imported = block_on(AsyncStateStore::import_handoff_snapshot(
+        &receiver,
+        &exported,
+        StateMetadata::new(OffsetDateTime::now_utc(), Some("imported".to_string())),
+    ))
+    .expect("import snapshot");
+    assert_eq!(imported.node_id, node_id);
+    assert_eq!(imported.snapshot_id, snapshot_id);
+}
+
+#[test]
 fn async_sqlite_state_store_round_trip() {
     let temp = NamedTempFile::new().expect("temp file");
     let store = SqliteStateStore::open(temp.path()).expect("open store");
@@ -370,4 +406,49 @@ fn async_sqlite_commit_snapshot_round_trip() {
     let snapshot =
         block_on(AsyncStateStore::load_snapshot(&store, &snapshot_id)).expect("load snapshot");
     assert_eq!(snapshot.state, state_data);
+}
+
+#[test]
+fn async_sqlite_exports_and_imports_handoff_snapshot() {
+    let source_temp = NamedTempFile::new().expect("source temp file");
+    let source = SqliteStateStore::open(source_temp.path()).expect("open source store");
+    let state_data = StateData {
+        bytes: vec![3, 1, 4],
+        content_type: Some("application/octet-stream".to_string()),
+    };
+    let data_ref =
+        block_on(AsyncStateStore::put_state(&source, state_data.clone())).expect("put state");
+    let node_id = block_on(AsyncStateStore::commit_node(
+        &source,
+        Vec::new(),
+        data_ref,
+        StateMetadata::new(OffsetDateTime::now_utc(), Some("sqlite-source".to_string())),
+    ))
+    .expect("commit node");
+    let node = block_on(AsyncStateStore::get_node(&source, &node_id)).expect("get node");
+    assert_eq!(node.data_hash, ContentHash::blake3(&state_data.bytes));
+
+    let snapshot_id = block_on(AsyncStateStore::snapshot(&source, &node_id)).expect("snapshot");
+    let exported =
+        block_on(AsyncStateStore::export_snapshot(&source, &snapshot_id)).expect("export snapshot");
+
+    let receiver_temp = NamedTempFile::new().expect("receiver temp file");
+    let receiver = SqliteStateStore::open(receiver_temp.path()).expect("open receiver store");
+    let imported = block_on(AsyncStateStore::import_handoff_snapshot(
+        &receiver,
+        &exported,
+        StateMetadata::new(
+            OffsetDateTime::now_utc(),
+            Some("sqlite-imported".to_string()),
+        ),
+    ))
+    .expect("import snapshot");
+    assert_eq!(imported.node_id, node_id);
+
+    let imported_snapshot = block_on(AsyncStateStore::load_snapshot(
+        &receiver,
+        &imported.snapshot_id,
+    ))
+    .expect("load imported snapshot");
+    assert_eq!(imported_snapshot.state, state_data);
 }

@@ -115,6 +115,161 @@ fn valid_run_create_request_is_authorized() {
 }
 
 #[test]
+fn endpoint_scope_strings_cover_daemon_and_registry_surface() {
+    let cases = [
+        (EndpointScope::RunsCreate, "splendor.runs.create"),
+        (EndpointScope::RunsResume, "splendor.runs.resume"),
+        (EndpointScope::PerceptsAppend, "splendor.percepts.append"),
+        (EndpointScope::ActionsSubmit, "splendor.actions.submit"),
+        (EndpointScope::TracesRead, "splendor.traces.read"),
+        (EndpointScope::StateRead, "splendor.state.read"),
+        (EndpointScope::ReplayCreate, "splendor.replay.create"),
+        (EndpointScope::MessagesSend, "splendor.messages.send"),
+        (EndpointScope::HealthRead, "splendor.health.read"),
+        (
+            EndpointScope::CapabilitiesRead,
+            "splendor.capabilities.read",
+        ),
+        (EndpointScope::NodesRegister, "splendor.nodes.register"),
+        (
+            EndpointScope::InstancesRegister,
+            "splendor.instances.register",
+        ),
+        (EndpointScope::NodesHeartbeat, "splendor.nodes.heartbeat"),
+        (
+            EndpointScope::InstancesHeartbeat,
+            "splendor.instances.heartbeat",
+        ),
+    ];
+
+    for (scope, expected) in cases {
+        assert_eq!(scope.as_str(), expected);
+    }
+}
+
+#[test]
+fn client_connection_policy_accepts_credential_or_explicit_dev_mode_only() {
+    let now = time::OffsetDateTime::now_utc();
+    let tenant_id = TenantId::new();
+    let valid_credential = credential(tenant_id, vec![EndpointScope::HealthRead], now);
+
+    validate_client_connection_policy(
+        &ClientConnectionPolicy {
+            credential: Some(valid_credential),
+            insecure_dev_mode: None,
+            allow_unauthenticated_fallback: false,
+        },
+        now,
+    )
+    .expect("credential accepted");
+
+    validate_client_connection_policy(
+        &ClientConnectionPolicy {
+            credential: None,
+            insecure_dev_mode: Some(InsecureDevMode {
+                enabled: true,
+                transport: LocalTransportBinding::UnixDomainSocket {
+                    path: "/tmp/splendor.sock".to_string(),
+                },
+                warning_issued: true,
+            }),
+            allow_unauthenticated_fallback: false,
+        },
+        now,
+    )
+    .expect("explicit local dev accepted");
+
+    assert_eq!(
+        validate_client_connection_policy(
+            &ClientConnectionPolicy {
+                credential: None,
+                insecure_dev_mode: None,
+                allow_unauthenticated_fallback: false,
+            },
+            now,
+        ),
+        Err(DaemonSecurityError::AnonymousNonDevCall)
+    );
+}
+
+#[test]
+fn non_mutating_health_and_capability_reads_do_not_require_attribution() {
+    let now = time::OffsetDateTime::now_utc();
+    for (endpoint, scope) in [
+        (DaemonEndpoint::Health, EndpointScope::HealthRead),
+        (
+            DaemonEndpoint::Capabilities,
+            EndpointScope::CapabilitiesRead,
+        ),
+    ] {
+        let request = DaemonSecurityRequest {
+            endpoint,
+            credential: Some(credential(TenantId::new(), vec![scope], now)),
+            expected_audience: audience(),
+            work_order: None,
+            audit_attribution: None,
+            insecure_dev_mode: None,
+        };
+        let decision = validate_daemon_request(&request, now).expect("read authorized");
+        assert_eq!(decision.scope, scope);
+        assert_eq!(decision.audit_attribution, None);
+    }
+}
+
+#[test]
+fn registry_endpoints_validate_nil_node_and_instance_ids() {
+    let now = time::OffsetDateTime::now_utc();
+    let fleet_id = FleetId::new();
+    let scope = RegistryScope::fleet(fleet_id.clone());
+    let credential = fleet_credential(fleet_id, vec![EndpointScope::InstancesHeartbeat], now);
+
+    let request = DaemonSecurityRequest {
+        endpoint: DaemonEndpoint::InstanceHeartbeat {
+            node_id: NodeId::from(uuid::Uuid::nil()),
+            instance_id: InstanceId::from(uuid::Uuid::nil()),
+            scope,
+        },
+        credential: Some(credential),
+        expected_audience: audience(),
+        work_order: None,
+        audit_attribution: Some(attribution(now)),
+        insecure_dev_mode: None,
+    };
+
+    assert_eq!(
+        validate_daemon_request(&request, now),
+        Err(DaemonSecurityError::InvalidRegistryEndpoint)
+    );
+}
+
+#[test]
+fn blank_work_order_signature_fails_closed_as_unsigned() {
+    let now = time::OffsetDateTime::now_utc();
+    let tenant_id = TenantId::new();
+    let mut work_order = signed_work_order(
+        tenant_id.clone(),
+        None,
+        vec![EndpointScope::RunsCreate],
+        now,
+    );
+    work_order.signature = Some(WorkOrderSignature {
+        key_id: " ".to_string(),
+        signature: "sig".to_string(),
+    });
+    let request = run_create_request(
+        tenant_id.clone(),
+        Some(credential(tenant_id, vec![EndpointScope::RunsCreate], now)),
+        Some(work_order),
+        now,
+    );
+
+    assert_eq!(
+        validate_daemon_request(&request, now),
+        Err(DaemonSecurityError::UnsignedWorkOrder)
+    );
+}
+
+#[test]
 fn caller_principal_is_distinct_and_serializable() {
     let caller = principal();
     let payload = serde_json::to_value(&caller).expect("serialize");

@@ -79,6 +79,73 @@ fn selects_matching_cloud_target_deterministically() {
 }
 
 #[test]
+fn placement_string_contracts_and_defaults_are_stable() {
+    assert_eq!(PlacementTarget::EphemeralCloud.as_str(), "ephemeral_cloud");
+    assert_eq!(
+        PlacementTarget::ResidentCloudPool.as_str(),
+        "resident_cloud_pool"
+    );
+    assert_eq!(PlacementTarget::CustomerVpc.as_str(), "customer_vpc");
+    assert_eq!(PlacementTarget::OnPrem.as_str(), "on_prem");
+    assert_eq!(PlacementTarget::EdgeDevice.as_str(), "edge_device");
+    assert_eq!(PlacementTarget::PhysicalRobot.as_str(), "physical_robot");
+    assert_eq!(PlacementTarget::DesktopSidecar.as_str(), "desktop_sidecar");
+
+    assert_eq!(DataLocality::Cloud.as_str(), "cloud");
+    assert_eq!(DataLocality::Vpc.as_str(), "vpc");
+    assert_eq!(DataLocality::OnPrem.as_str(), "on_prem");
+    assert_eq!(DataLocality::Device.as_str(), "device");
+
+    assert_eq!(PlacementExecutionMode::Live.as_str(), "live");
+    assert_eq!(PlacementExecutionMode::Simulation.as_str(), "simulation");
+    assert_eq!(PlacementExecutionMode::CloudHelper.as_str(), "cloud_helper");
+
+    let request = PlacementRequest::new(PlacementTarget::DesktopSidecar);
+    assert_eq!(request.target, PlacementTarget::DesktopSidecar);
+    assert!(request.required_capabilities.is_empty());
+    assert_eq!(request.execution_mode, PlacementExecutionMode::Live);
+
+    let candidate = PlacementCandidate::new(
+        "sidecar-1",
+        PlacementTarget::DesktopSidecar,
+        vec!["file.read".to_string()],
+        RUNTIME_VERSION,
+    );
+    assert_eq!(candidate.candidate_id, "sidecar-1");
+    assert_eq!(
+        candidate.supported_execution_modes,
+        vec![PlacementExecutionMode::Live]
+    );
+}
+
+#[test]
+fn invalid_request_reports_all_reasons_without_candidate_evaluation() {
+    let mut request = PlacementRequest::new(PlacementTarget::EphemeralCloud);
+    request.required_capabilities = vec!["runtime.basic".to_string(), " ".to_string()];
+    request.required_runtime_version = Some(" ".to_string());
+
+    let decision = select_placement(
+        &request,
+        &[candidate(
+            "cloud-1",
+            PlacementTarget::EphemeralCloud,
+            &["runtime.basic"],
+        )],
+    );
+
+    assert_eq!(decision.status, PlacementDecisionStatus::Rejected);
+    assert!(decision.explain.evaluated_candidates.is_empty());
+    assert!(decision
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("required capabilities must not contain blank tokens")));
+    assert!(decision
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("required runtime version must not be blank")));
+}
+
+#[test]
 fn covers_cloud_vpc_on_prem_edge_physical_and_desktop_targets() {
     let cases = [
         (PlacementTarget::EphemeralCloud, Some(DataLocality::Cloud)),
@@ -357,6 +424,49 @@ fn allows_physical_cloud_helper_only_when_explicit() {
         .reasons
         .iter()
         .any(|reason| { reason.contains("no live actuator authority granted to cloud target") }));
+}
+
+#[test]
+fn physical_cloud_helper_success_preserves_non_actuator_reason() {
+    let mut request = request(PlacementTarget::PhysicalRobot, &["route.plan"]);
+    request.execution_mode = PlacementExecutionMode::CloudHelper;
+    request.data_locality = Some(DataLocality::Cloud);
+    let mut candidate = candidate(
+        "planner-cloud",
+        PlacementTarget::ResidentCloudPool,
+        &["route.plan"],
+    );
+    candidate.data_locality = Some(DataLocality::Cloud);
+    candidate.supported_execution_modes = vec![PlacementExecutionMode::CloudHelper];
+
+    let decision = select_placement(&request, &[candidate]);
+
+    assert_eq!(decision.status, PlacementDecisionStatus::Selected);
+    assert_eq!(decision.target, PlacementTarget::ResidentCloudPool);
+    assert!(decision
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("no live actuator authority granted")));
+}
+
+#[test]
+fn unsupported_execution_mode_and_unspecified_locality_are_explained() {
+    let mut request = request(PlacementTarget::CustomerVpc, &["sql.read"]);
+    request.execution_mode = PlacementExecutionMode::Simulation;
+    request.data_locality = Some(DataLocality::Vpc);
+    let candidate = candidate("vpc-1", PlacementTarget::CustomerVpc, &["sql.read"]);
+
+    let decision = select_placement(&request, &[candidate]);
+
+    assert_eq!(decision.status, PlacementDecisionStatus::Rejected);
+    assert!(decision
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("does not support execution mode `simulation`")));
+    assert!(decision
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("data locality `unspecified`")));
 }
 
 #[test]
