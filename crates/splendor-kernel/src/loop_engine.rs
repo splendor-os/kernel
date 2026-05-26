@@ -368,6 +368,11 @@ impl LoopEngine {
         self.outcome_evaluator = Box::new(evaluator);
     }
 
+    /// Records a non-tick runtime event through this loop's trace runtime.
+    pub fn record_runtime_event(&self, kind: TraceEventKind) -> Result<TraceEvent, LoopError> {
+        self.runtime.record_event(kind).map_err(LoopError::Trace)
+    }
+
     /// Executes a single tick of the loop engine.
     pub fn tick(&mut self, tick_id: u64) -> Result<TickOutcome, LoopError> {
         let start = Instant::now();

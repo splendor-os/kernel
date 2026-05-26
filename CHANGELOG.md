@@ -11,12 +11,17 @@
 - Added a 0.02-S1 message schema contract in Rust for `MessageId`, `Message`,
   `MessageEnvelope`, schema-version validation, delivery status vocabulary,
   message trace links, and message lifecycle trace event definitions.
+- Added a 0.02-S5 local runtime daemon API crate with endpoints for run
+  lifecycle, percept append, ordered traces, state-head lookup, inspect-only
+  replay, gateway-mediated action submission, health, and capabilities.
+- Added state-node lookup through `StateStore::get_node` so daemon state-head
+  responses verify that returned nodes exist in the state graph.
 
 ### Explicitly not included
 
-- No daemon server, HTTP listener, OAuth/OIDC provider, PKI management, fleet
-  mTLS rollout, node bootstrap, governance workflow, message router, message
-  broker, remote transport, or TypeScript runtime enforcement.
+- No production OAuth/OIDC provider, PKI management, fleet mTLS rollout, node
+  bootstrap, governance workflow, message broker, remote transport, fleet
+  scheduler, or TypeScript runtime enforcement.
 
 ## 0.01-dev — Local kernel baseline
 

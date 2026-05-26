@@ -51,9 +51,17 @@ per-run sequence counter and do not replace the required tick event ordering.
 The local message router emits them when a message is queued, delivered,
 rejected, expired, or consumed.
 
+0.02-S5 daemon lifecycle events are emitted outside the tick body but through the
+same run trace runtime, preserving monotonic sequence order before the next tick
+or replay inspection.
+
 ## TraceEventKind Payloads
 
 - `RunStarted`
+- `RunPaused { reason: Option<String> }`
+- `RunResumed { reason: Option<String> }`
+- `RunStopped { reason: Option<String> }`
+- `PerceptsAppended { count: usize, schemas: Vec<String> }`
 - `LoopTickStarted { tick_id }`
 - `PerceptsReceived { percepts: Vec<Percept> }`
 - `StateLoaded { state_hash: Option<ContentHash> }`

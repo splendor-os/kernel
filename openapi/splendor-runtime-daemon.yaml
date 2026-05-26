@@ -1,0 +1,157 @@
+openapi: 3.1.0
+info:
+  title: Splendor Runtime Daemon API
+  version: 0.02-S5
+  description: Local-only runtime daemon API for Splendor 0.02-S5.
+servers:
+  - url: http://127.0.0.1:8077
+    description: Explicit local development listener only.
+paths:
+  /runs:
+    post:
+      summary: Create a local run from a signed work order.
+      operationId: createRun
+      responses:
+        '200': { description: Run created }
+        '400': { description: Malformed request }
+        '403': { description: Security validation failed }
+  /runs/{run_id}:
+    get:
+      summary: Inspect a local run.
+      operationId: inspectRun
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200': { description: Run metadata }
+        '404': { description: Invalid run }
+  /runs/{run_id}/start:
+    post:
+      summary: Execute one local scheduler tick.
+      operationId: startRun
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200': { description: Tick executed }
+        '409': { description: Invalid run state }
+        '503': { description: Runtime unavailable }
+  /runs/{run_id}/pause:
+    post:
+      summary: Pause a local run.
+      operationId: pauseRun
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200': { description: Run paused }
+  /runs/{run_id}/resume:
+    post:
+      summary: Resume a paused run and execute one tick.
+      operationId: resumeRun
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200': { description: Tick executed }
+        '403': { description: Missing or invalid resume work order }
+        '409': { description: Run is not paused }
+  /runs/{run_id}/stop:
+    post:
+      summary: Stop a local run.
+      operationId: stopRun
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200': { description: Run stopped }
+  /runs/{run_id}/percepts:
+    post:
+      summary: Append a percept to the daemon queue for the next tick.
+      operationId: appendPercept
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200': { description: Percept accepted }
+        '400': { description: Malformed percept }
+        '403': { description: Disallowed schema or provenance }
+  /runs/{run_id}/state-head:
+    get:
+      summary: Read the latest committed state node metadata.
+      operationId: getStateHead
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200': { description: State head metadata }
+        '404': { description: State head missing or run invalid }
+  /runs/{run_id}/traces:
+    get:
+      summary: Read ordered trace records.
+      operationId: getRunTraces
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - name: start
+          in: query
+          schema: { type: integer, minimum: 0 }
+        - name: end
+          in: query
+          schema: { type: integer, minimum: 0 }
+        - name: redaction_policy
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Ordered trace records }
+        '403': { description: Missing redaction policy or scope }
+  /runs/{run_id}/replay:
+    post:
+      summary: Start inspect-only replay.
+      operationId: replayRun
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200': { description: Replay summary }
+        '409': { description: Trace ordering invalid }
+  /actions:
+    post:
+      summary: Submit an action through the local run gateway.
+      operationId: submitAction
+      responses:
+        '200': { description: Action outcome }
+        '403': { description: Missing trace link or gateway bypass attempt }
+  /health:
+    get:
+      summary: Read daemon health.
+      operationId: getHealth
+      responses:
+        '200': { description: Health status }
+  /capabilities:
+    get:
+      summary: Read local daemon capabilities.
+      operationId: getCapabilities
+      responses:
+        '200': { description: Capability list }
+components:
+  parameters:
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    ApiError:
+      type: object
+      required: [code, message, details]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        details: true
+    RunStatus:
+      type: string
+      enum: [created, running, paused, stopped, failed]
+    ReplayResponse:
+      type: object
+      required: [replay_id, run_id, mode, event_count, action_event_count]
+      properties:
+        replay_id: { type: string }
+        run_id: { type: string, format: uuid }
+        mode: { type: string, enum: [inspect_only] }
+        event_count: { type: integer, minimum: 0 }
+        action_event_count: { type: integer, minimum: 0 }

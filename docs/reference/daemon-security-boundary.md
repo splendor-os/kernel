@@ -76,7 +76,11 @@ The reference `EndpointScope` values map to daemon operations:
 | Scope | Operation |
 | --- | --- |
 | `splendor.runs.create` | create a run |
+| `splendor.runs.start` | start a local run tick |
+| `splendor.runs.read` | inspect local run metadata |
+| `splendor.runs.pause` | pause a local run |
 | `splendor.runs.resume` | resume a run |
+| `splendor.runs.stop` | stop a local run |
 | `splendor.percepts.append` | append percepts to a run |
 | `splendor.actions.submit` | submit an action request through the gateway path |
 | `splendor.traces.read` | read run traces |
@@ -106,6 +110,11 @@ Run creation and resume require all of the following:
 
 Unsigned, expired, revoked, or incompatible work orders are rejected before run
 creation or resume. Resume work orders must bind to the run being resumed.
+
+0.02-S5 adds local lifecycle scopes for start, read, pause, and stop. Those
+operations still require caller scope validation for non-dev calls and mutating
+operations still require audit attribution, but they do not replace the signed
+work-order requirement for create/resume.
 
 0.02-S0 checks signature metadata presence and scope. Cryptographic verification
 and remote work-order ingestion are future daemon/work-order implementation work.
@@ -174,7 +183,8 @@ orders to re-execute actions.
 
 ## Non-goals
 
-- No daemon server or HTTP listener.
+- No production daemon transport or auth server is implemented by this security
+  validator. The 0.02-S5 local HTTP daemon calls this validator.
 - No OAuth/OIDC server.
 - No PKI or fleet mTLS rollout.
 - No node bootstrap protocol.

@@ -1,8 +1,8 @@
 use super::*;
 use crate::SnapshotPolicy;
 use splendor_store::{
-    InMemoryStateStore, InMemoryTraceStore, StateData, StateDataRef, StateMetadata, StateNodeId,
-    StateSnapshot, StateStore, StateStoreError,
+    InMemoryStateStore, InMemoryTraceStore, StateData, StateDataRef, StateMetadata, StateNode,
+    StateNodeId, StateSnapshot, StateStore, StateStoreError,
 };
 use splendor_types::{
     ConstraintKind, ConstraintScope, PerceptProvenance, QuotaUsage, RunId, TraceEvent,
@@ -273,6 +273,10 @@ impl StateStore for FailingStateStore {
         _metadata: StateMetadata,
     ) -> Result<StateNodeId, StateStoreError> {
         Err(StateStoreError::MissingState)
+    }
+
+    fn get_node(&self, _node_id: &StateNodeId) -> Result<StateNode, StateStoreError> {
+        Err(StateStoreError::MissingNode)
     }
 
     fn snapshot(
@@ -742,6 +746,10 @@ fn loop_engine_new_sets_head_from_graph() {
 fn event_kind_label(kind: &TraceEventKind) -> &'static str {
     match kind {
         TraceEventKind::RunStarted => "RunStarted",
+        TraceEventKind::RunPaused { .. } => "RunPaused",
+        TraceEventKind::RunResumed { .. } => "RunResumed",
+        TraceEventKind::RunStopped { .. } => "RunStopped",
+        TraceEventKind::PerceptsAppended { .. } => "PerceptsAppended",
         TraceEventKind::LoopTickStarted { .. } => "LoopTickStarted",
         TraceEventKind::PerceptsReceived { .. } => "PerceptsReceived",
         TraceEventKind::StateLoaded { .. } => "StateLoaded",

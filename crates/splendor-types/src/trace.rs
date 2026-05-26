@@ -65,6 +65,28 @@ impl TraceEvent {
 pub enum TraceEventKind {
     /// Marks the start of a run trace stream.
     RunStarted,
+    /// Records a local daemon run pause transition.
+    RunPaused {
+        /// Human-readable reason for the pause.
+        reason: Option<String>,
+    },
+    /// Records a local daemon run resume transition.
+    RunResumed {
+        /// Human-readable reason for the resume.
+        reason: Option<String>,
+    },
+    /// Records a local daemon run stop transition.
+    RunStopped {
+        /// Human-readable reason for the stop.
+        reason: Option<String>,
+    },
+    /// Records percepts accepted by the local daemon before a tick consumes them.
+    PerceptsAppended {
+        /// Number of percepts accepted.
+        count: usize,
+        /// Accepted percept schemas.
+        schemas: Vec<String>,
+    },
     /// Marks the start of a loop tick.
     LoopTickStarted {
         /// Tick counter within the run.
