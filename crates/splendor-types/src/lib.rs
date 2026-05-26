@@ -48,14 +48,15 @@ pub use daemon_security::{
 pub use hash::{ContentHash, HashAlgorithm};
 pub use ids::{AgentId, MessageId, RunId, SnapshotId, TenantId, TraceId};
 pub use message::{
-    Message, MessageDeliveryStatus, MessageEnvelope, MessageSchemaVersion, MessageTraceContext,
-    MessageTraceLinks, MessageValidationError,
+    DelegatedAuthority, Message, MessageDeliveryStatus, MessageEnvelope, MessageSchemaVersion,
+    MessageTraceContext, MessageTraceLinks, MessageValidationError, TaskFailure, TaskRequest,
+    TaskResponse, TaskResponseStatus, TASK_REQUEST_SCHEMA, TASK_RESPONSE_SCHEMA,
 };
 pub use primitives::{
     Action, Constraint, ConstraintKind, ConstraintScope, CostEstimate, Feedback, Percept,
     PerceptProvenance, QuotaUsage, Reward, SideEffectClass, VerificationResult,
 };
-pub use trace::{TraceEvent, TraceEventKind, TraceIntegrity};
+pub use trace::{LocalDelegationTraceContext, TraceEvent, TraceEventKind, TraceIntegrity};
 
 #[cfg(test)]
 #[path = "../tests/unit/lib_tests.rs"]

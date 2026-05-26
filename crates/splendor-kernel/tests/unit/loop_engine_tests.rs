@@ -5,7 +5,8 @@ use splendor_store::{
     StateSnapshot, StateStore, StateStoreError,
 };
 use splendor_types::{
-    ConstraintKind, ConstraintScope, PerceptProvenance, QuotaUsage, RunId, TraceEvent,
+    ConstraintKind, ConstraintScope, DelegatedAuthority, PerceptProvenance, QuotaUsage, RunId,
+    TraceEvent,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -86,6 +87,39 @@ impl ActionGateway for StubGateway {
             error: None,
             completed_at: OffsetDateTime::now_utc(),
         })
+    }
+}
+
+struct StaticAdapterPolicy;
+
+impl Policy for StaticAdapterPolicy {
+    fn name(&self) -> &str {
+        "static-adapter-policy"
+    }
+
+    fn decide(
+        &self,
+        _state: &StateData,
+        _percepts: &[Percept],
+    ) -> Result<PolicyDecision, LoopError> {
+        let action = Action {
+            name: "noop".to_string(),
+            params: serde_json::json!({"ok": true}),
+            side_effect_class: splendor_types::SideEffectClass::ReadOnly,
+            cost_estimate: None,
+            required_permissions: Vec::new(),
+            preconditions: Vec::new(),
+            postconditions: Vec::new(),
+        };
+        let next_state = StateData {
+            bytes: vec![2],
+            content_type: Some("application/octet-stream".to_string()),
+        };
+        Ok(PolicyDecision::new(
+            vec![ActionCandidate::new(action).with_adapter("stub".to_string())],
+            next_state,
+            Some("tick".to_string()),
+        ))
     }
 }
 
@@ -516,6 +550,160 @@ fn loop_engine_denies_when_constraints_fail_and_skips_gateway() {
 }
 
 #[test]
+fn loop_engine_denies_child_action_outside_delegated_scope_and_skips_gateway() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = CapturingTraceSink {
+        events: Arc::clone(&events),
+    };
+    let runtime = KernelRuntime::new(KernelRuntimeConfig {
+        trace_sink: Arc::new(sink),
+        ..KernelRuntimeConfig::default()
+    });
+
+    let store = Arc::new(InMemoryStateStore::default());
+    let graph = StateGraph::new(store, SnapshotPolicy::default());
+    let initial_state = StateData {
+        bytes: vec![1],
+        content_type: None,
+    };
+    let mut agent = AgentContext::new(
+        splendor_types::AgentId::new(),
+        splendor_types::TenantId::new(),
+        crate::AgentRuntimeConfig::default(),
+    );
+    agent.set_delegated_authority(DelegatedAuthority::empty());
+    let calls = Arc::new(Mutex::new(0));
+    let gateway = Arc::new(CountingGateway {
+        calls: Arc::clone(&calls),
+    });
+    let mut engine = LoopEngine::with_runtime(
+        agent,
+        graph,
+        initial_state,
+        Box::new(StaticPolicy),
+        gateway,
+        runtime,
+    );
+
+    let outcome = engine.tick(1).expect("tick");
+    assert!(matches!(
+        outcome.action_outcomes[0].status,
+        ActionStatus::Denied
+    ));
+    assert_eq!(*calls.lock().expect("calls lock"), 0);
+
+    let recorded = events.lock().expect("events lock");
+    let denied = recorded
+        .iter()
+        .find(|event| matches!(event.kind, TraceEventKind::ActionDenied { .. }))
+        .expect("delegated scope denial");
+    if let TraceEventKind::ActionDenied { result, .. } = &denied.kind {
+        assert!(result
+            .reasons
+            .contains(&"delegated_action_not_allowed".to_string()));
+    }
+}
+
+#[test]
+fn loop_engine_denies_delegated_action_without_explicit_adapter_and_skips_gateway() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = CapturingTraceSink {
+        events: Arc::clone(&events),
+    };
+    let runtime = KernelRuntime::new(KernelRuntimeConfig {
+        trace_sink: Arc::new(sink),
+        ..KernelRuntimeConfig::default()
+    });
+
+    let store = Arc::new(InMemoryStateStore::default());
+    let graph = StateGraph::new(store, SnapshotPolicy::default());
+    let initial_state = StateData {
+        bytes: vec![1],
+        content_type: None,
+    };
+    let mut agent = AgentContext::new(
+        splendor_types::AgentId::new(),
+        splendor_types::TenantId::new(),
+        crate::AgentRuntimeConfig::default(),
+    );
+    agent.set_delegated_authority(DelegatedAuthority {
+        allowed_actions: vec!["noop".to_string()],
+        allowed_adapters: vec!["stub".to_string()],
+        allowed_permissions: Vec::new(),
+    });
+    let calls = Arc::new(Mutex::new(0));
+    let gateway = Arc::new(CountingGateway {
+        calls: Arc::clone(&calls),
+    });
+    let mut engine = LoopEngine::with_runtime(
+        agent,
+        graph,
+        initial_state,
+        Box::new(StaticPolicy),
+        gateway,
+        runtime,
+    );
+
+    let outcome = engine.tick(1).expect("tick");
+    assert!(matches!(
+        outcome.action_outcomes[0].status,
+        ActionStatus::Denied
+    ));
+    assert_eq!(*calls.lock().expect("calls lock"), 0);
+
+    let recorded = events.lock().expect("events lock");
+    let denied = recorded
+        .iter()
+        .find(|event| matches!(event.kind, TraceEventKind::ActionDenied { .. }))
+        .expect("delegated missing adapter denial");
+    if let TraceEventKind::ActionDenied { result, .. } = &denied.kind {
+        assert!(result
+            .reasons
+            .contains(&"delegated_adapter_unspecified".to_string()));
+    }
+}
+
+#[test]
+fn loop_engine_allows_delegated_action_with_explicit_adapter() {
+    let runtime = KernelRuntime::new(KernelRuntimeConfig::default());
+    let store = Arc::new(InMemoryStateStore::default());
+    let graph = StateGraph::new(store, SnapshotPolicy::default());
+    let initial_state = StateData {
+        bytes: vec![1],
+        content_type: None,
+    };
+    let mut agent = AgentContext::new(
+        splendor_types::AgentId::new(),
+        splendor_types::TenantId::new(),
+        crate::AgentRuntimeConfig::default(),
+    );
+    agent.set_delegated_authority(DelegatedAuthority {
+        allowed_actions: vec!["noop".to_string()],
+        allowed_adapters: vec!["stub".to_string()],
+        allowed_permissions: Vec::new(),
+    });
+    let calls = Arc::new(Mutex::new(0));
+    let gateway = Arc::new(CountingGateway {
+        calls: Arc::clone(&calls),
+    });
+    let mut engine = LoopEngine::with_runtime(
+        agent,
+        graph,
+        initial_state,
+        Box::new(StaticAdapterPolicy),
+        gateway,
+        runtime,
+    );
+
+    let outcome = engine.tick(1).expect("tick");
+    assert!(matches!(
+        outcome.action_outcomes[0].status,
+        ActionStatus::Executed
+    ));
+    assert_eq!(*calls.lock().expect("calls lock"), 1);
+}
+
+#[test]
 fn loop_engine_records_gateway_errors_as_failed() {
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = CapturingTraceSink {
@@ -761,6 +949,12 @@ fn event_kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::MessageRejected { .. } => "MessageRejected",
         TraceEventKind::MessageExpired { .. } => "MessageExpired",
         TraceEventKind::MessageConsumed { .. } => "MessageConsumed",
+        TraceEventKind::DelegationRequested { .. } => "DelegationRequested",
+        TraceEventKind::DelegationRejected { .. } => "DelegationRejected",
+        TraceEventKind::ParentRunCancelled { .. } => "ParentRunCancelled",
+        TraceEventKind::ChildRunStarted { .. } => "ChildRunStarted",
+        TraceEventKind::ChildRunCompleted { .. } => "ChildRunCompleted",
+        TraceEventKind::ChildRunFailed { .. } => "ChildRunFailed",
         TraceEventKind::LoopTickCompleted { .. } => "LoopTickCompleted",
     }
 }

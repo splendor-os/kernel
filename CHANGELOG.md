@@ -11,12 +11,17 @@
 - Added a 0.02-S1 message schema contract in Rust for `MessageId`, `Message`,
   `MessageEnvelope`, schema-version validation, delivery status vocabulary,
   message trace links, and message lifecycle trace event definitions.
+- Added a 0.02-S4 local delegation model in Rust for typed task
+  request/response messages, parent/child run metadata, explicit delegated
+  authority, local child-run trace events, structured child failures, parent
+  cancellation denial, and inspect-only delegation replay reconstruction.
 
 ### Explicitly not included
 
 - No daemon server, HTTP listener, OAuth/OIDC provider, PKI management, fleet
-  mTLS rollout, node bootstrap, governance workflow, message router, message
-  broker, remote transport, or TypeScript runtime enforcement.
+  mTLS rollout, node bootstrap, governance workflow, message broker, remote
+  transport, fleet placement, long-lived child services, or TypeScript runtime
+  enforcement.
 
 ## 0.01-dev — Local kernel baseline
 

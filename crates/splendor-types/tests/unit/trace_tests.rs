@@ -1,6 +1,8 @@
 use super::*;
 use crate::{
-    AgentId, Message, MessageId, MessageTraceContext, Percept, PerceptProvenance, SideEffectClass,
+    AgentId, DelegatedAuthority, LocalDelegationTraceContext, Message, MessageId,
+    MessageTraceContext, Percept, PerceptProvenance, SideEffectClass, TaskFailure, TaskRequest,
+    TASK_REQUEST_SCHEMA,
 };
 
 #[test]
@@ -64,13 +66,22 @@ fn trace_event_round_trip() {
 fn message_rejection_trace_event_preserves_causal_parent() {
     let run_id = RunId::new();
     let causal_parent = TraceId::from_run_sequence(&run_id, 3);
+    let target = AgentId::new();
+    let task = TaskRequest::new(
+        run_id.clone(),
+        RunId::new(),
+        target.clone(),
+        "forecast",
+        DelegatedAuthority::empty(),
+    )
+    .expect("task request");
     let message = Message::new(
         MessageId::new(),
         AgentId::new(),
-        AgentId::new(),
+        target,
         run_id.clone(),
-        "splendor.message.task_request.v1",
-        serde_json::json!({"task": "forecast"}),
+        TASK_REQUEST_SCHEMA,
+        serde_json::to_value(task).expect("task payload"),
         Some(causal_parent.clone()),
         true,
         OffsetDateTime::now_utc(),
@@ -105,13 +116,22 @@ fn message_rejection_trace_event_preserves_causal_parent() {
 #[test]
 fn message_lifecycle_trace_events_round_trip() {
     let run_id = RunId::new();
+    let target = AgentId::new();
+    let task = TaskRequest::new(
+        run_id.clone(),
+        RunId::new(),
+        target.clone(),
+        "forecast",
+        DelegatedAuthority::empty(),
+    )
+    .expect("task request");
     let message = Message::new(
         MessageId::new(),
         AgentId::new(),
-        AgentId::new(),
+        target,
         run_id.clone(),
-        "splendor.message.task_request.v1",
-        serde_json::json!({"task": "forecast"}),
+        TASK_REQUEST_SCHEMA,
+        serde_json::to_value(task).expect("task payload"),
         None,
         false,
         OffsetDateTime::now_utc(),
@@ -135,6 +155,60 @@ fn message_lifecycle_trace_events_round_trip() {
     for (sequence, kind) in events.into_iter().enumerate() {
         let event = TraceEvent::new(
             run_id.clone(),
+            sequence as u64,
+            OffsetDateTime::now_utc(),
+            kind,
+        );
+        let payload = serde_json::to_vec(&event).expect("serialize");
+        let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+        assert_eq!(decoded, event);
+    }
+}
+
+#[test]
+fn local_delegation_trace_events_round_trip() {
+    let parent_run_id = RunId::new();
+    let child_run_id = RunId::new();
+    let context = LocalDelegationTraceContext {
+        parent_run_id: parent_run_id.clone(),
+        child_run_id: child_run_id.clone(),
+        parent_trace_id: Some(TraceId::from_run_sequence(&parent_run_id, 4)),
+        request_message_id: Some(MessageId::new()),
+        response_message_id: Some(MessageId::new()),
+        source_agent_id: AgentId::new(),
+        target_agent_id: AgentId::new(),
+        objective: "summarize ledger".to_string(),
+    };
+    let failure = TaskFailure::new("child_failed", "specialist failed", false)
+        .with_trace_id(TraceId::from_run_sequence(&child_run_id, 2));
+    let events = vec![
+        TraceEventKind::DelegationRequested {
+            delegation: context.clone(),
+        },
+        TraceEventKind::DelegationRejected {
+            delegation: context.clone(),
+            reason: "parent_run_cancelled".to_string(),
+        },
+        TraceEventKind::ParentRunCancelled {
+            parent_run_id: parent_run_id.clone(),
+            agent_id: context.source_agent_id.clone(),
+            reason: "operator".to_string(),
+        },
+        TraceEventKind::ChildRunStarted {
+            delegation: context.clone(),
+        },
+        TraceEventKind::ChildRunCompleted {
+            delegation: context.clone(),
+        },
+        TraceEventKind::ChildRunFailed {
+            delegation: context,
+            failure,
+        },
+    ];
+
+    for (sequence, kind) in events.into_iter().enumerate() {
+        let event = TraceEvent::new(
+            parent_run_id.clone(),
             sequence as u64,
             OffsetDateTime::now_utc(),
             kind,

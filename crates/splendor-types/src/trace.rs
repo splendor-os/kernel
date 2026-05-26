@@ -20,8 +20,8 @@
 //! ```
 
 use crate::{
-    Action, Constraint, ContentHash, Feedback, MessageTraceContext, Reward, RunId, SnapshotId,
-    TraceId, VerificationResult,
+    Action, AgentId, Constraint, ContentHash, Feedback, MessageId, MessageTraceContext, Reward,
+    RunId, SnapshotId, TaskFailure, TraceId, VerificationResult,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -182,6 +182,44 @@ pub enum TraceEventKind {
         /// Identity and causality context for the message.
         message: MessageTraceContext,
     },
+    /// Records a parent run requesting a scoped local child run.
+    DelegationRequested {
+        /// Local parent/child delegation context.
+        delegation: LocalDelegationTraceContext,
+    },
+    /// Records a local delegation denied before a child run can execute.
+    DelegationRejected {
+        /// Local parent/child delegation context.
+        delegation: LocalDelegationTraceContext,
+        /// Fail-closed rejection reason.
+        reason: String,
+    },
+    /// Records parent run cancellation for local delegation admission control.
+    ParentRunCancelled {
+        /// Cancelled parent run.
+        parent_run_id: RunId,
+        /// Agent that owned the cancelled parent run.
+        agent_id: AgentId,
+        /// Structured cancellation reason.
+        reason: String,
+    },
+    /// Records that a child run started from an explicit local delegation.
+    ChildRunStarted {
+        /// Local parent/child delegation context.
+        delegation: LocalDelegationTraceContext,
+    },
+    /// Records a child run completing successfully and linking back to parent.
+    ChildRunCompleted {
+        /// Local parent/child delegation context.
+        delegation: LocalDelegationTraceContext,
+    },
+    /// Records a child run failure as a structured outcome.
+    ChildRunFailed {
+        /// Local parent/child delegation context.
+        delegation: LocalDelegationTraceContext,
+        /// Structured child failure outcome.
+        failure: TaskFailure,
+    },
     /// Marks the end of a loop tick.
     LoopTickCompleted {
         /// Tick counter within the run.
@@ -189,6 +227,47 @@ pub enum TraceEventKind {
         /// Optional integrity chain metadata for audit validation.
         integrity: Option<TraceIntegrity>,
     },
+}
+
+/// Trace context for local parent/child delegation events.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalDelegationTraceContext {
+    /// Parent run that requested scoped local work.
+    pub parent_run_id: RunId,
+    /// Child run created for the delegated work.
+    pub child_run_id: RunId,
+    /// Parent trace event that caused or recorded the delegation request.
+    pub parent_trace_id: Option<TraceId>,
+    /// Task request message associated with the delegation, if created.
+    pub request_message_id: Option<MessageId>,
+    /// Task response message associated with completion/failure, if created.
+    pub response_message_id: Option<MessageId>,
+    /// Parent/orchestrator agent.
+    pub source_agent_id: AgentId,
+    /// Child/specialist agent.
+    pub target_agent_id: AgentId,
+    /// Scoped child objective.
+    pub objective: String,
+}
+
+impl LocalDelegationTraceContext {
+    /// Returns a copy with a request message link.
+    pub fn with_request_message(mut self, message_id: MessageId) -> Self {
+        self.request_message_id = Some(message_id);
+        self
+    }
+
+    /// Returns a copy with a response message link.
+    pub fn with_response_message(mut self, message_id: MessageId) -> Self {
+        self.response_message_id = Some(message_id);
+        self
+    }
+
+    /// Returns a copy with the parent trace event that caused this delegation.
+    pub fn with_parent_trace(mut self, trace_id: TraceId) -> Self {
+        self.parent_trace_id = Some(trace_id);
+        self
+    }
 }
 
 /// Integrity metadata recorded at the end of a tick.

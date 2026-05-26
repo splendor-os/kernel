@@ -22,6 +22,10 @@ Replay does not invoke perceptors, policies, gateways, verifiers, or adapters.
 Filesystem, HTTP, network, database, webhook, shell, and external-service side
 effects are never repeated by default.
 
+For 0.02-S4 local delegation, `splendor_kernel::replay_local_delegations(events)`
+reconstructs parent/child run edges plus task request/response message causality
+from trace events only. It does not start child runs or re-send messages.
+
 There is no side-effectful replay mode in 0.01-dev. Future safe simulation modes
 must be named explicitly, separately gated, and off by default.
 

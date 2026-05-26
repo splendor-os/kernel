@@ -421,6 +421,9 @@ impl LoopEngine {
                     action: action.clone(),
                 })?;
 
+            let delegated_scope = self
+                .agent
+                .verify_delegated_action(&action, candidate.adapter.as_deref());
             let outcome = if !constraint_evaluation.result.allowed {
                 ActionOutcome {
                     action_id: action_id.clone(),
@@ -429,6 +432,16 @@ impl LoopEngine {
                     post_verification: None,
                     output: None,
                     error: Some(constraint_evaluation.result.reasons.join(", ")),
+                    completed_at: OffsetDateTime::now_utc(),
+                }
+            } else if !delegated_scope.allowed {
+                ActionOutcome {
+                    action_id: action_id.clone(),
+                    status: ActionStatus::Denied,
+                    verification: delegated_scope.clone(),
+                    post_verification: None,
+                    output: None,
+                    error: Some(delegated_scope.reasons.join(", ")),
                     completed_at: OffsetDateTime::now_utc(),
                 }
             } else {
