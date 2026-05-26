@@ -1,12 +1,13 @@
 use super::*;
 use crate::AGENT_ISOLATION_LEDGER_SOURCE;
 use crate::{KernelRuntimeConfig, TraceSink};
-use splendor_types::{Message, MessageSchemaVersion, MessageTraceLinks, TenantId, TraceEvent};
+use splendor_types::{
+    DelegatedAuthority, Message, MessageSchemaVersion, MessageTraceLinks, TaskRequest, TenantId,
+    TraceEvent, TASK_REQUEST_SCHEMA,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use time::{Duration, OffsetDateTime};
-
-const TASK_REQUEST_SCHEMA: &str = "splendor.message.task_request.v1";
 
 #[derive(Default)]
 struct CapturingSink {
@@ -65,13 +66,23 @@ fn envelope(
     created_at: OffsetDateTime,
 ) -> MessageEnvelope {
     let causal_parent = TraceId::from_run_sequence(&run_id, sequence);
+    let task = TaskRequest::new(
+        run_id.clone(),
+        RunId::new(),
+        target_agent_id.clone(),
+        "forecast",
+        DelegatedAuthority::empty(),
+    )
+    .expect("valid task request");
+    let mut payload = serde_json::to_value(task).expect("task payload");
+    payload["sequence"] = serde_json::json!(sequence);
     let message = Message::new(
         MessageId::new(),
         source_agent_id,
         target_agent_id,
         run_id,
         TASK_REQUEST_SCHEMA,
-        serde_json::json!({"sequence": sequence, "task": "forecast"}),
+        payload,
         Some(causal_parent),
         true,
         created_at,

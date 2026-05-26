@@ -16,12 +16,20 @@
 - Added a 0.02-S3 agent isolation ledger for per-agent permission checks,
   per-agent quota counters, local message schema/recipient grants, denial trace
   artifacts, and replay-visible message decisions.
+- Added a 0.02-S4 local delegation model in Rust for typed task
+  request/response messages, parent/child run metadata, explicit delegated
+  authority, local child-run trace events, structured child failures, parent
+  cancellation denial, and inspect-only delegation replay reconstruction.
+- Hardened 0.02-S4 local delegation with duplicate child-run ID rejection and
+  terminal child completion/failure guards that avoid duplicate response messages
+  or terminal traces.
 
 ### Explicitly not included
 
 - No daemon server, HTTP listener, OAuth/OIDC provider, PKI management, fleet
   mTLS rollout, node bootstrap, governance workflow, message broker, remote
-  transport, or TypeScript runtime enforcement.
+  transport, fleet placement, long-lived child services, or TypeScript runtime
+  enforcement.
 
 ## 0.01-dev — Local kernel baseline
 

@@ -13,13 +13,22 @@ where
 fn round_trip_core_types() {
     let run_id = RunId::new();
     let trace_id = TraceId::from_run_sequence(&run_id, 1);
+    let target_agent_id = AgentId::new();
+    let task = TaskRequest::new(
+        run_id.clone(),
+        RunId::new(),
+        target_agent_id.clone(),
+        "forecast revenue",
+        DelegatedAuthority::empty(),
+    )
+    .expect("task request");
     let message = Message::new(
         MessageId::new(),
         AgentId::new(),
-        AgentId::new(),
+        target_agent_id,
         run_id.clone(),
-        "splendor.message.task_request.v1",
-        serde_json::json!({"task": "forecast revenue"}),
+        TASK_REQUEST_SCHEMA,
+        serde_json::to_value(task).expect("task payload"),
         Some(trace_id.clone()),
         true,
         time::OffsetDateTime::now_utc(),

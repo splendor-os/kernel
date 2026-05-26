@@ -365,3 +365,42 @@ fn agent_context_tracks_interpreter_and_head() {
     agent.set_state_head(node_id.clone());
     assert_eq!(agent.state_head, Some(node_id));
 }
+
+#[test]
+fn agent_context_delegated_authority_allows_only_explicit_scope() {
+    let agent = AgentContext::new(
+        AgentId::new(),
+        TenantId::new(),
+        AgentRuntimeConfig::default(),
+    )
+    .with_delegated_authority(splendor_types::DelegatedAuthority {
+        allowed_actions: vec!["query".to_string()],
+        allowed_adapters: vec!["sql".to_string()],
+        allowed_permissions: vec!["finance.read".to_string()],
+    });
+    let allowed = Action {
+        name: "query".to_string(),
+        params: serde_json::json!({}),
+        side_effect_class: SideEffectClass::ReadOnly,
+        cost_estimate: None,
+        required_permissions: vec!["finance.read".to_string()],
+        preconditions: Vec::new(),
+        postconditions: Vec::new(),
+    };
+    assert!(agent.verify_delegated_action(&allowed, Some("sql")).allowed);
+
+    let denied = Action {
+        name: "publish".to_string(),
+        params: serde_json::json!({}),
+        side_effect_class: SideEffectClass::External,
+        cost_estimate: None,
+        required_permissions: vec!["artifact.publish".to_string()],
+        preconditions: Vec::new(),
+        postconditions: Vec::new(),
+    };
+    let result = agent.verify_delegated_action(&denied, Some("artifact"));
+    assert!(!result.allowed);
+    assert!(result
+        .reasons
+        .contains(&"delegated_action_not_allowed".to_string()));
+}

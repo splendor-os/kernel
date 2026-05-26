@@ -6,7 +6,9 @@
 
 use splendor_gateway::TenantAccess;
 use splendor_store::StateNodeId;
-use splendor_types::{Action, AgentId, QuotaUsage, TenantId, VerificationResult};
+use splendor_types::{
+    Action, AgentId, DelegatedAuthority, QuotaUsage, TenantId, VerificationResult,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use time::{Duration, OffsetDateTime};
@@ -254,6 +256,9 @@ pub struct AgentContext {
     pub state_head: Option<StateNodeId>,
     /// Runtime configuration for the agent.
     pub config: AgentRuntimeConfig,
+    /// Optional local child-run authority. When present, the loop engine denies
+    /// actions outside this explicit delegated scope before gateway submission.
+    pub delegated_authority: Option<DelegatedAuthority>,
 }
 
 impl AgentContext {
@@ -265,6 +270,7 @@ impl AgentContext {
             interpreter_handles: Vec::new(),
             state_head: None,
             config,
+            delegated_authority: None,
         }
     }
 
@@ -276,6 +282,31 @@ impl AgentContext {
     /// Updates the head pointer for the agent state graph.
     pub fn set_state_head(&mut self, state_node_id: StateNodeId) {
         self.state_head = Some(state_node_id);
+    }
+
+    /// Restricts this agent context to an explicit local delegated authority.
+    pub fn set_delegated_authority(&mut self, authority: DelegatedAuthority) {
+        self.delegated_authority = Some(authority);
+    }
+
+    /// Returns a cloned agent context restricted to the provided delegated scope.
+    pub fn with_delegated_authority(mut self, authority: DelegatedAuthority) -> Self {
+        self.set_delegated_authority(authority);
+        self
+    }
+
+    /// Verifies a proposed action against child-run delegated authority.
+    pub fn verify_delegated_action(
+        &self,
+        action: &Action,
+        adapter: Option<&str>,
+    ) -> VerificationResult {
+        self.delegated_authority
+            .as_ref()
+            .map(|authority| {
+                authority.verify_action(&action.name, adapter, &action.required_permissions)
+            })
+            .unwrap_or_else(VerificationResult::allow)
     }
 }
 

@@ -51,6 +51,10 @@ per-run sequence counter and do not replace the required tick event ordering.
 The local message router emits them when a message is queued, delivered,
 rejected, expired, or consumed.
 
+Local delegation events are emitted outside the tick ordering when a parent run
+creates, completes, fails, cancels, or rejects local child work. They are ordered
+by each affected run's sequence counter and carry explicit parent/child IDs.
+
 ## TraceEventKind Payloads
 
 - `RunStarted`
@@ -73,6 +77,12 @@ rejected, expired, or consumed.
 - `MessageRejected { message: MessageTraceContext, reason: String }`
 - `MessageExpired { message: MessageTraceContext, reason: Option<String> }`
 - `MessageConsumed { message: MessageTraceContext }`
+- `DelegationRequested { delegation: LocalDelegationTraceContext }`
+- `DelegationRejected { delegation: LocalDelegationTraceContext, reason: String }`
+- `ParentRunCancelled { parent_run_id: RunId, agent_id: AgentId, reason: String }`
+- `ChildRunStarted { delegation: LocalDelegationTraceContext }`
+- `ChildRunCompleted { delegation: LocalDelegationTraceContext }`
+- `ChildRunFailed { delegation: LocalDelegationTraceContext, failure: TaskFailure }`
 - `LoopTickCompleted { tick_id, integrity: Option<TraceIntegrity> }`
 
 ## Message Events
@@ -103,6 +113,32 @@ router behavior emits the lifecycle events for accepted, rejected, expired, and
 consumed local messages. Replayed trace records preserve `causal_parent`,
 allowing future multi-agent replay to rebuild message causality without executing
 message side effects or adapter actions.
+
+## Local Delegation Events
+
+0.02-S4 adds local parent/child delegation events:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `DelegationRequested` | `delegation.requested` | Parent run requested scoped local child work. |
+| `DelegationRejected` | `delegation.rejected` | Delegation failed closed before child execution. |
+| `ParentRunCancelled` | `run.cancelled` | Parent run cancellation blocks future child delegation. |
+| `ChildRunStarted` | `run.child_started` | Child run started and references the parent causal trace. |
+| `ChildRunCompleted` | `run.child_completed` | Child run completed and parent references the response. |
+| `ChildRunFailed` | `run.child_failed` | Child run failure is structured as `TaskFailure`. |
+
+`LocalDelegationTraceContext` fields:
+
+| Field | Purpose |
+| --- | --- |
+| `parent_run_id` | Parent/orchestrator run. |
+| `child_run_id` | Child/specialist run. |
+| `parent_trace_id` | Parent trace event that caused or recorded delegation. |
+| `request_message_id` | Task request message, when routed. |
+| `response_message_id` | Task response message, when routed. |
+| `source_agent_id` | Parent/orchestrator agent. |
+| `target_agent_id` | Child/specialist agent. |
+| `objective` | Scoped child objective. |
 
 ### TraceIntegrity
 
