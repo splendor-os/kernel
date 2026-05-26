@@ -101,8 +101,8 @@ A systems layer that augments modern neural AI systems by enforcing primitives f
 
 - **Kernel-grade runtime primitives** for autonomous agents
 - **Rust runtime core** for tenancy, state graphs, scheduling, local action
-  verification, and audit/observability. Typed local messaging is planned for
-  0.02-dev and is not part of the 0.01 baseline.
+  verification, audit/observability, typed local messaging, per-agent isolation,
+  and scoped local delegation. Multi-host execution remains planned for 0.03-dev.
 - **Managed interpreters** as first-class compute (e.g., sandboxed Python instances per agent/tenant)
 - **Closed-loop autonomy**: percepts → policies → (constraints) → verified actions, with feedback routed back into state/learning
 - **Distributed by design**: the primitive model preserves future distributed
