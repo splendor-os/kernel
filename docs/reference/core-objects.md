@@ -7,6 +7,9 @@ This document describes the canonical data structures defined in
 
 | Type | Backing | Purpose | Determinism |
 | --- | --- | --- | --- |
+| `FleetId` | UUID v4 | Governed fleet boundary identifier. | Random per fleet. |
+| `NodeId` | UUID v4 | Physical, virtual, or logical host node identifier. | Random per node. |
+| `InstanceId` | UUID v4 | Concrete Splendor runtime process identifier. | Random per instance. |
 | `TenantId` | UUID v4 | Tenant boundary identifier. | Random per instance. |
 | `AgentId` | UUID v4 | Agent identity within a tenant. | Random per instance. |
 | `RunId` | UUID v4 | Runtime execution session identifier. | Random per instance. |
@@ -81,6 +84,26 @@ TraceId = uuid_v5(NAMESPACE_OID, "{run_id}:{sequence}")
 - `network_read_bytes` (`u64`): network bytes read.
 - `network_write_bytes` (`u64`): network bytes written.
 - `http_requests` (`u32`): HTTP requests issued.
+
+## Node and Instance Registry
+
+0.03-S2 adds resident node and runtime instance registry contracts. See
+[`node-registry.md`](node-registry.md) and [`capabilities.md`](capabilities.md)
+for the full contract.
+
+Core structs:
+
+- `CapabilityDocument`
+- `RegistryScope`
+- `NodeKind`
+- `NodeRegistration`
+- `InstanceRegistration`
+- `NodeHeartbeat`
+- `InstanceHeartbeat`
+- `ManagementAuditEvent`
+
+Registry data is management metadata. It does not grant runtime permissions,
+start runs, or authorize side effects.
 
 ## Constraint
 

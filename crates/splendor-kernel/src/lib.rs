@@ -26,6 +26,7 @@
 
 mod loop_engine;
 mod message_router;
+mod node_registry;
 mod runtime;
 mod scheduler;
 mod state;
@@ -41,14 +42,22 @@ pub use message_router::{
     AgentMailboxSnapshot, LocalMessageRouter, MessageRouter, MessageRouterConfig,
     MessageRouterError, MessageTraceRecorder,
 };
+pub use node_registry::{
+    HeartbeatFreshness, InMemoryManagementAuditSink, InMemoryNodeRegistry, InstanceRecord,
+    ManagementAuditError, ManagementAuditSink, NodeRecord, NodeRegistry, NodeRegistryConfig,
+    NodeRegistryError, RegistryHealthStatus,
+};
 pub use runtime::{KernelRuntime, KernelRuntimeConfig};
 pub use scheduler::{Scheduler, SchedulerConfig, SchedulerError, SchedulerStep};
 pub use splendor_types::{
-    Action, AgentId, Constraint, ConstraintKind, ConstraintScope, ContentHash, CostEstimate,
-    Feedback, HashAlgorithm, Message, MessageDeliveryStatus, MessageEnvelope, MessageId,
-    MessageSchemaVersion, MessageTraceContext, MessageTraceLinks, MessageValidationError, Percept,
-    PerceptProvenance, QuotaUsage, Reward, RunId, SideEffectClass, SnapshotId, TenantId,
-    TraceEvent, TraceEventKind, TraceId, VerificationResult,
+    Action, AgentId, CapabilityDocument, CapabilityValidationError, Constraint, ConstraintKind,
+    ConstraintScope, ContentHash, CostEstimate, Feedback, FleetId, HashAlgorithm, HealthStatus,
+    InstanceHealth, InstanceHeartbeat, InstanceId, InstanceRegistration, ManagementAuditEvent,
+    ManagementAuditEventKind, Message, MessageDeliveryStatus, MessageEnvelope, MessageId,
+    MessageSchemaVersion, MessageTraceContext, MessageTraceLinks, MessageValidationError,
+    NodeHealth, NodeHeartbeat, NodeId, NodeKind, NodeRegistration, NodeRegistryValidationError,
+    Percept, PerceptProvenance, QuotaUsage, RegistryScope, Reward, RunId, RuntimeMode,
+    SideEffectClass, SnapshotId, TenantId, TraceEvent, TraceEventKind, TraceId, VerificationResult,
 };
 pub use state::{SnapshotPolicy, StateCommit, StateGraph, StateGraphError};
 pub use tenancy::{

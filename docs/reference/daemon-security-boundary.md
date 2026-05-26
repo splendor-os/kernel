@@ -84,6 +84,10 @@ The reference `EndpointScope` values map to daemon operations:
 | `splendor.replay.create` | create inspect-only replay work |
 | `splendor.health.read` | read daemon health |
 | `splendor.capabilities.read` | read daemon capabilities |
+| `splendor.nodes.register` | register a node in the 0.03-S2 registry |
+| `splendor.instances.register` | register an instance under a node |
+| `splendor.nodes.heartbeat` | record node health heartbeat |
+| `splendor.instances.heartbeat` | record instance health heartbeat |
 
 Missing endpoint scopes fail closed.
 
@@ -150,6 +154,25 @@ after gateway execution and is not accepted from daemon callers.
 `GatewayVerificationState::Bypassed` is denied. Caller authentication alone is
 not authority to execute side effects; side effects remain authorized only by the
 Action Gateway and its verifier chain.
+
+## Node and instance registry endpoints
+
+0.03-S2 adds daemon-security contract coverage for registry mutations. These
+checks are pure validation; they do not implement an HTTP server or remote fleet
+auth.
+
+Registry mutations require:
+
+- authenticated caller identity or explicit local-only dev mode;
+- endpoint scope (`splendor.nodes.register`, `splendor.instances.register`,
+  `splendor.nodes.heartbeat`, or `splendor.instances.heartbeat`);
+- matching tenant or fleet binding for the `RegistryScope`;
+- expected audience binding;
+- unexpired and unrevoked caller credential;
+- audit attribution for the mutating request.
+
+Registry scopes do not authorize runs or side-effectful actions. They only
+authenticate and authorize metadata mutation at the daemon boundary.
 
 ## Audit attribution
 

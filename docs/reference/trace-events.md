@@ -51,6 +51,11 @@ per-run sequence counter and do not replace the required tick event ordering.
 The local message router emits them when a message is queued, delivered,
 rejected, expired, or consumed.
 
+Node and instance registry lifecycle events introduced in 0.03-S2 are management
+audit events rather than run-scoped `TraceEventKind` variants. They are documented
+in [`node-registry.md`](node-registry.md) and remain suitable for later
+aggregation without inventing fake run IDs.
+
 ## TraceEventKind Payloads
 
 - `RunStarted`

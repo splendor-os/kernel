@@ -5,7 +5,7 @@
 //! the 0.02-S0 boundary rules that later daemon/API work must call before a
 //! request can mutate runtime state or reach the action gateway.
 
-use crate::{AgentId, RunId, TenantId};
+use crate::{AgentId, FleetId, InstanceId, NodeId, RegistryScope, RunId, TenantId};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use thiserror::Error;
@@ -76,6 +76,14 @@ pub enum EndpointScope {
     HealthRead,
     /// Read daemon capabilities.
     CapabilitiesRead,
+    /// Register a resident or ephemeral node.
+    NodesRegister,
+    /// Register a Splendor runtime instance under a node.
+    InstancesRegister,
+    /// Record a node heartbeat.
+    NodesHeartbeat,
+    /// Record an instance heartbeat.
+    InstancesHeartbeat,
 }
 
 impl EndpointScope {
@@ -91,6 +99,10 @@ impl EndpointScope {
             Self::ReplayCreate => "splendor.replay.create",
             Self::HealthRead => "splendor.health.read",
             Self::CapabilitiesRead => "splendor.capabilities.read",
+            Self::NodesRegister => "splendor.nodes.register",
+            Self::InstancesRegister => "splendor.instances.register",
+            Self::NodesHeartbeat => "splendor.nodes.heartbeat",
+            Self::InstancesHeartbeat => "splendor.instances.heartbeat",
         }
     }
 }
@@ -102,7 +114,7 @@ pub enum CredentialBinding {
     /// Credential is bound to one tenant context.
     Tenant { tenant_id: TenantId },
     /// Credential is bound to one fleet context.
-    Fleet { fleet_id: String },
+    Fleet { fleet_id: FleetId },
 }
 
 /// Audience binding for caller credentials.
@@ -112,9 +124,9 @@ pub enum CredentialAudience {
     /// Credential is scoped to a daemon listener or sidecar.
     Daemon { daemon_id: String },
     /// Credential is scoped to a concrete runtime instance.
-    Instance { instance_id: String },
+    Instance { instance_id: InstanceId },
     /// Credential is scoped to a fleet management surface.
-    Fleet { fleet_id: String },
+    Fleet { fleet_id: FleetId },
     /// Credential is scoped to a central manager.
     CentralManager { manager_id: String },
 }
@@ -307,6 +319,24 @@ pub enum DaemonEndpoint {
     Health,
     /// `GET /capabilities`.
     Capabilities,
+    /// `POST /nodes/register`.
+    NodeRegister { scope: RegistryScope },
+    /// `POST /instances/register`.
+    InstanceRegister {
+        node_id: NodeId,
+        scope: RegistryScope,
+    },
+    /// `POST /nodes/:node_id/heartbeat`.
+    NodeHeartbeat {
+        node_id: NodeId,
+        scope: RegistryScope,
+    },
+    /// `POST /instances/:instance_id/heartbeat`.
+    InstanceHeartbeat {
+        node_id: NodeId,
+        instance_id: InstanceId,
+        scope: RegistryScope,
+    },
 }
 
 impl DaemonEndpoint {
@@ -320,6 +350,10 @@ impl DaemonEndpoint {
             Self::ActionSubmit { .. } => EndpointScope::ActionsSubmit,
             Self::Health => EndpointScope::HealthRead,
             Self::Capabilities => EndpointScope::CapabilitiesRead,
+            Self::NodeRegister { .. } => EndpointScope::NodesRegister,
+            Self::InstanceRegister { .. } => EndpointScope::InstancesRegister,
+            Self::NodeHeartbeat { .. } => EndpointScope::NodesHeartbeat,
+            Self::InstanceHeartbeat { .. } => EndpointScope::InstancesHeartbeat,
         }
     }
 
@@ -330,7 +364,28 @@ impl DaemonEndpoint {
             | Self::PerceptAppend { tenant_id, .. }
             | Self::TraceRead { tenant_id, .. }
             | Self::ActionSubmit { tenant_id, .. } => Some(tenant_id),
-            Self::Health | Self::Capabilities => None,
+            Self::Health
+            | Self::Capabilities
+            | Self::NodeRegister { .. }
+            | Self::InstanceRegister { .. }
+            | Self::NodeHeartbeat { .. }
+            | Self::InstanceHeartbeat { .. } => None,
+        }
+    }
+
+    fn registry_scope(&self) -> Option<&RegistryScope> {
+        match self {
+            Self::NodeRegister { scope }
+            | Self::InstanceRegister { scope, .. }
+            | Self::NodeHeartbeat { scope, .. }
+            | Self::InstanceHeartbeat { scope, .. } => Some(scope),
+            Self::RunCreate { .. }
+            | Self::RunResume { .. }
+            | Self::PerceptAppend { .. }
+            | Self::TraceRead { .. }
+            | Self::ActionSubmit { .. }
+            | Self::Health
+            | Self::Capabilities => None,
         }
     }
 
@@ -341,6 +396,10 @@ impl DaemonEndpoint {
                 | Self::RunResume { .. }
                 | Self::PerceptAppend { .. }
                 | Self::ActionSubmit { .. }
+                | Self::NodeRegister { .. }
+                | Self::InstanceRegister { .. }
+                | Self::NodeHeartbeat { .. }
+                | Self::InstanceHeartbeat { .. }
         )
     }
 
@@ -441,6 +500,9 @@ pub enum DaemonSecurityError {
     /// SDK/client policy attempted silent insecure fallback.
     #[error("SDK/client surfaces must not silently fall back to insecure unauthenticated mode")]
     ClientInsecureFallback,
+    /// Node/instance registry endpoint carried invalid identity or scope data.
+    #[error("node registry endpoint carried invalid identity or scope data")]
+    InvalidRegistryEndpoint,
 }
 
 /// Validates an explicit dev-only insecure mode transport.
@@ -548,6 +610,18 @@ fn validate_credential(
     if let Some(tenant_id) = endpoint.tenant_id() {
         match &credential.binding {
             CredentialBinding::Tenant { tenant_id: bound } if bound == tenant_id => Ok(()),
+            _ => Err(DaemonSecurityError::WrongCredentialBinding),
+        }
+    } else if let Some(scope) = endpoint.registry_scope() {
+        match &credential.binding {
+            CredentialBinding::Tenant { tenant_id }
+                if scope.tenant_id.as_ref() == Some(tenant_id) =>
+            {
+                Ok(())
+            }
+            CredentialBinding::Fleet { fleet_id } if scope.fleet_id.as_ref() == Some(fleet_id) => {
+                Ok(())
+            }
             _ => Err(DaemonSecurityError::WrongCredentialBinding),
         }
     } else {
@@ -663,6 +737,30 @@ fn validate_endpoint_contract(endpoint: &DaemonEndpoint) -> Result<(), DaemonSec
                 return Err(DaemonSecurityError::ActionGatewayBypassed);
             }
             Ok(())
+        }
+        DaemonEndpoint::NodeRegister { scope } => scope
+            .validate()
+            .map_err(|_| DaemonSecurityError::InvalidRegistryEndpoint),
+        DaemonEndpoint::InstanceRegister { node_id, scope }
+        | DaemonEndpoint::NodeHeartbeat { node_id, scope } => {
+            if node_id.as_uuid().is_nil() {
+                return Err(DaemonSecurityError::InvalidRegistryEndpoint);
+            }
+            scope
+                .validate()
+                .map_err(|_| DaemonSecurityError::InvalidRegistryEndpoint)
+        }
+        DaemonEndpoint::InstanceHeartbeat {
+            node_id,
+            instance_id,
+            scope,
+        } => {
+            if node_id.as_uuid().is_nil() || instance_id.as_uuid().is_nil() {
+                return Err(DaemonSecurityError::InvalidRegistryEndpoint);
+            }
+            scope
+                .validate()
+                .map_err(|_| DaemonSecurityError::InvalidRegistryEndpoint)
         }
         DaemonEndpoint::RunCreate { .. }
         | DaemonEndpoint::RunResume { .. }
