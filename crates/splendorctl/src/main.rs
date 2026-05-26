@@ -13,13 +13,18 @@ use splendor_adapter_http::{HttpAdapter, HttpAdapterConfig, HttpMethod};
 use splendor_gateway::{ActionAdapter, ActionGateway, VerifiedActionGateway};
 use splendor_kernel::{
     ActionCandidate, AdapterQuota, AgentContext, AgentRuntimeConfig, LoopEngine, Perceptor, Policy,
-    PolicyDecision, QuotaPolicy, Scheduler, SchedulerConfig, SnapshotPolicy, StateGraph,
-    TenantContext, TenantPolicy, TenantRegistry,
+    PolicyDecision, QuotaPolicy, RunTraceContext, Scheduler, SchedulerConfig, SnapshotPolicy,
+    StateGraph, TenantContext, TenantPolicy, TenantRegistry,
 };
-use splendor_store::{SqliteStateStore, SqliteTraceStore, StateStore, TraceRecord, TraceStore};
+use splendor_store::{
+    SqliteStateStore, SqliteTraceStore, StateStore, TraceRecord, TraceStore, TraceStoreError,
+};
 use splendor_types::{
-    Action, ContentHash, HashAlgorithm, Percept, PerceptProvenance, QuotaUsage, SideEffectClass,
-    SnapshotId, TraceEvent, TraceEventId, TraceEventKind,
+    validate_work_order, Action, AgentId, ContentHash, HashAlgorithm, Percept, PerceptProvenance,
+    QuotaUsage, RunId, SideEffectClass, SnapshotId, TenantId, TraceEvent, TraceEventId,
+    TraceEventKind,
+    WorkOrder, WorkOrderEnvelope, WorkOrderId, WorkOrderKeyring, WorkOrderValidationContext,
+    WorkOrderValidationError,
 };
 use std::env;
 use std::fs;
@@ -714,9 +719,19 @@ struct RunConfig {
     tick_budget_ms: Option<u64>,
     tick_interval_ms: Option<u64>,
     cycles: Option<u64>,
+    allow_unsigned_local_run: Option<bool>,
     tenants: Vec<TenantConfig>,
     agents: Vec<AgentConfig>,
     adapters: Option<AdaptersConfig>,
+    work_order: Option<WorkOrderConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkOrderConfig {
+    #[serde(flatten)]
+    envelope: WorkOrderEnvelope,
+    verification_secret: String,
+    expected_placement_target: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -914,23 +929,24 @@ fn run_from_config(
                 .map_err(|error| format!("Failed to create trace directory: {error}"))?;
         }
     }
+    let trace_store = Arc::new(
+        SqliteTraceStore::open(&config.trace_db)
+            .map_err(|error| format!("Failed to open trace store: {error}"))?,
+    );
+    let work_order = validate_config_work_order(&config, trace_store.as_ref())?;
+
     if let Some(parent) = config.state_db.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("Failed to create state directory: {error}"))?;
         }
     }
-
-    let trace_store = Arc::new(
-        SqliteTraceStore::open(&config.trace_db)
-            .map_err(|error| format!("Failed to open trace store: {error}"))?,
-    );
     let state_store = Arc::new(
         SqliteStateStore::open(&config.state_db)
             .map_err(|error| format!("Failed to open state store: {error}"))?,
     );
 
-    let registry = build_registry(&config)?;
+    let registry = build_registry_with_work_order(&config, work_order.as_ref())?;
     let mut scheduler = Scheduler::with_registry(
         SchedulerConfig {
             tick_budget: config.tick_budget_ms.map(std::time::Duration::from_millis),
@@ -946,19 +962,8 @@ fn run_from_config(
 
     for agent_config in &config.agents {
         let tenant_id = parse_tenant_id(&agent_config.tenant_id)?;
-        let agent_id = agent_config
-            .id
-            .as_deref()
-            .map(parse_agent_id)
-            .transpose()?
-            .unwrap_or_default();
-        let run_id = agent_config
-            .run_id
-            .as_deref()
-            .or(config.run_id.as_deref())
-            .map(parse_run_id)
-            .transpose()?
-            .unwrap_or_default();
+        let agent_id = resolve_agent_id(agent_config, work_order.as_ref())?;
+        let run_id = resolve_run_id(&config, agent_config, work_order.as_ref())?;
         let snapshot_interval = agent_config.snapshot_interval;
         let snapshot_policy = SnapshotPolicy {
             interval: snapshot_interval,
@@ -980,24 +985,31 @@ fn run_from_config(
             policy: agent_config.policy.clone(),
         };
         let mut engine = if agent_config.resume.unwrap_or(false) {
-            LoopEngine::resume_from_trace_store(
+            LoopEngine::resume_from_trace_store_with_work_order(
                 agent,
                 graph,
                 Box::new(policy),
                 Arc::clone(&gateway),
                 trace_store.clone(),
                 run_id,
+                work_order.as_ref(),
             )
             .map_err(|error| format!("Failed to resume agent: {error}"))?
         } else {
-            LoopEngine::with_trace_store(
+            let context = match work_order.as_ref() {
+                Some(work_order) => {
+                    RunTraceContext::new(Some(run_id)).with_work_order(work_order.clone())
+                }
+                None => RunTraceContext::new(Some(run_id)),
+            };
+            LoopEngine::with_trace_store_and_work_order(
                 agent,
                 graph,
                 initial_state,
                 Box::new(policy),
                 Arc::clone(&gateway),
                 trace_store.clone(),
-                Some(run_id),
+                context,
             )
             .map_err(|error| format!("Failed to create engine: {error}"))?
         };
@@ -1054,16 +1066,198 @@ fn resolve_config_path(path: &Path) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
-fn build_registry(config: &RunConfig) -> Result<TenantRegistry, String> {
+fn validate_config_work_order(
+    config: &RunConfig,
+    trace_store: &dyn TraceStore,
+) -> Result<Option<WorkOrder>, String> {
+    let Some(work_order_config) = &config.work_order else {
+        if config.allow_unsigned_local_run.unwrap_or(false) {
+            eprintln!(
+                "WARNING: allow_unsigned_local_run is active; signed work-order authority is bypassed for this local development run only."
+            );
+            return Ok(None);
+        }
+        record_missing_work_order_rejection(config, trace_store)?;
+        return Err("Work order rejected: unsigned_work_order".to_string());
+    };
+
+    if config.agents.len() != 1 {
+        return Err(
+            "work_order config currently authorizes exactly one local resident agent".to_string(),
+        );
+    }
+    let agent = &config.agents[0];
+    let order = &work_order_config.envelope.work_order;
+    let now = OffsetDateTime::now_utc();
+    if agent.run_id.is_none() && config.run_id.is_none() && order.run_id.is_none() {
+        return Err(
+            "work_order config requires an explicit run_id in the config or work order".to_string(),
+        );
+    }
+    let tenant_id = parse_tenant_id(&agent.tenant_id)?;
+    let agent_id = resolve_agent_id(agent, Some(order))?;
+    let run_id = resolve_run_id(config, agent, Some(order))?;
+    if agent.resume.unwrap_or(false) && order.run_id.as_ref() != Some(&run_id) {
+        return Err("resume requires a work order bound to the resumed run_id".to_string());
+    }
+
+    let mut keyring = WorkOrderKeyring::new();
+    if let Some(signature) = &work_order_config.envelope.signature {
+        keyring
+            .insert_shared_secret(
+                &signature.key_id,
+                work_order_config.verification_secret.as_bytes(),
+            )
+            .map_err(|error| format!("Work order rejected: {}", error.reason_code()))?;
+    }
+    let context = WorkOrderValidationContext {
+        tenant_id,
+        agent_id,
+        run_id: Some(run_id.clone()),
+        expected_placement_target: Some(
+            work_order_config
+                .expected_placement_target
+                .clone()
+                .unwrap_or_else(|| "local_resident".to_string()),
+        ),
+        now,
+    };
+
+    match validate_work_order(&work_order_config.envelope, &context, &keyring) {
+        Ok(validated) => Ok(Some(validated.into_work_order())),
+        Err(error) => {
+            record_work_order_rejection(trace_store, run_id, order, &error)?;
+            Err(format!("Work order rejected: {}", error.reason_code()))
+        }
+    }
+}
+
+fn record_missing_work_order_rejection(
+    config: &RunConfig,
+    trace_store: &dyn TraceStore,
+) -> Result<(), String> {
+    if config.agents.len() != 1 {
+        return Ok(());
+    }
+    let agent = &config.agents[0];
+    let Some(run_id_value) = agent.run_id.as_deref().or(config.run_id.as_deref()) else {
+        return Ok(());
+    };
+    let Ok(run_id) = parse_run_id(run_id_value) else {
+        return Ok(());
+    };
+    let tenant_id = parse_tenant_id(&agent.tenant_id).ok();
+    let agent_id = agent
+        .id
+        .as_deref()
+        .and_then(|value| parse_agent_id(value).ok());
+    append_work_order_rejection(
+        trace_store,
+        run_id.clone(),
+        None,
+        tenant_id,
+        agent_id,
+        Some(run_id),
+        "unsigned_work_order".to_string(),
+    )
+}
+
+fn record_work_order_rejection(
+    trace_store: &dyn TraceStore,
+    run_id: RunId,
+    work_order: &WorkOrder,
+    error: &WorkOrderValidationError,
+) -> Result<(), String> {
+    append_work_order_rejection(
+        trace_store,
+        run_id,
+        Some(work_order.work_order_id.clone()),
+        Some(work_order.tenant_id.clone()),
+        Some(work_order.agent_id.clone()),
+        work_order.run_id.clone(),
+        error.reason_code().to_string(),
+    )
+}
+
+fn append_work_order_rejection(
+    trace_store: &dyn TraceStore,
+    trace_run_id: RunId,
+    work_order_id: Option<WorkOrderId>,
+    tenant_id: Option<TenantId>,
+    agent_id: Option<AgentId>,
+    event_run_id: Option<RunId>,
+    reason: String,
+) -> Result<(), String> {
+    let sequence = match trace_store.read(&trace_run_id.to_string()) {
+        Ok(records) => records
+            .last()
+            .map(|record| record.sequence + 1)
+            .unwrap_or(0),
+        Err(TraceStoreError::RunNotFound) => 0,
+        Err(error) => return Err(format!("Failed to read work-order audit trace: {error}")),
+    };
+    let event = TraceEvent::new(
+        trace_run_id.clone(),
+        sequence,
+        OffsetDateTime::now_utc(),
+        TraceEventKind::WorkOrderRejected {
+            work_order_id,
+            tenant_id,
+            agent_id,
+            run_id: event_run_id,
+            reason,
+        },
+    );
+    trace_store
+        .append(
+            &trace_run_id.to_string(),
+            serde_json::to_value(event)
+                .map_err(|error| format!("Failed to encode work-order rejection trace: {error}"))?,
+        )
+        .map_err(|error| format!("Failed to record work-order rejection trace: {error}"))?;
+    Ok(())
+}
+
+fn resolve_agent_id(
+    agent_config: &AgentConfig,
+    work_order: Option<&WorkOrder>,
+) -> Result<AgentId, String> {
+    if let Some(value) = agent_config.id.as_deref() {
+        return parse_agent_id(value);
+    }
+    if let Some(work_order) = work_order {
+        return Ok(work_order.agent_id.clone());
+    }
+    Ok(AgentId::new())
+}
+
+fn resolve_run_id(
+    config: &RunConfig,
+    agent_config: &AgentConfig,
+    work_order: Option<&WorkOrder>,
+) -> Result<RunId, String> {
+    if let Some(value) = agent_config.run_id.as_deref().or(config.run_id.as_deref()) {
+        return parse_run_id(value);
+    }
+    if let Some(run_id) = work_order.and_then(|work_order| work_order.run_id.clone()) {
+        return Ok(run_id);
+    }
+    Ok(RunId::new())
+}
+
+fn build_registry_with_work_order(
+    config: &RunConfig,
+    work_order: Option<&WorkOrder>,
+) -> Result<TenantRegistry, String> {
     let registry = TenantRegistry::new();
     for tenant in &config.tenants {
         let tenant_id = parse_tenant_id(&tenant.id)?;
-        let policy = TenantPolicy {
+        let mut policy = TenantPolicy {
             allowed_actions: tenant.allowed_actions.clone(),
             allowed_adapters: tenant.allowed_adapters.clone(),
             allowed_permissions: tenant.allowed_permissions.clone().unwrap_or_default(),
         };
-        let quotas = if let Some(quotas) = &tenant.quotas {
+        let mut quotas = if let Some(quotas) = &tenant.quotas {
             let filesystem = AdapterQuota {
                 max_read_bytes: quotas.max_filesystem_read_bytes,
                 max_write_bytes: quotas.max_filesystem_write_bytes,
@@ -1082,6 +1276,10 @@ fn build_registry(config: &RunConfig) -> Result<TenantRegistry, String> {
         } else {
             QuotaPolicy::default()
         };
+        if let Some(work_order) = work_order.filter(|order| order.tenant_id == tenant_id) {
+            policy = policy.constrain_to_work_order(work_order);
+            quotas = quotas.constrain_to_work_order(work_order);
+        }
         registry.insert(TenantContext::new(tenant_id, policy, quotas));
     }
     Ok(registry)

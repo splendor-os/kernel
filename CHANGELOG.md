@@ -13,12 +13,20 @@
   invalid action, tenant, agent, or run identity before adapter execution.
 - Added state metadata/commit linkage for tenant, agent, run, and trace-event
   scope.
+- Added 0.03-S2 node and instance registry contracts with capabilities,
+  heartbeats, deterministic stale detection, and management audit events.
+- Added 0.03-S3 signed work-order schemas, detached reference signature
+  verification, local `splendorctl` ingestion, scoped runtime policy/quota
+  narrowing, and accepted/rejected work-order trace events.
+- `splendorctl run` now rejects missing work-order authority by default;
+  legacy local quickstarts must opt into `allow_unsigned_local_run: true` and are
+  visibly warned.
 
 ### Explicitly not included
 
-- No node/instance registry, remote messaging, placement engine, distributed
-  consensus, central manager, governance workflow, or physical/edge adapter
-  behavior.
+- No fleet dispatch, placement engine, full PKI/OAuth product, governance
+  approval workflow, remote transport, distributed consensus, central manager, or
+  physical/edge orchestration.
 
 ## 0.02-dev — Local multi-agent runtime + daemon control
 

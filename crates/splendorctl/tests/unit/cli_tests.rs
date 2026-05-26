@@ -40,6 +40,65 @@ fn valid_trace_records_for(run_id: &RunId) -> Vec<splendor_store::TraceRecord> {
     TraceStore::read(&store, &run_id.to_string()).expect("records")
 }
 
+fn signed_work_order_block(
+    tenant_id: TenantId,
+    agent_id: AgentId,
+    run_id: RunId,
+    actions: Vec<String>,
+) -> String {
+    let now = OffsetDateTime::now_utc();
+    let order = WorkOrder {
+        schema_version: splendor_types::WORK_ORDER_SCHEMA_VERSION.to_string(),
+        work_order_id: splendor_types::WorkOrderId::try_new("wo_cli").expect("work order id"),
+        tenant_id,
+        agent_id,
+        run_id: Some(run_id),
+        objective: "exercise signed work order ingestion".to_string(),
+        allowed_actions: actions,
+        allowed_adapters: vec!["filesystem".to_string()],
+        allowed_permissions: vec!["fs.write".to_string()],
+        data_refs: vec!["dataset:cli".to_string()],
+        quotas: splendor_types::WorkOrderQuotaPolicy {
+            max_actions_per_tick: Some(1),
+            max_filesystem_write_bytes: Some(64),
+            ..splendor_types::WorkOrderQuotaPolicy::default()
+        },
+        placement: splendor_types::WorkOrderPlacement {
+            target: "local_resident".to_string(),
+            data_locality: Some("local".to_string()),
+            requires_gpu: Some(false),
+            dedicated_instance: Some(false),
+            required_capabilities: vec!["filesystem".to_string()],
+            max_runtime_ms: Some(30_000),
+        },
+        issued_at: now - time::Duration::minutes(1),
+        expires_at: now + time::Duration::hours(1),
+        revocation: splendor_types::RevocationStatus::Active,
+    };
+    let envelope = WorkOrderEnvelope::signed_with_shared_secret(
+        order,
+        "local-test",
+        b"local-work-order-secret",
+    )
+    .expect("signed work order");
+    let mut block = String::from("work_order:\n");
+    for line in serde_yaml::to_string(&envelope)
+        .expect("work order yaml")
+        .lines()
+    {
+        block.push_str("  ");
+        block.push_str(line);
+        block.push('\n');
+    }
+    block.push_str("  verification_secret: local-work-order-secret\n");
+    block.push_str("  expected_placement_target: local_resident\n");
+    block
+}
+
+fn corrupt_work_order_signature(block: String) -> String {
+    block.replace("signature: ", "signature: bad-")
+}
+
 #[test]
 fn parse_args_accepts_trace_export() {
     let command = parse_args(vec![
@@ -560,7 +619,7 @@ fn run_from_config_executes_cycle() {
     let run_id = Uuid::new_v4();
 
     let config = format!(
-        "trace_db: {}\nstate_db: {}\nrun_id: {}\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\"]\n    allowed_adapters: [\"filesystem\"]\nagents:\n  - id: {}\n    tenant_id: {}\n    run_id: {}\n    snapshot_interval: 1\n    initial_state: \"seed\"\n    policy:\n      type: static\n      actions:\n        - name: write_file\n          adapter: filesystem\n          side_effect_class: filesystem\n          params:\n            path: \"hello.txt\"\n            contents: \"hi\"\nadapters:\n  filesystem:\n    base_dir: {}\n",
+        "trace_db: {}\nstate_db: {}\nrun_id: {}\nallow_unsigned_local_run: true\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\"]\n    allowed_adapters: [\"filesystem\"]\nagents:\n  - id: {}\n    tenant_id: {}\n    run_id: {}\n    snapshot_interval: 1\n    initial_state: \"seed\"\n    policy:\n      type: static\n      actions:\n        - name: write_file\n          adapter: filesystem\n          side_effect_class: filesystem\n          params:\n            path: \"hello.txt\"\n            contents: \"hi\"\nadapters:\n  filesystem:\n    base_dir: {}\n",
         trace_temp.path().display(),
         state_temp.path().display(),
         run_id,
@@ -580,6 +639,222 @@ fn run_from_config_executes_cycle() {
 }
 
 #[test]
+fn run_from_config_rejects_missing_work_order_by_default() {
+    let dir = tempfile::TempDir::new().expect("dir");
+    let trace_path = dir.path().join("trace.db");
+    let state_path = dir.path().join("state.db");
+    let config_path = dir.path().join("config.yaml");
+    let fs_base = dir.path().join("fs");
+    let tenant_uuid = Uuid::new_v4();
+    let agent_uuid = Uuid::new_v4();
+    let run_uuid = Uuid::new_v4();
+    let run_id: RunId = run_uuid.into();
+    let config = format!(
+        "trace_db: {}\nstate_db: {}\nrun_id: {}\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\"]\n    allowed_adapters: [\"filesystem\"]\nagents:\n  - id: {}\n    tenant_id: {}\n    run_id: {}\n    policy:\n      type: static\n      actions:\n        - name: write_file\n          adapter: filesystem\n          side_effect_class: filesystem\n          params:\n            path: \"hello.txt\"\n            contents: \"hi\"\nadapters:\n  filesystem:\n    base_dir: {}\n",
+        trace_path.display(),
+        state_path.display(),
+        run_uuid,
+        tenant_uuid,
+        agent_uuid,
+        tenant_uuid,
+        run_uuid,
+        fs_base.display(),
+    );
+    std::fs::write(&config_path, config).expect("write config");
+
+    let error = run_from_config(&config_path, Some(1), false).expect_err("missing work order");
+    assert!(error.contains("unsigned_work_order"));
+    assert!(!fs_base
+        .join(tenant_uuid.to_string())
+        .join("hello.txt")
+        .exists());
+    assert!(!state_path.exists());
+
+    let store = SqliteTraceStore::open(&trace_path).expect("trace store");
+    let records = TraceStore::read(&store, &run_id.to_string()).expect("audit records");
+    assert_eq!(records.len(), 1);
+    let event: TraceEvent = serde_json::from_value(records[0].payload.clone()).expect("event");
+    match event.kind {
+        TraceEventKind::WorkOrderRejected {
+            work_order_id,
+            reason,
+            ..
+        } => {
+            assert!(work_order_id.is_none());
+            assert_eq!(reason, "unsigned_work_order");
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn run_from_config_validates_signed_work_order_and_records_metadata() {
+    let dir = tempfile::TempDir::new().expect("dir");
+    let trace_path = dir.path().join("trace.db");
+    let state_path = dir.path().join("state.db");
+    let config_path = dir.path().join("config.yaml");
+    let fs_base = dir.path().join("fs");
+    let tenant_uuid = Uuid::new_v4();
+    let agent_uuid = Uuid::new_v4();
+    let run_uuid = Uuid::new_v4();
+    let tenant_id: TenantId = tenant_uuid.into();
+    let agent_id: AgentId = agent_uuid.into();
+    let run_id: RunId = run_uuid.into();
+    let work_order = signed_work_order_block(
+        tenant_id,
+        agent_id,
+        run_id.clone(),
+        vec!["write_file".to_string()],
+    );
+
+    let config = format!(
+        "trace_db: {}\nstate_db: {}\nrun_id: {}\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\", \"delete_file\"]\n    allowed_adapters: [\"filesystem\"]\n    allowed_permissions: [\"fs.write\"]\n    quotas:\n      max_actions_per_tick: 5\n      max_filesystem_write_bytes: 1024\nagents:\n  - id: {}\n    tenant_id: {}\n    run_id: {}\n    policy:\n      type: static\n      actions:\n        - name: write_file\n          adapter: filesystem\n          side_effect_class: filesystem\n          required_permissions: [\"fs.write\"]\n          params:\n            path: \"hello.txt\"\n            contents: \"hi\"\n          usage:\n            actions: 1\n            filesystem_write_bytes: 2\nadapters:\n  filesystem:\n    base_dir: {}\n{}",
+        trace_path.display(),
+        state_path.display(),
+        run_uuid,
+        tenant_uuid,
+        agent_uuid,
+        tenant_uuid,
+        run_uuid,
+        fs_base.display(),
+        work_order,
+    );
+    std::fs::write(&config_path, config).expect("write config");
+
+    run_from_config(&config_path, Some(1), false).expect("run config");
+
+    let tenant_root = fs_base.join(tenant_uuid.to_string());
+    assert_eq!(
+        std::fs::read_to_string(tenant_root.join("hello.txt")).expect("hello"),
+        "hi"
+    );
+    let store = SqliteTraceStore::open(&trace_path).expect("trace store");
+    let events = decode_and_validate_trace_records(
+        &TraceStore::read(&store, &run_id.to_string()).expect("records"),
+        &run_id.to_string(),
+    )
+    .expect("trace validation");
+    assert!(events.iter().any(|event| matches!(
+        &event.kind,
+        TraceEventKind::WorkOrderAccepted { work_order_id, .. }
+            if work_order_id.as_str() == "wo_cli"
+    )));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.kind, TraceEventKind::RunStarted)));
+}
+
+#[test]
+fn run_from_config_bad_work_order_signature_records_audit_without_starting_run() {
+    let dir = tempfile::TempDir::new().expect("dir");
+    let trace_path = dir.path().join("trace.db");
+    let state_path = dir.path().join("state.db");
+    let config_path = dir.path().join("config.yaml");
+    let fs_base = dir.path().join("fs");
+    let tenant_uuid = Uuid::new_v4();
+    let agent_uuid = Uuid::new_v4();
+    let run_uuid = Uuid::new_v4();
+    let tenant_id: TenantId = tenant_uuid.into();
+    let agent_id: AgentId = agent_uuid.into();
+    let run_id: RunId = run_uuid.into();
+    let work_order = corrupt_work_order_signature(signed_work_order_block(
+        tenant_id,
+        agent_id,
+        run_id.clone(),
+        vec!["write_file".to_string()],
+    ));
+    let config = format!(
+        "trace_db: {}\nstate_db: {}\nrun_id: {}\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\"]\n    allowed_adapters: [\"filesystem\"]\n    allowed_permissions: [\"fs.write\"]\nagents:\n  - id: {}\n    tenant_id: {}\n    run_id: {}\n    policy:\n      type: static\n      actions:\n        - name: write_file\n          adapter: filesystem\n          side_effect_class: filesystem\n          required_permissions: [\"fs.write\"]\n          params:\n            path: \"hello.txt\"\n            contents: \"hi\"\nadapters:\n  filesystem:\n    base_dir: {}\n{}",
+        trace_path.display(),
+        state_path.display(),
+        run_uuid,
+        tenant_uuid,
+        agent_uuid,
+        tenant_uuid,
+        run_uuid,
+        fs_base.display(),
+        work_order,
+    );
+    std::fs::write(&config_path, config).expect("write config");
+
+    let error = run_from_config(&config_path, Some(1), false).expect_err("bad signature");
+    assert!(error.contains("bad_signature"));
+    assert!(!fs_base
+        .join(tenant_uuid.to_string())
+        .join("hello.txt")
+        .exists());
+    assert!(!state_path.exists());
+
+    let store = SqliteTraceStore::open(&trace_path).expect("trace store");
+    let records = TraceStore::read(&store, &run_id.to_string()).expect("audit records");
+    assert_eq!(records.len(), 1);
+    let event: TraceEvent = serde_json::from_value(records[0].payload.clone()).expect("event");
+    match event.kind {
+        TraceEventKind::WorkOrderRejected { reason, .. } => assert_eq!(reason, "bad_signature"),
+        other => panic!("unexpected event: {other:?}"),
+    }
+    let encoded = serde_json::to_string(&records[0].payload).expect("encoded audit");
+    assert!(!encoded.contains("local-work-order-secret"));
+    assert!(!encoded.contains("bad-"));
+}
+
+#[test]
+fn work_order_scope_denies_actions_outside_delegated_allowlist() {
+    let dir = tempfile::TempDir::new().expect("dir");
+    let trace_path = dir.path().join("trace.db");
+    let state_path = dir.path().join("state.db");
+    let config_path = dir.path().join("config.yaml");
+    let fs_base = dir.path().join("fs");
+    let tenant_uuid = Uuid::new_v4();
+    let agent_uuid = Uuid::new_v4();
+    let run_uuid = Uuid::new_v4();
+    let tenant_id: TenantId = tenant_uuid.into();
+    let agent_id: AgentId = agent_uuid.into();
+    let run_id: RunId = run_uuid.into();
+    let work_order = signed_work_order_block(
+        tenant_id,
+        agent_id,
+        run_id.clone(),
+        vec!["write_file".to_string()],
+    );
+    let config = format!(
+        "trace_db: {}\nstate_db: {}\nrun_id: {}\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\", \"delete_file\"]\n    allowed_adapters: [\"filesystem\"]\n    allowed_permissions: [\"fs.write\"]\nagents:\n  - id: {}\n    tenant_id: {}\n    run_id: {}\n    policy:\n      type: static\n      actions:\n        - name: delete_file\n          adapter: filesystem\n          side_effect_class: filesystem\n          required_permissions: [\"fs.write\"]\n          params:\n            path: \"blocked.txt\"\nadapters:\n  filesystem:\n    base_dir: {}\n{}",
+        trace_path.display(),
+        state_path.display(),
+        run_uuid,
+        tenant_uuid,
+        agent_uuid,
+        tenant_uuid,
+        run_uuid,
+        fs_base.display(),
+        work_order,
+    );
+    std::fs::write(&config_path, config).expect("write config");
+
+    run_from_config(&config_path, Some(1), false).expect("run config");
+    let store = SqliteTraceStore::open(&trace_path).expect("trace store");
+    let events = decode_and_validate_trace_records(
+        &TraceStore::read(&store, &run_id.to_string()).expect("records"),
+        &run_id.to_string(),
+    )
+    .expect("trace validation");
+    let denied = events
+        .iter()
+        .find(|event| matches!(event.kind, TraceEventKind::ActionDenied { .. }))
+        .expect("action denied");
+    if let TraceEventKind::ActionDenied { result, .. } = &denied.kind {
+        assert!(result
+            .reasons
+            .iter()
+            .any(|reason| reason == "action_not_allowed"));
+    }
+    assert!(!fs_base
+        .join(tenant_uuid.to_string())
+        .join("blocked.txt")
+        .exists());
+}
+
+#[test]
 fn run_from_config_increment_policy_collects_percepts_and_resumes() {
     let dir = tempfile::TempDir::new().expect("dir");
     let trace_path = dir.path().join("trace.db");
@@ -592,7 +867,7 @@ fn run_from_config_increment_policy_collects_percepts_and_resumes() {
 
     let write_config = |resume: bool| {
         let config = format!(
-            "trace_db: {}\nstate_db: {}\nrun_id: {}\ncycles: 1\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\"]\n    allowed_adapters: [\"filesystem\"]\n    quotas:\n      max_actions_per_tick: 5\n      max_action_duration_ms: 1000\n      max_filesystem_read_bytes: 1024\n      max_filesystem_write_bytes: 1024\n      max_network_read_bytes: 2048\n      max_network_write_bytes: 2048\n      max_http_requests_per_minute: 10\nagents:\n  - id: {}\n    tenant_id: {}\n    run_id: {}\n    snapshot_interval: 1\n    initial_state: \"\"\n    resume: {}\n    percepts:\n      - schema: splendor.percept.unit\n        payload:\n          value: 1\n        source: unit-test\n        detail: increment-resume\n    policy:\n      type: increment\n      action:\n        name: write_file\n        adapter: filesystem\n        side_effect_class: filesystem\n        params:\n          path: \"tick_{{counter}}.txt\"\n          contents: \"counter-{{counter}}\"\n        usage:\n          actions: 1\n          filesystem_write_bytes: 16\nadapters:\n  filesystem:\n    base_dir: {}\n",
+            "trace_db: {}\nstate_db: {}\nrun_id: {}\ncycles: 1\nallow_unsigned_local_run: true\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\"]\n    allowed_adapters: [\"filesystem\"]\n    quotas:\n      max_actions_per_tick: 5\n      max_action_duration_ms: 1000\n      max_filesystem_read_bytes: 1024\n      max_filesystem_write_bytes: 1024\n      max_network_read_bytes: 2048\n      max_network_write_bytes: 2048\n      max_http_requests_per_minute: 10\nagents:\n  - id: {}\n    tenant_id: {}\n    run_id: {}\n    snapshot_interval: 1\n    initial_state: \"\"\n    resume: {}\n    percepts:\n      - schema: splendor.percept.unit\n        payload:\n          value: 1\n        source: unit-test\n        detail: increment-resume\n    policy:\n      type: increment\n      action:\n        name: write_file\n        adapter: filesystem\n        side_effect_class: filesystem\n        params:\n          path: \"tick_{{counter}}.txt\"\n          contents: \"counter-{{counter}}\"\n        usage:\n          actions: 1\n          filesystem_write_bytes: 16\nadapters:\n  filesystem:\n    base_dir: {}\n",
             trace_path.display(),
             state_path.display(),
             run_id,
@@ -811,6 +1086,7 @@ fn build_gateway_rejects_missing_adapter() {
         tick_budget_ms: None,
         tick_interval_ms: None,
         cycles: None,
+        allow_unsigned_local_run: None,
         tenants: vec![TenantConfig {
             id: tenant_id.to_string(),
             allowed_actions: vec!["noop".to_string()],
@@ -842,8 +1118,9 @@ fn build_gateway_rejects_missing_adapter() {
             },
         }],
         adapters: None,
+        work_order: None,
     };
-    let registry = build_registry(&config).expect("registry");
+    let registry = build_registry_with_work_order(&config, None).expect("registry");
     let adapters = std::collections::HashMap::new();
     let error = match build_gateway(&adapters, &registry, &config) {
         Ok(_) => panic!("expected error"),
@@ -1298,7 +1575,7 @@ fn run_with_args_run_succeeds() {
     let tenant_id = Uuid::new_v4();
     let run_id = Uuid::new_v4();
     let config = format!(
-        "trace_db: {}\nstate_db: {}\nrun_id: {}\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\"]\n    allowed_adapters: [\"filesystem\"]\nagents:\n  - tenant_id: {}\n    run_id: {}\n    policy:\n      type: static\n      actions:\n        - name: write_file\n          adapter: filesystem\n          side_effect_class: filesystem\n          params:\n            path: \"hello.txt\"\n            contents: \"hi\"\nadapters:\n  filesystem:\n    base_dir: {}\n",
+        "trace_db: {}\nstate_db: {}\nrun_id: {}\nallow_unsigned_local_run: true\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\"]\n    allowed_adapters: [\"filesystem\"]\nagents:\n  - tenant_id: {}\n    run_id: {}\n    policy:\n      type: static\n      actions:\n        - name: write_file\n          adapter: filesystem\n          side_effect_class: filesystem\n          params:\n            path: \"hello.txt\"\n            contents: \"hi\"\nadapters:\n  filesystem:\n    base_dir: {}\n",
         trace_temp.path().display(),
         state_temp.path().display(),
         run_id,
@@ -1335,7 +1612,7 @@ fn run_from_config_creates_parent_directories() {
     let config_path = dir.path().join("config.yaml");
     let tenant_id = Uuid::new_v4();
     let config = format!(
-        "trace_db: {}\nstate_db: {}\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\"]\n    allowed_adapters: [\"filesystem\"]\nagents:\n  - tenant_id: {}\n    policy:\n      type: static\n      actions:\n        - name: write_file\n          adapter: filesystem\n          side_effect_class: filesystem\n          params:\n            path: \"hello.txt\"\n            contents: \"hi\"\nadapters:\n  filesystem:\n    base_dir: {}\n",
+        "trace_db: {}\nstate_db: {}\nallow_unsigned_local_run: true\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\"]\n    allowed_adapters: [\"filesystem\"]\nagents:\n  - tenant_id: {}\n    policy:\n      type: static\n      actions:\n        - name: write_file\n          adapter: filesystem\n          side_effect_class: filesystem\n          params:\n            path: \"hello.txt\"\n            contents: \"hi\"\nadapters:\n  filesystem:\n    base_dir: {}\n",
         trace_path.display(),
         state_path.display(),
         tenant_id,
@@ -1383,6 +1660,7 @@ fn build_gateway_success() {
         tick_budget_ms: None,
         tick_interval_ms: None,
         cycles: None,
+        allow_unsigned_local_run: None,
         tenants: vec![TenantConfig {
             id: tenant_id.to_string(),
             allowed_actions: vec!["write_file".to_string()],
@@ -1422,8 +1700,9 @@ fn build_gateway_success() {
             }),
             http: None,
         }),
+        work_order: None,
     };
-    let registry = build_registry(&config).expect("registry");
+    let registry = build_registry_with_work_order(&config, None).expect("registry");
     let adapters = build_adapters(config.adapters.as_ref()).expect("adapters");
     let gateway = build_gateway(&adapters, &registry, &config).expect("gateway");
     let mut request = splendor_gateway::ActionRequest {

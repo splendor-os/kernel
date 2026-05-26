@@ -21,7 +21,8 @@
 
 use crate::{
     Action, Constraint, ContentHash, Feedback, IdentityValidationError, MessageTraceContext,
-    Reward, RunId, SnapshotId, TickId, TraceEventId, TraceIdentityContext, VerificationResult,
+    Reward, RunId, SnapshotId, TenantId, TickId, TraceEventId, TraceIdentityContext,
+    VerificationResult, WorkOrderId,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -114,6 +115,30 @@ fn apply_kind_identity(
 pub enum TraceEventKind {
     /// Marks the start of a run trace stream.
     RunStarted,
+    /// Records accepted work-order authority for a run without exposing secrets.
+    WorkOrderAccepted {
+        /// Work-order identity that authorized the run boundary.
+        work_order_id: WorkOrderId,
+        /// Tenant authorized by the work order.
+        tenant_id: TenantId,
+        /// Agent authorized by the work order.
+        agent_id: crate::AgentId,
+        /// Run bound by the work order when present.
+        run_id: Option<RunId>,
+    },
+    /// Records fail-closed work-order ingestion rejection for management audit.
+    WorkOrderRejected {
+        /// Work-order identity when parseable; never contains signature material.
+        work_order_id: Option<WorkOrderId>,
+        /// Tenant identity when parseable.
+        tenant_id: Option<TenantId>,
+        /// Agent identity when parseable.
+        agent_id: Option<crate::AgentId>,
+        /// Run binding when known.
+        run_id: Option<RunId>,
+        /// Sanitized rejection reason code.
+        reason: String,
+    },
     /// Marks the start of a loop tick.
     LoopTickStarted {
         /// Tick counter within the run.

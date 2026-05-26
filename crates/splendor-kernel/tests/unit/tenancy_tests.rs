@@ -1,11 +1,39 @@
 use super::*;
 use crate::{SnapshotPolicy, StateGraph};
 use splendor_store::{InMemoryStateStore, StateData, StateMetadata};
-use splendor_types::SideEffectClass;
+use splendor_types::{
+    RevocationStatus, RunId, SideEffectClass, WorkOrder, WorkOrderId, WorkOrderPlacement,
+    WorkOrderQuotaPolicy, WORK_ORDER_SCHEMA_VERSION,
+};
 use std::sync::Arc;
 
 fn basic_tenant(quotas: QuotaPolicy) -> TenantContext {
     TenantContext::new(TenantId::new(), TenantPolicy::default(), quotas)
+}
+
+fn work_order_scope(tenant_id: TenantId, agent_id: AgentId) -> WorkOrder {
+    let now = OffsetDateTime::now_utc();
+    WorkOrder {
+        schema_version: WORK_ORDER_SCHEMA_VERSION.to_string(),
+        work_order_id: WorkOrderId::try_new("wo_tenancy").expect("work order id"),
+        tenant_id,
+        agent_id,
+        run_id: Some(RunId::new()),
+        objective: "narrow runtime scope".to_string(),
+        allowed_actions: vec!["write".to_string()],
+        allowed_adapters: vec!["filesystem".to_string()],
+        allowed_permissions: vec!["fs:write".to_string()],
+        data_refs: Vec::new(),
+        quotas: WorkOrderQuotaPolicy {
+            max_actions_per_tick: Some(1),
+            max_filesystem_write_bytes: Some(10),
+            ..WorkOrderQuotaPolicy::default()
+        },
+        placement: WorkOrderPlacement::default(),
+        issued_at: now - Duration::minutes(1),
+        expires_at: now + Duration::hours(1),
+        revocation: RevocationStatus::Active,
+    }
 }
 
 #[test]
@@ -50,6 +78,40 @@ fn tenant_policy_verifies_action_permissions_and_adapters() {
     assert!(denied_permissions
         .reasons
         .contains(&"permission_denied".to_string()));
+}
+
+#[test]
+fn work_order_scope_only_narrows_policy_and_quota() {
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let work_order = work_order_scope(tenant_id, agent_id);
+    let policy = TenantPolicy {
+        allowed_actions: vec!["write".to_string(), "delete".to_string()],
+        allowed_adapters: vec!["filesystem".to_string(), "http".to_string()],
+        allowed_permissions: vec!["fs:write".to_string(), "admin".to_string()],
+    };
+
+    let scoped = policy.constrain_to_work_order(&work_order);
+    assert_eq!(scoped.allowed_actions, vec!["write".to_string()]);
+    assert_eq!(scoped.allowed_adapters, vec!["filesystem".to_string()]);
+    assert_eq!(scoped.allowed_permissions, vec!["fs:write".to_string()]);
+
+    let quotas = QuotaPolicy {
+        max_actions_per_tick: Some(5),
+        filesystem: AdapterQuota {
+            max_write_bytes: Some(100),
+            ..AdapterQuota::default()
+        },
+        network: AdapterQuota {
+            max_write_bytes: Some(200),
+            ..AdapterQuota::default()
+        },
+        ..QuotaPolicy::default()
+    };
+    let scoped_quotas = quotas.constrain_to_work_order(&work_order);
+    assert_eq!(scoped_quotas.max_actions_per_tick, Some(1));
+    assert_eq!(scoped_quotas.filesystem.max_write_bytes, Some(10));
+    assert_eq!(scoped_quotas.network.max_write_bytes, Some(200));
 }
 
 #[test]

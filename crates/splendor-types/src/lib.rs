@@ -38,6 +38,7 @@ mod message;
 mod node_registry;
 mod primitives;
 mod trace;
+mod work_order;
 
 pub use capabilities::{
     is_valid_capability_name, CapabilityDocument, CapabilityValidationError,
@@ -55,7 +56,7 @@ pub use hash::{ContentHash, HashAlgorithm};
 pub use ids::{
     ActionId, AgentId, FleetId, IdentityValidationError, InstanceId, MessageId, NodeId, RunId,
     RuntimeIdentityContext, SnapshotId, StateNodeId, TenantId, TickId, TraceEventId, TraceId,
-    TraceIdentityContext,
+    TraceIdentityContext, WorkOrderId, WorkOrderIdError,
 };
 pub use message::{
     Message, MessageDeliveryStatus, MessageEnvelope, MessageSchemaVersion, MessageTraceContext,
@@ -71,6 +72,11 @@ pub use primitives::{
     PerceptProvenance, QuotaUsage, Reward, SideEffectClass, VerificationResult,
 };
 pub use trace::{TraceEvent, TraceEventKind, TraceIntegrity};
+pub use work_order::{
+    validate_work_order, ValidatedWorkOrder, WorkOrder, WorkOrderEnvelope, WorkOrderKeyring,
+    WorkOrderPlacement, WorkOrderQuotaPolicy, WorkOrderValidationContext, WorkOrderValidationError,
+    WORK_ORDER_SCHEMA_VERSION, WORK_ORDER_SIGNATURE_ALGORITHM,
+};
 
 #[cfg(test)]
 #[path = "../tests/unit/lib_tests.rs"]

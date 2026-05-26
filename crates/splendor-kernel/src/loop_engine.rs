@@ -14,6 +14,7 @@ use splendor_store::{StateData, StateMetadata, TraceStore, TraceStoreError};
 use splendor_types::{
     Action, Constraint, ContentHash, Feedback, Percept, QuotaUsage, Reward, RunId, SnapshotId,
     TickId, TraceEvent, TraceEventId, TraceEventKind, TraceIdentityContext, VerificationResult,
+    WorkOrder,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -167,6 +168,32 @@ pub struct ResumeInfo {
     pub tick_id: u64,
 }
 
+/// Optional trace/run metadata supplied when constructing a persisted loop
+/// engine.
+#[derive(Clone, Debug, Default)]
+pub struct RunTraceContext {
+    /// Run identifier to bind or resume.
+    pub run_id: Option<RunId>,
+    /// Validated work order that authorized this run, if present.
+    pub work_order: Option<WorkOrder>,
+}
+
+impl RunTraceContext {
+    /// Builds trace metadata for an optional run id without work-order authority.
+    pub fn new(run_id: Option<RunId>) -> Self {
+        Self {
+            run_id,
+            work_order: None,
+        }
+    }
+
+    /// Attaches validated work-order metadata.
+    pub fn with_work_order(mut self, work_order: WorkOrder) -> Self {
+        self.work_order = Some(work_order);
+        self
+    }
+}
+
 impl PolicyDecision {
     /// Creates a decision with a label applied to the state metadata.
     pub fn new(
@@ -291,9 +318,43 @@ impl LoopEngine {
         trace_store: Arc<dyn TraceStore>,
         run_id: Option<RunId>,
     ) -> Result<Self, LoopError> {
-        let runtime = KernelRuntime::with_trace_store(trace_store, run_id)?;
+        Self::with_trace_store_and_work_order(
+            agent,
+            state_graph,
+            state,
+            policy,
+            gateway,
+            trace_store,
+            RunTraceContext::new(run_id),
+        )
+    }
+
+    /// Builds a loop engine that records traces in a trace store and attaches
+    /// validated work-order metadata to the run trace stream.
+    pub fn with_trace_store_and_work_order(
+        mut agent: AgentContext,
+        state_graph: StateGraph,
+        state: StateData,
+        policy: Box<dyn Policy>,
+        gateway: Arc<dyn ActionGateway>,
+        trace_store: Arc<dyn TraceStore>,
+        context: RunTraceContext,
+    ) -> Result<Self, LoopError> {
+        let runtime = KernelRuntime::with_trace_store(trace_store, context.run_id)?;
         if runtime.next_sequence() == 0 {
             runtime.record_event(TraceEventKind::RunStarted)?;
+        }
+        if let Some(work_order) = context.work_order.as_ref() {
+            agent.config.metadata.insert(
+                "work_order_id".to_string(),
+                work_order.work_order_id.to_string(),
+            );
+            runtime.record_event(TraceEventKind::WorkOrderAccepted {
+                work_order_id: work_order.work_order_id.clone(),
+                tenant_id: work_order.tenant_id.clone(),
+                agent_id: work_order.agent_id.clone(),
+                run_id: work_order.run_id.clone(),
+            })?;
         }
         Ok(Self::with_runtime(
             agent,
@@ -314,8 +375,35 @@ impl LoopEngine {
         trace_store: Arc<dyn TraceStore>,
         run_id: RunId,
     ) -> Result<Self, LoopError> {
+        Self::resume_from_trace_store_with_work_order(
+            agent,
+            state_graph,
+            policy,
+            gateway,
+            trace_store,
+            run_id,
+            None,
+        )
+    }
+
+    /// Resumes from a trace store after validating a work order at the caller
+    /// boundary. The work-order event is appended to the existing trace stream.
+    pub fn resume_from_trace_store_with_work_order(
+        agent: AgentContext,
+        state_graph: StateGraph,
+        policy: Box<dyn Policy>,
+        gateway: Arc<dyn ActionGateway>,
+        trace_store: Arc<dyn TraceStore>,
+        run_id: RunId,
+        work_order: Option<&WorkOrder>,
+    ) -> Result<Self, LoopError> {
+        let context = RunTraceContext::new(Some(run_id.clone()));
+        let context = match work_order {
+            Some(work_order) => context.with_work_order(work_order.clone()),
+            None => context,
+        };
         let resume = Self::resume_info(trace_store.as_ref(), &run_id)?;
-        let mut engine = Self::with_trace_store(
+        let mut engine = Self::with_trace_store_and_work_order(
             agent,
             state_graph,
             StateData {
@@ -325,7 +413,7 @@ impl LoopEngine {
             policy,
             gateway,
             trace_store,
-            Some(run_id),
+            context,
         )?;
         engine.restore_snapshot(&resume.snapshot_id)?;
         engine.state_graph.set_tick(resume.tick_id);

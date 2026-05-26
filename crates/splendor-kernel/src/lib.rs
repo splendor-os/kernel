@@ -36,7 +36,7 @@ mod trace;
 pub use loop_engine::{
     ActionCandidate, AllowAllConstraintEngine, ConstraintEngine, ConstraintEvaluation, LoopEngine,
     LoopError, NoopOutcomeEvaluator, OutcomeEvaluator, OutcomeSignal, Perceptor, Policy,
-    PolicyDecision, ResumeInfo, TickOutcome,
+    PolicyDecision, ResumeInfo, RunTraceContext, TickOutcome,
 };
 pub use message_router::{
     AgentMailboxSnapshot, LocalMessageRouter, MessageRouter, MessageRouterConfig,
