@@ -230,6 +230,49 @@ fn receiver_rejects_wrong_instance_and_does_not_deliver() {
 }
 
 #[test]
+fn source_rejects_invalid_remote_envelope_before_receiver_delivery() {
+    let run_id = RunId::new();
+    let tenant_id = TenantId::new();
+    let source_agent = AgentId::new();
+    let target_agent = AgentId::new();
+    let now = OffsetDateTime::UNIX_EPOCH + Duration::seconds(10);
+    let (source_runtime, source_events) = runtime_for(run_id.clone());
+    let (target_runtime, _target_events) = runtime_for(run_id.clone());
+    let target_router = LocalMessageRouter::new();
+    target_router
+        .register_agent(target_agent.clone())
+        .expect("target registered");
+    let receiver = RemoteMessageReceiver::new("instance_target", &target_router);
+    let transport = InMemoryRemoteMessageTransport::new(&receiver, &target_runtime);
+    let mut remote = remote_envelope(
+        source_agent,
+        target_agent.clone(),
+        run_id.clone(),
+        tenant_id,
+        now,
+        RemoteMessageRetryPolicy::Never,
+    );
+    remote.work_order.signature = None;
+
+    let error = send_remote_message(&transport, &source_runtime, remote, now)
+        .expect_err("invalid envelope rejected at source");
+    assert!(matches!(
+        error,
+        RemoteMessageTransportError::InvalidEnvelope(_)
+    ));
+    assert!(target_router
+        .inbox(&target_agent, &run_id)
+        .expect("inbox")
+        .is_empty());
+    let recorded = source_events.lock().expect("events");
+    assert_eq!(recorded.len(), 1);
+    assert!(matches!(
+        recorded[0].kind,
+        TraceEventKind::RemoteMessageRejected { .. }
+    ));
+}
+
+#[test]
 fn duplicate_remote_message_records_duplicate_and_delivers_once() {
     let run_id = RunId::new();
     let tenant_id = TenantId::new();

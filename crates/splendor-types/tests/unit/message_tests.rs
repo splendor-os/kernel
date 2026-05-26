@@ -314,3 +314,62 @@ fn remote_retry_requires_explicit_idempotency_marker() {
     remote.attempt = 2;
     assert!(!remote.can_retry_after_current_attempt());
 }
+
+#[test]
+fn remote_message_validation_rejects_identity_expiry_and_revocation_failures() {
+    let now = OffsetDateTime::now_utc();
+    let remote = valid_remote_envelope(now);
+
+    let mut missing_tenant = remote.clone();
+    missing_tenant.tenant_id = TenantId::from(Uuid::nil());
+    assert_eq!(
+        missing_tenant.validate_at(now),
+        Err(RemoteMessageValidationError::MissingTenantId)
+    );
+
+    let mut missing_source_instance = remote.clone();
+    missing_source_instance.source_instance_id = " ".to_string();
+    assert_eq!(
+        missing_source_instance.validate_at(now),
+        Err(RemoteMessageValidationError::MissingSourceInstanceId)
+    );
+
+    let mut missing_target_instance = remote.clone();
+    missing_target_instance.target_instance_id = "".to_string();
+    assert_eq!(
+        missing_target_instance.validate_at(now),
+        Err(RemoteMessageValidationError::MissingTargetInstanceId)
+    );
+
+    let mut same_instance = remote.clone();
+    same_instance.target_instance_id = same_instance.source_instance_id.clone();
+    assert_eq!(
+        same_instance.validate_at(now),
+        Err(RemoteMessageValidationError::SameSourceAndTargetInstance)
+    );
+
+    let mut invalid_attempt = remote.clone();
+    invalid_attempt.attempt = 0;
+    assert_eq!(
+        invalid_attempt.validate_at(now),
+        Err(RemoteMessageValidationError::InvalidAttempt)
+    );
+
+    let mut expired_envelope = remote.clone();
+    expired_envelope.expires_at = Some(now);
+    assert_eq!(
+        expired_envelope.validate_at(now),
+        Err(RemoteMessageValidationError::ExpiredEnvelope)
+    );
+
+    let mut revoked = remote;
+    revoked.work_order.revocation = RevocationStatus::Revoked {
+        reason: "operator".to_string(),
+    };
+    assert_eq!(
+        revoked.validate_at(now),
+        Err(RemoteMessageValidationError::RevokedWorkOrder {
+            reason: "operator".to_string()
+        })
+    );
+}
