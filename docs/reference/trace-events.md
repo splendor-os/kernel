@@ -74,11 +74,25 @@ aggregation without inventing fake run IDs.
 State handoff events are trace events too. They identify source and receiver
 handoff boundaries and preserve the previous receiver state head for replay.
 
+Local delegation events are emitted outside the tick ordering when a parent run
+creates, completes, fails, cancels, or rejects local child work. They are ordered
+by each affected run's sequence counter and carry explicit parent/child IDs.
+
+0.02-S5 daemon lifecycle events are emitted outside the tick body but through the
+same run trace runtime, preserving monotonic sequence order before the next tick
+or replay inspection. Mutating daemon calls also emit `DaemonAudit` before the
+mutation so caller attribution is persisted in the run trace.
+
 ## TraceEventKind Payloads
 
 - `RunStarted`
 - `WorkOrderAccepted { work_order_id, tenant_id, agent_id, run_id }`
 - `WorkOrderRejected { work_order_id: Option<WorkOrderId>, tenant_id: Option<TenantId>, agent_id: Option<AgentId>, run_id: Option<RunId>, reason: String }`
+- `RunPaused { reason: Option<String> }`
+- `RunResumed { reason: Option<String> }`
+- `RunStopped { reason: Option<String> }`
+- `PerceptsAppended { count: usize, schemas: Vec<String> }`
+- `DaemonAudit { endpoint: String, audit: AuditAttribution }`
 - `LoopTickStarted { tick_id }`
 - `PerceptsReceived { percepts: Vec<Percept> }`
 - `StateLoaded { state_hash: Option<ContentHash> }`
@@ -109,6 +123,13 @@ handoff boundaries and preserve the previous receiver state head for replay.
 - `RemoteMessageTimedOut { remote_message: RemoteMessageTraceContext, reason: String }`
 - `RemoteMessageDuplicate { remote_message: RemoteMessageTraceContext, reason: String }`
 - `RemoteMessageTransportFailed { remote_message: RemoteMessageTraceContext, reason: String }`
+- `DelegationRequested { delegation: LocalDelegationTraceContext }`
+- `DelegationRejected { delegation: LocalDelegationTraceContext, reason: String }`
+- `ParentRunCancelled { parent_run_id: RunId, agent_id: AgentId, reason: String }`
+- `ChildRunStarted { delegation: LocalDelegationTraceContext }`
+- `ChildRunCompleted { delegation: LocalDelegationTraceContext }`
+- `ChildRunFailed { delegation: LocalDelegationTraceContext, failure: TaskFailure }`
+- `ChildRunLinked { parent_run_id, child_run_id, parent_agent_id, child_agent_id, causal_parent, source_message_id }`
 - `LoopTickCompleted { tick_id, integrity: Option<TraceIntegrity> }`
 
 ## Message Events
@@ -136,9 +157,67 @@ All message events carry `MessageTraceContext`:
 
 0.02-S1 defines these event payloads and serialization behavior. 0.02-S2 local
 router behavior emits the lifecycle events for accepted, rejected, expired, and
-consumed local messages. Replayed trace records preserve `causal_parent`,
-allowing future multi-agent replay to rebuild message causality without executing
-message side effects or adapter actions.
+consumed local messages. 0.02-S7 replay preserves `causal_parent` and rebuilds
+message causality without re-delivering messages or executing adapter actions.
+
+## Parent/child run links
+
+`ChildRunLinked` is an explicit local replay/audit event for 0.02 parent/child
+run relationships. It does not start, resume, or execute a child run. It records
+only the relationship needed for inspect-only replay:
+
+| Field | Purpose |
+| --- | --- |
+| `parent_run_id` | Run that delegated local work. |
+| `child_run_id` | Child run receiving scoped local work. |
+| `parent_agent_id` | Agent that owns the parent side. |
+| `child_agent_id` | Agent that owns the child side. |
+| `causal_parent` | Optional trace event that caused the delegation link. |
+| `source_message_id` | Optional message carrying the local delegation request. |
+
+Replay reports these links with `side_effects_replayed: false`; child adapter
+actions are never executed by replay.
+
+## Local Delegation Events
+
+0.02-S4 adds local parent/child delegation events:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `DelegationRequested` | `delegation.requested` | Parent run requested scoped local child work. |
+| `DelegationRejected` | `delegation.rejected` | Delegation failed closed before child execution. |
+| `ParentRunCancelled` | `run.cancelled` | Parent run cancellation blocks future child delegation. |
+| `ChildRunStarted` | `run.child_started` | Child run started and references the parent causal trace. |
+| `ChildRunCompleted` | `run.child_completed` | Child run completed and parent references the response. |
+| `ChildRunFailed` | `run.child_failed` | Child run failure is structured as `TaskFailure`. |
+
+`LocalDelegationTraceContext` fields:
+
+| Field | Purpose |
+| --- | --- |
+| `parent_run_id` | Parent/orchestrator run. |
+| `child_run_id` | Child/specialist run. |
+| `parent_trace_id` | Parent trace event that caused or recorded delegation. |
+| `request_message_id` | Task request message, when routed. |
+| `response_message_id` | Task response message, when routed. |
+| `source_agent_id` | Parent/orchestrator agent. |
+| `target_agent_id` | Child/specialist agent. |
+| `objective` | Scoped child objective. |
+
+## Daemon audit events
+
+`DaemonAudit` records the caller attribution validated at the daemon boundary for
+mutating daemon operations. It is emitted before the accepted mutation is applied
+and carries:
+
+| Field | Purpose |
+| --- | --- |
+| `endpoint` | Canonical endpoint scope such as `splendor.runs.create` or `splendor.actions.submit`. |
+| `audit` | `AuditAttribution` with caller principal, optional credential ID, and request timestamp. |
+
+These events do not authorize side effects. They only make accepted mutating
+daemon calls trace/audit attributable; action execution still requires the
+gateway/verifier path.
 
 ## Work-order Events
 

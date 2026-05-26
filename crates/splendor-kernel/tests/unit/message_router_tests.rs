@@ -1,6 +1,10 @@
 use super::*;
+use crate::AGENT_ISOLATION_LEDGER_SOURCE;
 use crate::{KernelRuntimeConfig, TraceSink};
-use splendor_types::{Message, MessageSchemaVersion, MessageTraceLinks, TenantId, TraceEvent};
+use splendor_types::{
+    DelegatedAuthority, Message, MessageSchemaVersion, MessageTraceLinks, TaskRequest, TenantId,
+    TraceEvent, TASK_REQUEST_SCHEMA,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use time::{Duration, OffsetDateTime};
@@ -62,19 +66,79 @@ fn envelope(
     created_at: OffsetDateTime,
 ) -> MessageEnvelope {
     let causal_parent = TraceEventId::from_run_sequence(&run_id, sequence);
+    let task = TaskRequest::new(
+        run_id.clone(),
+        RunId::new(),
+        target_agent_id.clone(),
+        "forecast",
+        DelegatedAuthority::empty(),
+    )
+    .expect("valid task request");
+    let mut payload = serde_json::to_value(task).expect("task payload");
+    payload["sequence"] = serde_json::json!(sequence);
     let message = Message::new(
         MessageId::new(),
         source_agent_id,
         target_agent_id,
         run_id,
-        "splendor.message.task_request.v1",
-        serde_json::json!({"sequence": sequence, "task": "forecast"}),
+        TASK_REQUEST_SCHEMA,
+        payload,
         Some(causal_parent),
         true,
         created_at,
     )
     .expect("valid message");
     MessageEnvelope::new(message).expect("valid envelope")
+}
+
+fn envelope_with_schema(
+    source_agent_id: AgentId,
+    target_agent_id: AgentId,
+    run_id: RunId,
+    schema: &str,
+    created_at: OffsetDateTime,
+) -> MessageEnvelope {
+    let payload = if schema == TASK_REQUEST_SCHEMA {
+        serde_json::to_value(
+            TaskRequest::new(
+                run_id.clone(),
+                RunId::new(),
+                target_agent_id.clone(),
+                "forecast",
+                DelegatedAuthority::empty(),
+            )
+            .expect("valid task request"),
+        )
+        .expect("task request payload")
+    } else {
+        serde_json::json!({"task": "forecast"})
+    };
+    let message = Message::new(
+        MessageId::new(),
+        source_agent_id,
+        target_agent_id,
+        run_id,
+        schema,
+        payload,
+        None,
+        true,
+        created_at,
+    )
+    .expect("valid message");
+    MessageEnvelope::new(message).expect("valid envelope")
+}
+
+fn allow_messages(router: &LocalMessageRouter, source: &AgentId, recipients: &[AgentId]) {
+    router
+        .register_agent_with_policy(
+            source.clone(),
+            AgentIsolationPolicy {
+                allowed_message_schemas: vec![TASK_REQUEST_SCHEMA.to_string()],
+                allowed_message_recipients: recipients.to_vec(),
+                ..AgentIsolationPolicy::default()
+            },
+        )
+        .expect("source message policy");
 }
 
 fn invalid_schema_envelope(
@@ -111,7 +175,7 @@ fn routes_message_only_to_target_and_traces_delivery_and_consumption() {
     let now = OffsetDateTime::UNIX_EPOCH + Duration::seconds(10);
     let (runtime, events) = runtime_for(run_id.clone());
     let router = LocalMessageRouter::new();
-    router.register_agent(source.clone()).expect("source");
+    allow_messages(&router, &source, std::slice::from_ref(&target));
     router.register_agent(target.clone()).expect("target");
     router.register_agent(unrelated.clone()).expect("unrelated");
 
@@ -182,6 +246,190 @@ fn routes_message_only_to_target_and_traces_delivery_and_consumption() {
 }
 
 #[test]
+fn remote_inbound_delivers_without_local_source_outbox_and_keeps_hook_trace_linked() {
+    let remote_source = AgentId::new();
+    let target = AgentId::new();
+    let run_id = RunId::new();
+    let now = OffsetDateTime::UNIX_EPOCH + Duration::seconds(10);
+    let (runtime, events) = runtime_for(run_id.clone());
+    let router = LocalMessageRouter::new();
+    router.register_agent(target.clone()).expect("target");
+
+    let first = router
+        .deliver_remote_inbound_at(
+            &runtime,
+            envelope(
+                remote_source.clone(),
+                target.clone(),
+                run_id.clone(),
+                1,
+                now,
+            ),
+            now,
+        )
+        .expect("remote inbound delivery");
+    assert_eq!(first.delivery_status, MessageDeliveryStatus::Delivered);
+    assert!(first.trace_links.queued_trace_id.is_none());
+    assert!(first.trace_links.delivered_trace_id.is_some());
+
+    let hook_observation = Arc::new(Mutex::new(None));
+    let hook_observation_for_closure = Arc::clone(&hook_observation);
+    let second = router
+        .deliver_remote_inbound_with_before_enqueue_at(
+            &runtime,
+            envelope(
+                remote_source.clone(),
+                target.clone(),
+                run_id.clone(),
+                2,
+                now,
+            ),
+            now,
+            move |delivered| {
+                *hook_observation_for_closure
+                    .lock()
+                    .expect("hook observation lock") = Some((
+                    delivered.delivery_status,
+                    delivered.trace_links.delivered_trace_id.clone(),
+                    delivered.trace_links.queued_trace_id.clone(),
+                ));
+                Ok(())
+            },
+        )
+        .expect("remote inbound delivery with hook");
+    assert_eq!(second.delivery_status, MessageDeliveryStatus::Delivered);
+
+    let observed = hook_observation
+        .lock()
+        .expect("hook observation lock")
+        .clone()
+        .expect("hook ran");
+    assert_eq!(observed.0, MessageDeliveryStatus::Delivered);
+    assert!(observed.1.is_some());
+    assert!(observed.2.is_none());
+
+    let target_inbox = router.inbox(&target, &run_id).expect("target inbox");
+    assert_eq!(target_inbox.len(), 2);
+    assert_eq!(target_inbox[0].message.message_id, first.message.message_id);
+    assert_eq!(
+        target_inbox[1].message.message_id,
+        second.message.message_id
+    );
+
+    let outbox_error = router
+        .outbox(&remote_source, &run_id)
+        .expect_err("remote source is not a local outbox owner");
+    assert!(matches!(outbox_error, MessageRouterError::UnknownAgent(id) if id == remote_source));
+
+    let recorded = events.lock().expect("events lock");
+    assert_eq!(recorded.len(), 2);
+    assert!(recorded
+        .iter()
+        .all(|event| matches!(event.kind, TraceEventKind::MessageDelivered { .. })));
+    assert!(!recorded
+        .iter()
+        .any(|event| matches!(event.kind, TraceEventKind::MessageQueued { .. })));
+}
+
+#[test]
+fn remote_inbound_rejections_trace_without_enqueueing() {
+    let remote_source = AgentId::new();
+    let target = AgentId::new();
+    let run_id = RunId::new();
+    let now = OffsetDateTime::UNIX_EPOCH + Duration::seconds(10);
+    let (runtime, events) = runtime_for(run_id.clone());
+
+    let invalid_router = LocalMessageRouter::new();
+    invalid_router
+        .register_agent(target.clone())
+        .expect("target");
+    let invalid_error = invalid_router
+        .deliver_remote_inbound_at(
+            &runtime,
+            invalid_schema_envelope(remote_source.clone(), target.clone(), run_id.clone(), now),
+            now,
+        )
+        .expect_err("invalid remote message rejected");
+    assert!(matches!(
+        invalid_error,
+        MessageRouterError::InvalidMessage { .. }
+    ));
+    assert!(invalid_router
+        .inbox(&target, &run_id)
+        .expect("target inbox")
+        .is_empty());
+
+    let expired_router = LocalMessageRouter::with_config(MessageRouterConfig {
+        max_message_age: Some(Duration::seconds(1)),
+        ..MessageRouterConfig::default()
+    });
+    expired_router
+        .register_agent(target.clone())
+        .expect("target");
+    let expired_error = expired_router
+        .deliver_remote_inbound_at(
+            &runtime,
+            envelope(
+                remote_source.clone(),
+                target.clone(),
+                run_id.clone(),
+                1,
+                OffsetDateTime::UNIX_EPOCH,
+            ),
+            now,
+        )
+        .expect_err("expired remote message rejected");
+    assert!(matches!(expired_error, MessageRouterError::Expired { .. }));
+    assert!(expired_router
+        .inbox(&target, &run_id)
+        .expect("target inbox")
+        .is_empty());
+
+    let unknown_router = LocalMessageRouter::new();
+    let unknown_error = unknown_router
+        .deliver_remote_inbound_at(
+            &runtime,
+            envelope(
+                remote_source.clone(),
+                target.clone(),
+                run_id.clone(),
+                2,
+                now,
+            ),
+            now,
+        )
+        .expect_err("unknown remote target rejected");
+    assert!(matches!(unknown_error, MessageRouterError::UnknownTargetAgent(id) if id == target));
+
+    let full_router = LocalMessageRouter::with_config(MessageRouterConfig {
+        max_inbox_messages: 0,
+        ..MessageRouterConfig::default()
+    });
+    full_router.register_agent(target.clone()).expect("target");
+    let full_error = full_router
+        .deliver_remote_inbound_at(
+            &runtime,
+            envelope(remote_source, target.clone(), run_id.clone(), 3, now),
+            now,
+        )
+        .expect_err("full target inbox rejected");
+    assert!(
+        matches!(full_error, MessageRouterError::InboxFull { agent_id, limit: 0 } if agent_id == target)
+    );
+    assert!(full_router
+        .inbox(&target, &run_id)
+        .expect("target inbox")
+        .is_empty());
+
+    let recorded = events.lock().expect("events lock");
+    assert_eq!(recorded.len(), 4);
+    assert!(recorded.iter().all(|event| matches!(
+        event.kind,
+        TraceEventKind::MessageRejected { .. } | TraceEventKind::MessageExpired { .. }
+    )));
+}
+
+#[test]
 fn rejects_unknown_target_with_trace_and_no_delivery() {
     let source = AgentId::new();
     let target = AgentId::new();
@@ -248,6 +496,97 @@ fn rejects_invalid_schema_before_delivery() {
 }
 
 #[test]
+fn rejects_disallowed_message_schema_with_agent_ledger_trace() {
+    let source = AgentId::new();
+    let target = AgentId::new();
+    let run_id = RunId::new();
+    let now = OffsetDateTime::UNIX_EPOCH + Duration::seconds(10);
+    let (runtime, events) = runtime_for(run_id.clone());
+    let router = LocalMessageRouter::new();
+    router
+        .register_agent_with_policy(
+            source.clone(),
+            AgentIsolationPolicy {
+                allowed_message_schemas: vec!["splendor.message.approved.v1".to_string()],
+                allowed_message_recipients: vec![target.clone()],
+                ..AgentIsolationPolicy::default()
+            },
+        )
+        .expect("source policy");
+    router.register_agent(target.clone()).expect("target");
+
+    let submitted = envelope(source.clone(), target.clone(), run_id.clone(), 1, now);
+    let error = router
+        .send_at(&runtime, submitted, now)
+        .expect_err("schema rejected");
+    assert!(matches!(
+        error,
+        MessageRouterError::MessageDenied { agent_id, .. } if agent_id == source
+    ));
+    assert!(router
+        .inbox(&target, &run_id)
+        .expect("target inbox")
+        .is_empty());
+
+    let recorded = events.lock().expect("events lock");
+    assert_eq!(recorded.len(), 1);
+    match &recorded[0].kind {
+        TraceEventKind::MessageRejected { message, reason } => {
+            assert_eq!(message.source_agent_id, source);
+            assert_eq!(message.target_agent_id, target);
+            assert!(reason.contains(AGENT_ISOLATION_LEDGER_SOURCE));
+            assert!(reason.contains("message_schema_not_allowed"));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_disallowed_message_recipient_with_agent_ledger_trace() {
+    let source = AgentId::new();
+    let allowed = AgentId::new();
+    let target = AgentId::new();
+    let run_id = RunId::new();
+    let now = OffsetDateTime::UNIX_EPOCH + Duration::seconds(10);
+    let (runtime, events) = runtime_for(run_id.clone());
+    let router = LocalMessageRouter::new();
+    allow_messages(&router, &source, std::slice::from_ref(&allowed));
+    router.register_agent(allowed).expect("allowed target");
+    router.register_agent(target.clone()).expect("target");
+
+    let submitted = envelope_with_schema(
+        source.clone(),
+        target.clone(),
+        run_id.clone(),
+        TASK_REQUEST_SCHEMA,
+        now,
+    );
+    let error = router
+        .send_at(&runtime, submitted, now)
+        .expect_err("recipient rejected");
+    assert!(matches!(
+        error,
+        MessageRouterError::MessageDenied { agent_id, .. } if agent_id == source
+    ));
+    assert!(router
+        .inbox(&target, &run_id)
+        .expect("target inbox")
+        .is_empty());
+
+    let recorded = events.lock().expect("events lock");
+    assert_eq!(recorded.len(), 1);
+    match &recorded[0].kind {
+        TraceEventKind::MessageRejected { message, reason } => {
+            assert_eq!(message.source_agent_id, source);
+            assert_eq!(message.target_agent_id, target);
+            assert!(reason.contains(AGENT_ISOLATION_LEDGER_SOURCE));
+            assert!(reason.contains("message_recipient_not_allowed"));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
 fn rejects_when_target_inbox_quota_is_exceeded() {
     let source = AgentId::new();
     let target = AgentId::new();
@@ -258,7 +597,7 @@ fn rejects_when_target_inbox_quota_is_exceeded() {
         max_inbox_messages: 1,
         ..MessageRouterConfig::default()
     });
-    router.register_agent(source.clone()).expect("source");
+    allow_messages(&router, &source, std::slice::from_ref(&target));
     router.register_agent(target.clone()).expect("target");
 
     router
@@ -342,7 +681,7 @@ fn preserves_fifo_order_within_source_target_run_stream() {
     let now = OffsetDateTime::UNIX_EPOCH + Duration::seconds(10);
     let (runtime, _events) = runtime_for(run_id.clone());
     let router = LocalMessageRouter::new();
-    router.register_agent(source.clone()).expect("source");
+    allow_messages(&router, &source, std::slice::from_ref(&target));
     router.register_agent(target.clone()).expect("target");
 
     for sequence in 1..=3 {
@@ -382,7 +721,7 @@ fn inbox_reads_do_not_mutate_unrelated_agent_mailboxes() {
     let now = OffsetDateTime::UNIX_EPOCH + Duration::seconds(10);
     let (runtime, _events) = runtime_for(run_id.clone());
     let router = LocalMessageRouter::new();
-    router.register_agent(source.clone()).expect("source");
+    allow_messages(&router, &source, &[target.clone(), unrelated.clone()]);
     router.register_agent(target.clone()).expect("target");
     router.register_agent(unrelated.clone()).expect("unrelated");
 
@@ -454,7 +793,7 @@ fn trace_failure_fails_closed_without_enqueueing_message() {
         ..KernelRuntimeConfig::default()
     });
     let router = LocalMessageRouter::new();
-    router.register_agent(source.clone()).expect("source");
+    allow_messages(&router, &source, std::slice::from_ref(&target));
     router.register_agent(target.clone()).expect("target");
 
     let submitted = envelope(source, target.clone(), run_id.clone(), 1, now);
@@ -484,7 +823,7 @@ fn delivered_trace_failure_fails_closed_without_enqueueing_message() {
         ..KernelRuntimeConfig::default()
     });
     let router = LocalMessageRouter::new();
-    router.register_agent(source.clone()).expect("source");
+    allow_messages(&router, &source, std::slice::from_ref(&target));
     router.register_agent(target.clone()).expect("target");
 
     let submitted = envelope(source, target.clone(), run_id.clone(), 1, now);
@@ -508,7 +847,7 @@ fn consume_position_revalidates_expected_message_id() {
     let now = OffsetDateTime::UNIX_EPOCH + Duration::seconds(10);
     let (runtime, _events) = runtime_for(run_id.clone());
     let router = LocalMessageRouter::new();
-    router.register_agent(source.clone()).expect("source");
+    allow_messages(&router, &source, std::slice::from_ref(&target));
     router.register_agent(target.clone()).expect("target");
     router
         .send_at(
@@ -537,11 +876,12 @@ fn default_methods_and_agent_context_registration_work() {
     let now = OffsetDateTime::now_utc();
     let (runtime, _events) = runtime_for(run_id.clone());
     let router = LocalMessageRouter::default();
-    let source_context = AgentContext::new(
-        source.clone(),
-        TenantId::new(),
-        crate::AgentRuntimeConfig::default(),
-    );
+    let source_context = AgentContext::new(source.clone(), TenantId::new(), {
+        let mut config = crate::AgentRuntimeConfig::default();
+        config.isolation.allowed_message_schemas = vec![TASK_REQUEST_SCHEMA.to_string()];
+        config.isolation.allowed_message_recipients = vec![target.clone()];
+        config
+    });
     let target_context = AgentContext::new(
         target.clone(),
         TenantId::new(),
@@ -616,7 +956,11 @@ fn rejects_when_source_outbox_quota_is_exceeded() {
         max_outbox_messages: 1,
         ..MessageRouterConfig::default()
     });
-    router.register_agent(source.clone()).expect("source");
+    allow_messages(
+        &router,
+        &source,
+        &[first_target.clone(), second_target.clone()],
+    );
     router
         .register_agent(first_target.clone())
         .expect("first target");
@@ -658,7 +1002,7 @@ fn consume_next_returns_none_for_empty_run_and_consume_rejects_wrong_message() {
     let now = OffsetDateTime::UNIX_EPOCH + Duration::seconds(10);
     let (runtime, _events) = runtime_for(run_id.clone());
     let router = LocalMessageRouter::new();
-    router.register_agent(source.clone()).expect("source");
+    allow_messages(&router, &source, std::slice::from_ref(&target));
     router.register_agent(target.clone()).expect("target");
 
     assert!(router
@@ -694,7 +1038,7 @@ fn expires_delivered_message_before_consumption_and_updates_outbox() {
         max_message_age: Some(Duration::seconds(1)),
         ..MessageRouterConfig::default()
     });
-    router.register_agent(source.clone()).expect("source");
+    allow_messages(&router, &source, std::slice::from_ref(&target));
     router.register_agent(target.clone()).expect("target");
 
     let delivered = router
@@ -740,7 +1084,7 @@ fn fresh_message_with_ttl_does_not_expire() {
         max_message_age: Some(Duration::seconds(1)),
         ..MessageRouterConfig::default()
     });
-    router.register_agent(source.clone()).expect("source");
+    allow_messages(&router, &source, std::slice::from_ref(&target));
     router.register_agent(target.clone()).expect("target");
 
     let delivered = router

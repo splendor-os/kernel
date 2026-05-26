@@ -88,6 +88,32 @@ fn run_create_request(
 }
 
 #[test]
+fn endpoint_scope_labels_are_canonical() {
+    let cases = [
+        (EndpointScope::RunsCreate, "splendor.runs.create"),
+        (EndpointScope::RunsStart, "splendor.runs.start"),
+        (EndpointScope::RunsRead, "splendor.runs.read"),
+        (EndpointScope::RunsPause, "splendor.runs.pause"),
+        (EndpointScope::RunsResume, "splendor.runs.resume"),
+        (EndpointScope::RunsStop, "splendor.runs.stop"),
+        (EndpointScope::PerceptsAppend, "splendor.percepts.append"),
+        (EndpointScope::ActionsSubmit, "splendor.actions.submit"),
+        (EndpointScope::TracesRead, "splendor.traces.read"),
+        (EndpointScope::StateRead, "splendor.state.read"),
+        (EndpointScope::ReplayCreate, "splendor.replay.create"),
+        (EndpointScope::HealthRead, "splendor.health.read"),
+        (
+            EndpointScope::CapabilitiesRead,
+            "splendor.capabilities.read",
+        ),
+    ];
+
+    for (scope, label) in cases {
+        assert_eq!(scope.as_str(), label);
+    }
+}
+
+#[test]
 fn valid_run_create_request_is_authorized() {
     let now = time::OffsetDateTime::now_utc();
     let tenant_id = TenantId::new();

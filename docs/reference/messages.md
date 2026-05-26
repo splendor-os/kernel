@@ -30,6 +30,15 @@ or shared mutable state channel is part of the message object.
 work-order, retry, and idempotency metadata but does not change the canonical
 `Message` payload or local `MessageEnvelope` schema.
 
+0.02-S3 adds agent-isolation checks around local routing: a source agent must be
+explicitly allowed to send the message schema to the target recipient.
+
+0.02-S4 adds schema-specific validation for the local delegation schemas
+`splendor.message.task_request.v1` and `splendor.message.task_response.v1`.
+Those payloads are documented in
+[`local-delegation.md`](local-delegation.md); invalid task payloads fail closed
+before routing.
+
 ## Message
 
 | Field | Rust type | Required | Purpose |
@@ -54,14 +63,26 @@ Example:
   "run_id": "00000000-0000-0000-0000-000000000004",
   "schema": "splendor.message.task_request.v1",
   "payload": {
-    "task": "forecast revenue for Q3",
-    "input_ref": "dataset:finance.revenue_monthly_v4"
+    "parent_run_id": "00000000-0000-0000-0000-000000000004",
+    "child_run_id": "00000000-0000-0000-0000-000000000006",
+    "target_agent_id": "00000000-0000-0000-0000-000000000003",
+    "objective": "forecast revenue for Q3",
+    "delegated_authority": {
+      "allowed_actions": ["sql.query"],
+      "allowed_adapters": ["sql"],
+      "allowed_permissions": ["finance.read"]
+    }
   },
   "causal_parent": "00000000-0000-0000-0000-000000000005",
   "requires_response": true,
   "created_at": "2026-05-25T00:00:00Z"
 }
 ```
+
+For local delegation, `allowed_adapters` is an enforcement field, not a hint:
+child action proposals must explicitly name one of those adapters. Omitting the
+adapter fails closed before gateway submission so a gateway default cannot expand
+the child run's delegated authority.
 
 ## MessageEnvelope
 
@@ -99,18 +120,18 @@ before routing:
 - schema-specific payload validation failure;
 - envelope/message schema-version mismatch.
 
-The envelope validates payload presence only. Schema-specific payload validators
-remain flexible and belong to the schema owner. When a schema-specific payload
-validator rejects a message, routing code must record a `message.rejected` trace
-event with the message trace context and reason.
+The envelope validates payload presence for all schemas. For
+`task_request.v1` and `task_response.v1`, the message contract also validates
+the typed payload shape before routing. When a schema-specific payload validator
+rejects a message, routing code records a `message.rejected` trace event with
+the message trace context and reason.
 
 ## Trace and replay behavior
 
 Messages carry an optional `causal_parent: TraceEventId`. The value identifies the
 trace event that caused the message to be proposed or produced. Serialization
-round trips preserve this field, allowing replay and future multi-agent causal
-graph inspection to reconstruct message lineage without re-executing side
-effects.
+round trips preserve this field. Multi-agent replay uses it to reconstruct
+message lineage without re-executing side effects.
 
 Message lifecycle trace events are documented in
 [`trace-events.md#message-events`](trace-events.md#message-events).

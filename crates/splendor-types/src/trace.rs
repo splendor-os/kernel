@@ -20,9 +20,10 @@
 //! ```
 
 use crate::{
-    Action, Constraint, ContentHash, Feedback, IdentityValidationError, MessageTraceContext,
-    RemoteMessageTraceContext, Reward, RunId, SnapshotId, StateHandoffTraceContext, TenantId,
-    TickId, TraceEventId, TraceIdentityContext, VerificationResult, WorkOrderId,
+    Action, AgentId, AuditAttribution, Constraint, ContentHash, Feedback, IdentityValidationError,
+    MessageId, MessageTraceContext, RemoteMessageTraceContext, Reward, RunId, SnapshotId,
+    StateHandoffTraceContext, TaskFailure, TenantId, TickId, TraceEventId, TraceId,
+    TraceIdentityContext, VerificationResult, WorkOrderId,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -149,6 +150,35 @@ pub enum TraceEventKind {
         run_id: Option<RunId>,
         /// Sanitized rejection reason code.
         reason: String,
+    },
+    /// Records a local daemon run pause transition.
+    RunPaused {
+        /// Human-readable reason for the pause.
+        reason: Option<String>,
+    },
+    /// Records a local daemon run resume transition.
+    RunResumed {
+        /// Human-readable reason for the resume.
+        reason: Option<String>,
+    },
+    /// Records a local daemon run stop transition.
+    RunStopped {
+        /// Human-readable reason for the stop.
+        reason: Option<String>,
+    },
+    /// Records percepts accepted by the local daemon before a tick consumes them.
+    PerceptsAppended {
+        /// Number of percepts accepted.
+        count: usize,
+        /// Accepted percept schemas.
+        schemas: Vec<String>,
+    },
+    /// Records caller attribution for a mutating daemon operation.
+    DaemonAudit {
+        /// Endpoint or endpoint scope that accepted the mutating request.
+        endpoint: String,
+        /// Caller attribution validated at the daemon boundary.
+        audit: AuditAttribution,
     },
     /// Marks the start of a loop tick.
     LoopTickStarted {
@@ -333,6 +363,59 @@ pub enum TraceEventKind {
         /// Transport failure reason.
         reason: String,
     },
+    /// Records a parent run requesting a scoped local child run.
+    DelegationRequested {
+        /// Local parent/child delegation context.
+        delegation: LocalDelegationTraceContext,
+    },
+    /// Records a local delegation denied before a child run can execute.
+    DelegationRejected {
+        /// Local parent/child delegation context.
+        delegation: LocalDelegationTraceContext,
+        /// Fail-closed rejection reason.
+        reason: String,
+    },
+    /// Records parent run cancellation for local delegation admission control.
+    ParentRunCancelled {
+        /// Cancelled parent run.
+        parent_run_id: RunId,
+        /// Agent that owned the cancelled parent run.
+        agent_id: AgentId,
+        /// Structured cancellation reason.
+        reason: String,
+    },
+    /// Records that a child run started from an explicit local delegation.
+    ChildRunStarted {
+        /// Local parent/child delegation context.
+        delegation: LocalDelegationTraceContext,
+    },
+    /// Records a child run completing successfully and linking back to parent.
+    ChildRunCompleted {
+        /// Local parent/child delegation context.
+        delegation: LocalDelegationTraceContext,
+    },
+    /// Records a child run failure as a structured outcome.
+    ChildRunFailed {
+        /// Local parent/child delegation context.
+        delegation: LocalDelegationTraceContext,
+        /// Structured child failure outcome.
+        failure: TaskFailure,
+    },
+    /// Records an explicit local parent/child run relationship for replay.
+    ChildRunLinked {
+        /// Parent run that delegated local work.
+        parent_run_id: RunId,
+        /// Child run receiving scoped local work.
+        child_run_id: RunId,
+        /// Agent that owns the parent run side of the relationship.
+        parent_agent_id: AgentId,
+        /// Agent that owns the child run side of the relationship.
+        child_agent_id: AgentId,
+        /// Optional trace event that caused the child run link.
+        causal_parent: Option<TraceId>,
+        /// Optional message that carried the local delegation request.
+        source_message_id: Option<MessageId>,
+    },
     /// Marks the end of a loop tick.
     LoopTickCompleted {
         /// Tick counter within the run.
@@ -340,6 +423,47 @@ pub enum TraceEventKind {
         /// Optional integrity chain metadata for audit validation.
         integrity: Option<TraceIntegrity>,
     },
+}
+
+/// Trace context for local parent/child delegation events.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalDelegationTraceContext {
+    /// Parent run that requested scoped local work.
+    pub parent_run_id: RunId,
+    /// Child run created for the delegated work.
+    pub child_run_id: RunId,
+    /// Parent trace event that caused or recorded the delegation request.
+    pub parent_trace_id: Option<TraceId>,
+    /// Task request message associated with the delegation, if created.
+    pub request_message_id: Option<MessageId>,
+    /// Task response message associated with completion/failure, if created.
+    pub response_message_id: Option<MessageId>,
+    /// Parent/orchestrator agent.
+    pub source_agent_id: AgentId,
+    /// Child/specialist agent.
+    pub target_agent_id: AgentId,
+    /// Scoped child objective.
+    pub objective: String,
+}
+
+impl LocalDelegationTraceContext {
+    /// Returns a copy with a request message link.
+    pub fn with_request_message(mut self, message_id: MessageId) -> Self {
+        self.request_message_id = Some(message_id);
+        self
+    }
+
+    /// Returns a copy with a response message link.
+    pub fn with_response_message(mut self, message_id: MessageId) -> Self {
+        self.response_message_id = Some(message_id);
+        self
+    }
+
+    /// Returns a copy with the parent trace event that caused this delegation.
+    pub fn with_parent_trace(mut self, trace_id: TraceId) -> Self {
+        self.parent_trace_id = Some(trace_id);
+        self
+    }
 }
 
 /// Integrity metadata recorded at the end of a tick.

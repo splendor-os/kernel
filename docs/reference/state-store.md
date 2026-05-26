@@ -71,6 +71,8 @@ let data = StateData { bytes: vec![1, 2, 3], content_type: None };
 let data_ref = StateStore::put_state(&store, data).expect("put");
 let metadata = StateMetadata::new(OffsetDateTime::now_utc(), Some("seed".into()));
 let node_id = StateStore::commit_node(&store, Vec::new(), data_ref, metadata).expect("commit");
+let node = StateStore::get_node(&store, &node_id).expect("node exists");
+assert_eq!(node.id, node_id);
 let snapshot_id = StateStore::snapshot(&store, &node_id).expect("snapshot");
 let snapshot = StateStore::load_snapshot(&store, &snapshot_id).expect("load");
 assert_eq!(snapshot.node_id, node_id);

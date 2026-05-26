@@ -1,6 +1,6 @@
 //! # Local Message Router
 //!
-//! In-process message routing for Splendor 0.02-S2. The router keeps explicit
+//! In-process message routing for Splendor 0.02. The router keeps explicit
 //! per-agent inboxes and outboxes, validates typed message envelopes before
 //! delivery, and emits message lifecycle trace events for every accepted,
 //! rejected, expired, and consumed transition.
@@ -10,12 +10,12 @@
 //! execution. Messages remain coordination data; side-effectful actions still
 //! require the Action Gateway.
 
-use crate::{AgentContext, KernelRuntime, TraceError};
+use crate::{AgentContext, AgentIsolationPolicy, KernelRuntime, TraceError};
 use splendor_types::{
     AgentId, MessageDeliveryStatus, MessageEnvelope, MessageId, MessageTraceContext,
     MessageValidationError, RunId, TraceEventId, TraceEventKind,
 };
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use time::{Duration, OffsetDateTime};
 
@@ -89,7 +89,7 @@ struct AgentMailbox {
 
 #[derive(Debug, Default)]
 struct RouterState {
-    registered_agents: HashSet<AgentId>,
+    agent_policies: HashMap<AgentId, AgentIsolationPolicy>,
     mailboxes: HashMap<AgentId, AgentMailbox>,
 }
 
@@ -128,6 +128,16 @@ pub enum MessageRouterError {
         agent_id: AgentId,
         /// Configured outbox limit.
         limit: usize,
+    },
+    /// Agent isolation ledger denied message schema or recipient access.
+    #[error("agent_isolation_ledger denied message from agent {agent_id}: {reason}")]
+    MessageDenied {
+        /// Source agent whose ledger denied the message.
+        agent_id: AgentId,
+        /// Deterministic reason codes from the ledger.
+        reason: String,
+        /// Structured denial artifacts for replay/audit inspection.
+        artifacts: serde_json::Value,
     },
     /// Message expired before delivery or consumption.
     #[error("message {message_id} expired: {reason}")]
@@ -285,7 +295,19 @@ impl LocalMessageRouter {
 
     /// Registers an existing agent runtime context boundary.
     pub fn register_agent_context(&self, agent: &AgentContext) -> Result<(), MessageRouterError> {
-        self.register_agent(agent.agent_id.clone())
+        self.register_agent_with_policy(agent.agent_id.clone(), agent.config.isolation.clone())
+    }
+
+    /// Registers an agent with an explicit local message isolation policy.
+    pub fn register_agent_with_policy(
+        &self,
+        agent_id: AgentId,
+        policy: AgentIsolationPolicy,
+    ) -> Result<(), MessageRouterError> {
+        let mut state = self.lock_state()?;
+        state.agent_policies.insert(agent_id.clone(), policy);
+        state.mailboxes.entry(agent_id).or_default();
+        Ok(())
     }
 
     /// Delivers a remote inbound message into the local target inbox without
@@ -336,7 +358,7 @@ impl LocalMessageRouter {
 
         let mut state = self.lock_state()?;
         let target_id = envelope.message.target_agent_id.clone();
-        if !state.registered_agents.contains(&target_id) {
+        if !state.agent_policies.contains_key(&target_id) {
             let error = MessageRouterError::UnknownTargetAgent(target_id.clone());
             record_rejection(recorder, &envelope, &error.to_string())?;
             return Err(error);
@@ -389,10 +411,7 @@ impl Default for LocalMessageRouter {
 
 impl MessageRouter for LocalMessageRouter {
     fn register_agent(&self, agent_id: AgentId) -> Result<(), MessageRouterError> {
-        let mut state = self.lock_state()?;
-        state.registered_agents.insert(agent_id.clone());
-        state.mailboxes.entry(agent_id).or_default();
-        Ok(())
+        self.register_agent_with_policy(agent_id, AgentIsolationPolicy::default())
     }
 
     fn send_at(
@@ -424,13 +443,32 @@ impl MessageRouter for LocalMessageRouter {
         let source_id = envelope.message.source_agent_id.clone();
         let target_id = envelope.message.target_agent_id.clone();
 
-        if !state.registered_agents.contains(&source_id) {
+        let source_policy = if let Some(policy) = state.agent_policies.get(&source_id) {
+            policy.clone()
+        } else {
             let error = MessageRouterError::UnknownSourceAgent(source_id.clone());
             record_rejection(recorder, &envelope, &error.to_string())?;
             return Err(error);
-        }
-        if !state.registered_agents.contains(&target_id) {
+        };
+        if !state.agent_policies.contains_key(&target_id) {
             let error = MessageRouterError::UnknownTargetAgent(target_id.clone());
+            record_rejection(recorder, &envelope, &error.to_string())?;
+            return Err(error);
+        }
+
+        let isolation =
+            source_policy.verify_message(&source_id, &target_id, envelope.message.schema.as_str());
+        if !isolation.allowed {
+            let reason = if isolation.reasons.is_empty() {
+                "agent_isolation_ledger_denied".to_string()
+            } else {
+                isolation.reasons.join(", ")
+            };
+            let error = MessageRouterError::MessageDenied {
+                agent_id: source_id.clone(),
+                reason,
+                artifacts: isolation.artifacts,
+            };
             record_rejection(recorder, &envelope, &error.to_string())?;
             return Err(error);
         }

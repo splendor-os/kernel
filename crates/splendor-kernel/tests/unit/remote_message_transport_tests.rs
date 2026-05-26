@@ -1,9 +1,10 @@
 use super::*;
 use crate::{KernelRuntime, KernelRuntimeConfig, MessageRouter, TraceError, TraceSink};
 use splendor_types::{
-    AgentId, EndpointScope, Message, MessageDeliveryStatus, MessageEnvelope, MessageId,
-    RemoteMessageEnvelope, RemoteMessageRetryPolicy, RevocationStatus, RunId, TenantId, TraceEvent,
-    TraceId, WorkOrderAuthorization, WorkOrderSignature,
+    AgentId, DelegatedAuthority, EndpointScope, Message, MessageDeliveryStatus, MessageEnvelope,
+    MessageId, RemoteMessageEnvelope, RemoteMessageRetryPolicy, RevocationStatus, RunId,
+    TaskRequest, TenantId, TraceEvent, TraceId, WorkOrderAuthorization, WorkOrderSignature,
+    TASK_REQUEST_SCHEMA,
 };
 use std::sync::{Arc, Barrier, Mutex};
 use time::{Duration, OffsetDateTime};
@@ -88,13 +89,21 @@ fn remote_envelope(
     now: OffsetDateTime,
     retry_policy: RemoteMessageRetryPolicy,
 ) -> RemoteMessageEnvelope {
+    let task = TaskRequest::new(
+        run_id.clone(),
+        RunId::new(),
+        target.clone(),
+        "forecast",
+        DelegatedAuthority::empty(),
+    )
+    .expect("valid task request");
     let message = Message::new(
         MessageId::new(),
         source,
         target.clone(),
         run_id.clone(),
-        "splendor.message.task_request.v1",
-        serde_json::json!({"task": "forecast", "input_ref": "dataset:test"}),
+        TASK_REQUEST_SCHEMA,
+        serde_json::to_value(task).expect("task payload"),
         Some(TraceId::from_run_sequence(&run_id, 3)),
         true,
         now,

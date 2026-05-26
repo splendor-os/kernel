@@ -115,9 +115,85 @@ fn work_order_scope_only_narrows_policy_and_quota() {
 }
 
 #[test]
-fn quota_actions_apply_across_agents() {
+fn agent_policy_denies_permission_laundering_between_agents() {
+    let tenant_id = TenantId::new();
+    let agent_a = AgentId::new();
+    let agent_b = AgentId::new();
+    let mut tenant = TenantContext::new(
+        tenant_id,
+        TenantPolicy {
+            allowed_actions: vec!["write".to_string()],
+            allowed_adapters: vec!["filesystem".to_string()],
+            allowed_permissions: vec!["fs:read".to_string(), "fs:write".to_string()],
+        },
+        QuotaPolicy::default(),
+    );
+    tenant.register_agent_policy(
+        agent_a.clone(),
+        AgentIsolationPolicy {
+            allowed_permissions: vec!["fs:read".to_string()],
+            ..AgentIsolationPolicy::default()
+        },
+    );
+    tenant.register_agent_policy(
+        agent_b.clone(),
+        AgentIsolationPolicy {
+            allowed_permissions: vec!["fs:write".to_string()],
+            ..AgentIsolationPolicy::default()
+        },
+    );
+    let permissions = vec!["fs:write".to_string()];
+
+    let denied = tenant.verify_action(&agent_a, "write", Some("filesystem"), &permissions);
+    assert!(!denied.allowed);
+    assert!(denied
+        .reasons
+        .contains(&"agent_permission_denied".to_string()));
+    assert_eq!(
+        denied.artifacts[AGENT_ISOLATION_LEDGER_SOURCE]["context"]["source"].as_str(),
+        Some(AGENT_ISOLATION_LEDGER_SOURCE)
+    );
+    assert_eq!(
+        denied.artifacts[AGENT_ISOLATION_LEDGER_SOURCE]["context"]["agent_id"].as_str(),
+        Some(agent_a.to_string().as_str())
+    );
+
+    assert!(
+        tenant
+            .verify_action(&agent_b, "write", Some("filesystem"), &permissions)
+            .allowed
+    );
+}
+
+#[test]
+fn missing_agent_policy_denies_permissioned_actions() {
+    let agent = AgentId::new();
+    let tenant = TenantContext::new(
+        TenantId::new(),
+        TenantPolicy {
+            allowed_actions: vec!["write".to_string()],
+            allowed_adapters: vec!["filesystem".to_string()],
+            allowed_permissions: vec!["fs:write".to_string()],
+        },
+        QuotaPolicy::default(),
+    );
+    let denied = tenant.verify_action(
+        &agent,
+        "write",
+        Some("filesystem"),
+        &["fs:write".to_string()],
+    );
+
+    assert!(!denied.allowed);
+    assert!(denied
+        .reasons
+        .contains(&"agent_isolation_profile_missing".to_string()));
+}
+
+#[test]
+fn quota_actions_are_isolated_per_agent() {
     let quotas = QuotaPolicy {
-        max_actions_per_tick: Some(2),
+        max_actions_per_tick: Some(1),
         ..QuotaPolicy::default()
     };
     let mut tenant = basic_tenant(quotas);
@@ -128,11 +204,16 @@ fn quota_actions_apply_across_agents() {
     tenant.begin_tick(1, now);
     let usage = QuotaUsage::single_action();
     assert!(tenant.record_usage(&agent_a, usage, now).allowed);
-    assert!(tenant.record_usage(&agent_b, usage, now).allowed);
 
     let denied = tenant.record_usage(&agent_a, usage, now);
     assert!(!denied.allowed);
     assert!(denied.reasons.contains(&"max_actions_per_tick".to_string()));
+    assert_eq!(
+        denied.artifacts["context"]["source"].as_str(),
+        Some(QUOTA_LEDGER_SOURCE)
+    );
+
+    assert!(tenant.record_usage(&agent_b, usage, now).allowed);
 
     let later = now + Duration::seconds(1);
     tenant.begin_tick(2, later);
@@ -287,7 +368,7 @@ fn tenant_registry_denies_unknown_tenant() {
         postconditions: Vec::new(),
     };
 
-    let policy = registry.verify_policy(&tenant_id, &action, Some("adapter"));
+    let policy = registry.verify_policy(&tenant_id, &agent_id, &action, Some("adapter"));
     assert!(!policy.allowed);
     assert!(policy.reasons.contains(&"tenant_not_found".to_string()));
 
@@ -349,4 +430,43 @@ fn agent_context_tracks_interpreter_and_head() {
     let node_id = commit.node_id;
     agent.set_state_head(node_id.clone());
     assert_eq!(agent.state_head, Some(node_id));
+}
+
+#[test]
+fn agent_context_delegated_authority_allows_only_explicit_scope() {
+    let agent = AgentContext::new(
+        AgentId::new(),
+        TenantId::new(),
+        AgentRuntimeConfig::default(),
+    )
+    .with_delegated_authority(splendor_types::DelegatedAuthority {
+        allowed_actions: vec!["query".to_string()],
+        allowed_adapters: vec!["sql".to_string()],
+        allowed_permissions: vec!["finance.read".to_string()],
+    });
+    let allowed = Action {
+        name: "query".to_string(),
+        params: serde_json::json!({}),
+        side_effect_class: SideEffectClass::ReadOnly,
+        cost_estimate: None,
+        required_permissions: vec!["finance.read".to_string()],
+        preconditions: Vec::new(),
+        postconditions: Vec::new(),
+    };
+    assert!(agent.verify_delegated_action(&allowed, Some("sql")).allowed);
+
+    let denied = Action {
+        name: "publish".to_string(),
+        params: serde_json::json!({}),
+        side_effect_class: SideEffectClass::External,
+        cost_estimate: None,
+        required_permissions: vec!["artifact.publish".to_string()],
+        preconditions: Vec::new(),
+        postconditions: Vec::new(),
+    };
+    let result = agent.verify_delegated_action(&denied, Some("artifact"));
+    assert!(!result.allowed);
+    assert!(result
+        .reasons
+        .contains(&"delegated_action_not_allowed".to_string()));
 }

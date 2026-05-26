@@ -54,6 +54,16 @@
 
 ## 0.02-dev — Local multi-agent runtime + daemon control
 
+### Release hygiene
+
+- Updated the visible Rust CLI and Python SDK milestone labels to
+  `Splendor0.02-dev` while keeping package versions on the existing development
+  `0.1.0` line.
+- Added 0.02-dev release notes with QA evidence, compatibility notes, and
+  explicit future-scope exclusions.
+- Updated README and local runtime docs so the repository status reflects the
+  completed 0.02-dev local multi-agent and daemon-control scope.
+
 ### Implemented primitives
 
 - Added a 0.02-S0 daemon security boundary reference contract in Rust for
@@ -63,12 +73,40 @@
 - Added a 0.02-S1 message schema contract in Rust for `MessageId`, `Message`,
   `MessageEnvelope`, schema-version validation, delivery status vocabulary,
   message trace links, and message lifecycle trace event definitions.
+- Added a 0.02-S2 local message router for in-process inbox/outbox delivery with
+  trace-linked queued, delivered, rejected, expired, and consumed events.
+- Added a 0.02-S3 agent isolation ledger for per-agent permission checks,
+  per-agent quota counters, local message schema/recipient grants, denial trace
+  artifacts, and replay-visible message decisions.
+- Added a 0.02-S4 local delegation model in Rust for typed task
+  request/response messages, parent/child run metadata, explicit delegated
+  authority, local child-run trace events, structured child failures, parent
+  cancellation denial, and inspect-only delegation replay reconstruction.
+- Hardened 0.02-S4 local delegation with duplicate child-run ID rejection and
+  terminal child completion/failure guards that avoid duplicate response messages
+  or terminal traces.
+- Added a 0.02-S5 local runtime daemon API crate with endpoints for run
+  lifecycle, percept append, ordered traces, state-head lookup, inspect-only
+  replay, gateway-mediated action submission, health, and capabilities.
+- Added state-node lookup through `StateStore::get_node` so daemon state-head
+  responses verify that returned nodes exist in the state graph.
+- Added the 0.02-S6 TypeScript surface with `@splendor/types`, a thin
+  authenticated `@splendor/client`, schema parity tests, SDK docs, and a minimal
+  daemon-client example.
+- Added CI coverage for the 0.02-S6 TypeScript runner so package build,
+  typecheck, schema/client tests, and Node coverage gates run with Rust and
+  Python release checks.
+- Added 0.02-S7 inspect-only multi-agent replay output for message lifecycle
+  causality, local parent/child run links, and permission-laundering denial
+  evidence without re-executing side effects.
 
 ### Explicitly not included
 
-- No daemon server, HTTP listener, OAuth/OIDC provider, PKI management, fleet
-  mTLS rollout, node bootstrap, governance workflow, message router, message
-  broker, remote transport, or TypeScript runtime enforcement.
+- No production OAuth/OIDC provider, PKI management, fleet mTLS rollout, node
+  bootstrap, governance workflow, message broker, remote transport, fleet
+  scheduler, fleet placement, long-lived child services, native Node binding,
+  browser runtime, cross-instance replay, distributed trace sync, or TypeScript
+  runtime enforcement.
 
 ## 0.01-dev — Local kernel baseline
 

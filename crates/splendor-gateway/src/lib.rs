@@ -145,6 +145,7 @@ pub trait TenantAccess: Send + Sync {
     fn verify_policy(
         &self,
         tenant_id: &TenantId,
+        agent_id: &AgentId,
         action: &Action,
         adapter: Option<&str>,
     ) -> VerificationResult;
@@ -261,6 +262,7 @@ impl ActionGateway for VerifiedActionGateway {
                     allowed: false,
                     reasons: vec!["adapter_mismatch".to_string()],
                     artifacts: serde_json::json!({
+                        "context": request_context(&action, vec!["adapter".to_string()]),
                         "requested": adapter,
                         "registered": registration.adapter_id,
                     }),
@@ -281,38 +283,32 @@ impl ActionGateway for VerifiedActionGateway {
             .as_deref()
             .unwrap_or(registration.adapter_id.as_str());
 
-        let policy_result =
-            self.tenant_access
-                .verify_policy(&action.tenant_id, &action.action, Some(adapter_id));
+        let policy_result = self.tenant_access.verify_policy(
+            &action.tenant_id,
+            &action.agent_id,
+            &action.action,
+            Some(adapter_id),
+        );
+        let invariant_pre = self
+            .invariant_evaluator
+            .verify_pre(&action.action, &action.satisfied_preconditions);
+        let mut verification =
+            combine_verifications([("policy", policy_result), ("invariant", invariant_pre)]);
+
+        if !verification.allowed {
+            attach_request_context(&mut verification, &action);
+            return Ok(denied_outcome(action.action_id, verification));
+        }
+
         let quota_result = self.tenant_access.verify_quota(
             &action.tenant_id,
             &action.agent_id,
             action.quota_usage,
         );
-        let invariant_pre = self
-            .invariant_evaluator
-            .verify_pre(&action.action, &action.satisfied_preconditions);
-        let verification = combine_verifications([
-            ("policy", policy_result),
-            ("quota", quota_result),
-            ("invariant", invariant_pre),
-        ]);
-
+        verification = combine_verifications([("quota", quota_result)]);
         if !verification.allowed {
-            let error = if verification.reasons.is_empty() {
-                "verification denied".to_string()
-            } else {
-                verification.reasons.join(", ")
-            };
-            return Ok(ActionOutcome {
-                action_id: action.action_id,
-                status: ActionStatus::Denied,
-                verification,
-                post_verification: None,
-                output: None,
-                error: Some(error),
-                completed_at: OffsetDateTime::now_utc(),
-            });
+            attach_request_context(&mut verification, &action);
+            return Ok(denied_outcome(action.action_id, verification));
         }
 
         let adapter_result = match registration.adapter.execute(&action) {
@@ -476,6 +472,55 @@ fn combine_verifications(
             artifacts: serde_json::Value::Object(artifacts),
         }
     }
+}
+
+fn denied_outcome(action_id: ActionId, verification: VerificationResult) -> ActionOutcome {
+    let error = if verification.reasons.is_empty() {
+        "verification denied".to_string()
+    } else {
+        verification.reasons.join(", ")
+    };
+    ActionOutcome {
+        action_id,
+        status: ActionStatus::Denied,
+        verification,
+        post_verification: None,
+        output: None,
+        error: Some(error),
+        completed_at: OffsetDateTime::now_utc(),
+    }
+}
+
+fn attach_request_context(result: &mut VerificationResult, action: &ActionRequest) {
+    let sources = result
+        .artifacts
+        .as_object()
+        .map(|artifacts| artifacts.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let context = request_context(action, sources);
+    match &mut result.artifacts {
+        serde_json::Value::Object(artifacts) => {
+            artifacts.insert("context".to_string(), context);
+        }
+        other => {
+            let mut artifacts = serde_json::Map::new();
+            if !other.is_null() {
+                artifacts.insert("detail".to_string(), other.take());
+            }
+            artifacts.insert("context".to_string(), context);
+            result.artifacts = serde_json::Value::Object(artifacts);
+        }
+    }
+}
+
+fn request_context(action: &ActionRequest, sources: Vec<String>) -> serde_json::Value {
+    serde_json::json!({
+        "source": "gateway_verifier_chain",
+        "tenant_id": action.tenant_id.to_string(),
+        "agent_id": action.agent_id.to_string(),
+        "action": action.action.name,
+        "sources": sources,
+    })
 }
 
 #[cfg(test)]

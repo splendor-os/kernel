@@ -12,10 +12,11 @@ without dictating the model or planner stack.
 
 ## Project status
 
-Splendor0.01-dev scope is implemented and integrated as the local kernel
-baseline. The runnable quickstart and conformance matrix live in
+Splendor0.02-dev scope is implemented and integrated as the local multi-agent
+runtime plus daemon-control release. The original 0.01 local kernel baseline
+remains the foundation; the runnable quickstart and 0.02 sprint evidence live in
 [`docs/getting-started/local-runtime.md`](docs/getting-started/local-runtime.md)
-and [`docs/milestones/0.01-dev/conformance.md`](docs/milestones/0.01-dev/conformance.md).
+and [`docs/milestones/0.02-dev/`](docs/milestones/0.02-dev/).
 
 Current capabilities:
 
@@ -28,19 +29,30 @@ Current capabilities:
   from YAML/JSON config.
 - Python SDK runtime with policy/perceptor/constraint hooks and trace subscription.
 - PyO3 bindings exposing the Python SDK runtime.
+- Typed local messages with inbox/outbox delivery, trace-linked lifecycle events,
+  and schema/recipient denial paths.
+- Per-agent isolation ledgers for permissions, quotas, allowed message schemas,
+  and allowed recipients inside the same tenant.
+- Local delegation with explicit parent/child run references and scoped specialist
+  authority.
+- Local runtime daemon API for run lifecycle, percept append, traces, state-head,
+  inspect-only replay, actions, health, and capabilities.
+- TypeScript `@splendor/types` and `@splendor/client` packages for daemon control
+  without duplicating Rust runtime semantics.
+- Multi-agent replay causal graph reconstruction for messages, child run links,
+  and isolation denials without re-executing side effects.
 - Example: `examples/single_agent_loop` with config-driven execution.
 - Unit and integration test coverage with CI gates.
 
 ## Next steps
 
-Planned, not available in 0.01-dev:
+Planned beyond 0.02-dev:
 
-1. Multi-agent local messaging and stronger isolation primitives (0.02-dev).
-2. Distributed execution, identity continuity, and fleet telemetry (0.03-dev).
-3. Governance workflows such as approval gates, escalation policies, and circuit
+1. Distributed execution, identity continuity, and fleet telemetry (0.03-dev).
+2. Governance workflows such as approval gates, escalation policies, and circuit
    breakers (0.04-dev).
-4. Physical/edge orchestration and device safety verifier APIs (0.05-dev).
-5. Stable compatibility guarantees and adapter maturity levels (0.1-dev).
+3. Physical/edge orchestration and device safety verifier APIs (0.05-dev).
+4. Stable compatibility guarantees and adapter maturity levels (0.1-dev).
 
 ## Why
 
@@ -77,10 +89,11 @@ Splendor provides the missing **kernel-level primitives for agents**, so autonom
 
 ## What
 
-Unless a capability appears in the 0.01-dev "Current capabilities" list above,
-roadmap terms in the sections below (messaging, fleet scheduling, distributed
-coordination, governance workflows, kill switches, and adapter ecosystem work)
-are planned future surfaces and are not available in the 0.01 local baseline.
+Unless a capability appears in the 0.02-dev "Current capabilities" list above,
+roadmap terms in the sections below (remote transport, fleet scheduling,
+distributed coordination, governance workflows, kill switches, and broad adapter
+ecosystem work) are planned future surfaces and are not available in the 0.02
+local multi-agent release.
 
 ### What Splendor is
 
@@ -88,8 +101,8 @@ A systems layer that augments modern neural AI systems by enforcing primitives f
 
 - **Kernel-grade runtime primitives** for autonomous agents
 - **Rust runtime core** for tenancy, state graphs, scheduling, local action
-  verification, and audit/observability. Typed local messaging is planned for
-  0.02-dev and is not part of the 0.01 baseline.
+  verification, audit/observability, typed local messaging, per-agent isolation,
+  and scoped local delegation. Multi-host execution remains planned for 0.03-dev.
 - **Managed interpreters** as first-class compute (e.g., sandboxed Python instances per agent/tenant)
 - **Closed-loop autonomy**: percepts → policies → (constraints) → verified actions, with feedback routed back into state/learning
 - **Distributed by design**: the primitive model preserves future distributed
@@ -166,7 +179,8 @@ Responsibilities:
 - **Tenancy** and isolation contexts per agent/tenant
 - **State graphs** (explicit state; versioned snapshots; replay)
 - **Scheduling** (agent-loop execution policies; fairness; quotas)
-- **Messaging** (typed, traceable message passing; planned for 0.02-dev)
+- **Messaging** (typed, traceable local message passing; remote transport is
+  planned for 0.03-dev)
 - **Governance & audit** (0.01 provides append-only traces and reproducibility;
   approval/circuit-breaker workflows are planned for 0.04-dev)
 - **Action verification** (pre/post gates; invariants; budgets; permissions)
@@ -177,12 +191,12 @@ Responsibilities:
 - Hosts: model calls, tools, planners, domain code
 - Kernel enforces limits and records traces
 
-### Distributed by default *(planned beyond 0.01-dev)*
+### Distributed by default *(planned beyond 0.02-dev)*
 
 - Multi-device identity and trust boundaries are planned for 0.03-dev.
 - Structured messaging across machines is planned for 0.03-dev.
 - Fleet telemetry aggregation is planned for 0.03-dev.
-- Constraints and action gates are local-only in 0.01-dev and are designed to
+- Constraints and action gates are local-only in 0.02-dev and are designed to
   remain enforceable across future fleet boundaries.
 
 ### Core runtime flow:
@@ -198,10 +212,14 @@ Percepts -> Policy -> Constraints -> Gateway -> Adapter -> Outcomes -> State com
 - `crates/splendor-store`: Backed state and trace stores.
 - `crates/splendor-types`: core schemas and IDs.
 - `adapters/filesystem`, `adapters/http`: gated side-effect adapters.
+- `crates/splendor-daemon`: local runtime daemon API for run lifecycle, percepts,
+  traces, state-head, replay, actions, health, and capabilities.
 - `crates/splendorctl`: operational CLI for version, run, trace, state-head,
   and replay workflows.
 - `python/splendor`: Python SDK runtime.
 - `python/bindings`: PyO3 bindings wrapper.
+- `typescript/packages/types`, `typescript/packages/client`: schema-aligned
+  TypeScript daemon types and thin client.
 
 ## Core Domain Model (Kernel Objects)
 
@@ -293,7 +311,8 @@ Stable traits/interfaces for:
 - `Verifier`
 - `StateStore` (state graph + snapshots)
 - `TraceStore` (append-only)
-- `MessageBus` (planned for 0.02-dev)
+- `LocalMessageRouter` / `MessageBus` (local in-process routing implemented for
+  0.02-dev; remote transport planned for 0.03-dev)
 - `Scheduler`
 - `GovernancePolicy` (0.01 covers tenancy, quotas, and permissions; kill switch
   is planned for governance/fleet milestones)
@@ -327,7 +346,9 @@ Expose:
   - `local-basic-loop/`
   - `replay-local-run/`
   - `python-sdk-basic/`
-  - `multi_agent_coordination/` — planned for later milestones
+  - `local-specialist-scoped-delegation/`, `local-orchestrator-specialists/`,
+    `local-multi-agent-replay/`, `daemon-client-local/`,
+    `typescript-daemon-client/` — 0.02 local multi-agent and daemon examples
   - `verified_tools/` — planned for later milestones
 - `docs/`
   - `concepts/` — system space vs AI space, primitives, neuro-symbolic runtime property
@@ -374,10 +395,10 @@ Expose:
 - End-to-end RL training pipelines inside the kernel
 - A single mandated agent framework
 
-## Roadmap (planned beyond the current 0.01 baseline unless noted)
+## Roadmap
 
 - **Splendor0.01-dev:** local runtime + gateway + Python SDK + trace + state graph + replay
-- **Splendor0.02-dev:** multi-agent local messaging; typed messages; stronger isolation primitives
+- **Splendor0.02-dev:** local multi-agent runtime + daemon control, including typed messages, per-agent isolation, local delegation, runtime daemon API, TypeScript types/client, and multi-agent replay
 - **Splendor0.03-dev:** multi-host distributed execution; identity continuity; fleet telemetry aggregation
 - **Splendor0.04-dev:** governance workflows (approval gates, escalation policies, circuit breakers)
 - **Splendor0.1-dev:** stable primitives spec + compatibility guarantees + adapter ecosystem maturity

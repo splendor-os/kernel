@@ -219,7 +219,7 @@ pub trait StateStore: Send + Sync {
         data_ref: StateDataRef,
         metadata: StateMetadata,
     ) -> Result<StateNodeId, StateStoreError>;
-    /// Retrieves a state node by ID.
+    /// Retrieves a stored state node by identifier.
     fn get_node(&self, node_id: &StateNodeId) -> Result<StateNode, StateStoreError>;
     /// Creates a `SnapshotId` for a state node.
     fn snapshot(&self, node_id: &StateNodeId) -> Result<SnapshotId, StateStoreError>;
@@ -331,7 +331,7 @@ pub trait AsyncStateStore: Send + Sync {
         data_ref: StateDataRef,
         metadata: StateMetadata,
     ) -> Self::CommitNodeFuture<'a>;
-    /// Retrieves a state node by ID.
+    /// Retrieves a stored state node by identifier.
     fn get_node<'a>(&'a self, node_id: &'a StateNodeId) -> Self::GetNodeFuture<'a>;
     /// Creates a `SnapshotId` for a state node.
     fn snapshot<'a>(&'a self, node_id: &'a StateNodeId) -> Self::SnapshotFuture<'a>;
@@ -765,7 +765,7 @@ impl StateStore for SqliteStateStore {
         Ok(node_id)
     }
 
-    /// Retrieves a committed node from SQLite storage.
+    /// Retrieves a committed node from the SQLite-backed state graph.
     fn get_node(&self, node_id: &StateNodeId) -> Result<StateNode, StateStoreError> {
         let connection = self
             .connection

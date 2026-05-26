@@ -1,0 +1,895 @@
+openapi: 3.1.0
+info:
+  title: Splendor Runtime Daemon API
+  version: 0.02-S5
+  description: Local-only runtime daemon API for Splendor 0.02-S5.
+servers:
+  - url: http://127.0.0.1:8077
+    description: Explicit local development listener only.
+paths:
+  /runs:
+    post:
+      summary: Create a local run from a signed work order.
+      operationId: createRun
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRunRequest'
+      responses:
+        '200':
+          description: Run created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateRunResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /runs/{run_id}:
+    get:
+      summary: Inspect a local run.
+      operationId: inspectRun
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Run metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunInspectResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /runs/{run_id}/start:
+    post:
+      summary: Execute one local scheduler tick.
+      operationId: startRun
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LifecycleRequest'
+      responses:
+        '200':
+          description: Tick executed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TickResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /runs/{run_id}/pause:
+    post:
+      summary: Pause a local run.
+      operationId: pauseRun
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LifecycleRequest'
+      responses:
+        '200':
+          description: Run paused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunInspectResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /runs/{run_id}/resume:
+    post:
+      summary: Resume a paused run and execute one tick.
+      operationId: resumeRun
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LifecycleRequest'
+      responses:
+        '200':
+          description: Tick executed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TickResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /runs/{run_id}/stop:
+    post:
+      summary: Stop a local run.
+      operationId: stopRun
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LifecycleRequest'
+      responses:
+        '200':
+          description: Run stopped.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunInspectResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /runs/{run_id}/percepts:
+    post:
+      summary: Append a percept to the daemon queue for the next tick.
+      operationId: appendPercept
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppendPerceptRequest'
+      responses:
+        '200':
+          description: Percept accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppendPerceptResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /runs/{run_id}/state-head:
+    get:
+      summary: Read the latest committed state node metadata.
+      operationId: getStateHead
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: State head metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateHeadResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /runs/{run_id}/traces:
+    get:
+      summary: Read ordered trace records.
+      operationId: getRunTraces
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - name: start
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: end
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: redaction_policy
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Ordered trace records.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TracePageResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /runs/{run_id}/replay:
+    post:
+      summary: Start inspect-only replay.
+      operationId: replayRun
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplayRequest'
+      responses:
+        '200':
+          description: Replay summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplayResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /actions:
+    post:
+      summary: Submit an action through the local run gateway.
+      operationId: submitAction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitActionRequest'
+      responses:
+        '200':
+          description: Gateway action outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionOutcome'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /health:
+    get:
+      summary: Read daemon health.
+      operationId: getHealth
+      responses:
+        '200':
+          description: Health status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /capabilities:
+    get:
+      summary: Read local daemon capabilities.
+      operationId: getCapabilities
+      responses:
+        '200':
+          description: Capability list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilitiesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+components:
+  parameters:
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Unauthorized:
+      description: Missing authenticated caller outside explicit local dev mode.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Forbidden:
+      description: Security validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    NotFound:
+      description: Run or state resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Conflict:
+      description: Run state, duplicate ID, or trace ordering conflict.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Unavailable:
+      description: Runtime unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+  schemas:
+    ApiError:
+      type: object
+      required: [code, message, details]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details: true
+    RunStatus:
+      type: string
+      enum: [created, running, paused, stopped, failed]
+    EndpointScope:
+      type: string
+      enum:
+        - runs_create
+        - runs_start
+        - runs_read
+        - runs_pause
+        - runs_resume
+        - runs_stop
+        - percepts_append
+        - actions_submit
+        - traces_read
+        - state_read
+        - replay_create
+        - health_read
+        - capabilities_read
+    JsonValue: true
+    ClientPrincipal:
+      type: object
+      required: [app, client_principal_id, label]
+      properties:
+        app:
+          type: object
+          required: [app_principal_id, label]
+          properties:
+            app_principal_id:
+              type: string
+            label:
+              type: [string, 'null']
+        client_principal_id:
+          type: string
+        label:
+          type: [string, 'null']
+    RevocationStatus:
+      oneOf:
+        - type: string
+          enum: [active]
+        - type: object
+          required: [revoked]
+          properties:
+            revoked:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+    CallerCredential:
+      type: object
+      required: [credential_id, principal, scopes, binding, audience, expires_at, revocation]
+      properties:
+        credential_id:
+          type: string
+        principal:
+          $ref: '#/components/schemas/ClientPrincipal'
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/EndpointScope'
+        binding: true
+        audience: true
+        expires_at:
+          type: string
+          format: date-time
+        revocation:
+          $ref: '#/components/schemas/RevocationStatus'
+    WorkOrderAuthorization:
+      type: object
+      required: [work_order_id, tenant_id, agent_id, run_id, allowed_scopes, signature, expires_at, revocation]
+      properties:
+        work_order_id:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        run_id:
+          type: [string, 'null']
+          format: uuid
+        allowed_scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/EndpointScope'
+        signature:
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [key_id, signature]
+              properties:
+                key_id:
+                  type: string
+                signature:
+                  type: string
+        expires_at:
+          type: string
+          format: date-time
+        revocation:
+          $ref: '#/components/schemas/RevocationStatus'
+    AuditAttribution:
+      type: object
+      required: [principal, credential_id, requested_at]
+      properties:
+        principal:
+          $ref: '#/components/schemas/ClientPrincipal'
+        credential_id:
+          type: [string, 'null']
+        requested_at:
+          type: string
+          format: date-time
+    Percept:
+      type: object
+      required: [schema, payload, provenance, timestamp]
+      properties:
+        schema:
+          type: string
+        payload:
+          $ref: '#/components/schemas/JsonValue'
+        provenance:
+          type: object
+          required: [source, detail]
+          properties:
+            source:
+              type: string
+            detail:
+              type: [string, 'null']
+        timestamp:
+          type: string
+          format: date-time
+    Action:
+      type: object
+      required: [name, params, side_effect_class, cost_estimate, required_permissions, preconditions, postconditions]
+      properties:
+        name:
+          type: string
+        params:
+          $ref: '#/components/schemas/JsonValue'
+        side_effect_class: true
+        cost_estimate: true
+        required_permissions:
+          type: array
+          items:
+            type: string
+        preconditions:
+          type: array
+          items:
+            type: string
+        postconditions:
+          type: array
+          items:
+            type: string
+    QuotaUsage:
+      type: object
+      required: [actions, action_duration_ms, filesystem_read_bytes, filesystem_write_bytes, network_read_bytes, network_write_bytes, http_requests]
+      properties:
+        actions:
+          type: integer
+          minimum: 0
+        action_duration_ms:
+          type: integer
+          minimum: 0
+        filesystem_read_bytes:
+          type: integer
+          minimum: 0
+        filesystem_write_bytes:
+          type: integer
+          minimum: 0
+        network_read_bytes:
+          type: integer
+          minimum: 0
+        network_write_bytes:
+          type: integer
+          minimum: 0
+        http_requests:
+          type: integer
+          minimum: 0
+    VerificationResult:
+      type: object
+      required: [allowed, reasons, artifacts]
+      properties:
+        allowed:
+          type: boolean
+        reasons:
+          type: array
+          items:
+            type: string
+        artifacts:
+          $ref: '#/components/schemas/JsonValue'
+    ActionOutcome:
+      type: object
+      required: [action_id, status, verification, post_verification, output, error, completed_at]
+      properties:
+        action_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [Executed, Denied, Failed]
+        verification:
+          $ref: '#/components/schemas/VerificationResult'
+        post_verification:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/VerificationResult'
+        output:
+          $ref: '#/components/schemas/JsonValue'
+        error:
+          type: [string, 'null']
+        completed_at:
+          type: string
+          format: date-time
+    DaemonActionCandidate:
+      type: object
+      required: [action, adapter, quota_usage, satisfied_preconditions]
+      properties:
+        action:
+          $ref: '#/components/schemas/Action'
+        adapter:
+          type: [string, 'null']
+        quota_usage:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/QuotaUsage'
+        satisfied_preconditions:
+          type: array
+          items:
+            type: string
+    RegisteredAction:
+      type: object
+      required: [name, adapter]
+      properties:
+        name:
+          type: string
+        adapter:
+          type: string
+    TraceRecord:
+      type: object
+      required: [run_id, sequence, payload, recorded_at, event_hash, prev_event_hash]
+      properties:
+        run_id:
+          type: string
+        sequence:
+          type: integer
+          minimum: 0
+        payload:
+          $ref: '#/components/schemas/JsonValue'
+        recorded_at:
+          type: string
+          format: date-time
+        event_hash: true
+        prev_event_hash: true
+    CreateRunRequest:
+      type: object
+      required:
+        - tenant_id
+        - agent_id
+        - work_order
+        - credential
+        - audit_attribution
+        - allowed_actions
+        - allowed_adapters
+        - allowed_permissions
+        - policy_actions
+        - registered_actions
+        - allowed_percept_schemas
+        - allowed_percept_sources
+        - initial_state
+        - snapshot_interval
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        work_order:
+          $ref: '#/components/schemas/WorkOrderAuthorization'
+        credential:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/CallerCredential'
+        audit_attribution:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/AuditAttribution'
+        allowed_actions:
+          type: array
+          items:
+            type: string
+        allowed_adapters:
+          type: array
+          items:
+            type: string
+        allowed_permissions:
+          type: array
+          items:
+            type: string
+        policy_actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/DaemonActionCandidate'
+        registered_actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RegisteredAction'
+        allowed_percept_schemas:
+          type: array
+          items:
+            type: string
+        allowed_percept_sources:
+          type: array
+          items:
+            type: string
+        initial_state:
+          $ref: '#/components/schemas/JsonValue'
+        snapshot_interval:
+          type: [integer, 'null']
+          minimum: 1
+    CreateRunResponse:
+      type: object
+      required: [run_id, status]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/RunStatus'
+    LifecycleRequest:
+      type: object
+      required: [credential, work_order, audit_attribution, reason]
+      properties:
+        credential:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/CallerCredential'
+        work_order:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/WorkOrderAuthorization'
+        audit_attribution:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/AuditAttribution'
+        reason:
+          type: [string, 'null']
+    RunInspectResponse:
+      type: object
+      required: [run_id, tenant_id, agent_id, status, state_head, ticks, adapter_executions, created_at, updated_at]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/RunStatus'
+        state_head:
+          type: [string, 'null']
+        ticks:
+          type: integer
+          minimum: 0
+        adapter_executions:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    TickResponse:
+      type: object
+      required: [run_id, status, tick_id, state_node_id, action_outcomes]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/RunStatus'
+        tick_id:
+          type: integer
+          minimum: 0
+        state_node_id:
+          type: string
+        action_outcomes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActionOutcome'
+    AppendPerceptRequest:
+      type: object
+      required: [credential, audit_attribution, percept]
+      properties:
+        credential:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/CallerCredential'
+        audit_attribution:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/AuditAttribution'
+        percept:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/Percept'
+    AppendPerceptResponse:
+      type: object
+      required: [run_id, accepted]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        accepted:
+          type: integer
+          minimum: 0
+    StateHeadResponse:
+      type: object
+      required: [run_id, state_node_id, parent_state_node_ids, data_hash, created_at, label]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        state_node_id:
+          type: string
+        parent_state_node_ids:
+          type: array
+          items:
+            type: string
+        data_hash:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        label:
+          type: [string, 'null']
+    TracePageResponse:
+      type: object
+      required: [run_id, records]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraceRecord'
+    ReplayRequest:
+      type: object
+      required: [credential]
+      properties:
+        credential:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/CallerCredential'
+    ReplayResponse:
+      type: object
+      required: [replay_id, run_id, mode, event_count, action_event_count]
+      properties:
+        replay_id:
+          type: string
+        run_id:
+          type: string
+          format: uuid
+        mode:
+          type: string
+          enum: [inspect_only]
+        event_count:
+          type: integer
+          minimum: 0
+        action_event_count:
+          type: integer
+          minimum: 0
+    SubmitActionRequest:
+      type: object
+      required: [run_id, tenant_id, agent_id, credential, audit_attribution, causal_trace_id, action, adapter, quota_usage, satisfied_preconditions]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        credential:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/CallerCredential'
+        audit_attribution:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/AuditAttribution'
+        causal_trace_id:
+          type: [string, 'null']
+          format: uuid
+        action:
+          $ref: '#/components/schemas/Action'
+        adapter:
+          type: [string, 'null']
+        quota_usage:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/QuotaUsage'
+        satisfied_preconditions:
+          type: array
+          items:
+            type: string
+    HealthResponse:
+      type: object
+      required: [status, local_only, runtime_available]
+      properties:
+        status:
+          type: string
+        local_only:
+          type: boolean
+        runtime_available:
+          type: boolean
+    CapabilitiesResponse:
+      type: object
+      required: [daemon_api_version, local_only, replay_modes, endpoints]
+      properties:
+        daemon_api_version:
+          type: string
+        local_only:
+          type: boolean
+        replay_modes:
+          type: array
+          items:
+            type: string
+        endpoints:
+          type: array
+          items:
+            type: string

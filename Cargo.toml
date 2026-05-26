@@ -4,6 +4,7 @@ members = [
     "crates/splendor-kernel",
     "crates/splendor-gateway",
     "crates/splendor-store",
+    "crates/splendor-daemon",
     "crates/splendorctl",
     "adapters/filesystem",
     "adapters/http",

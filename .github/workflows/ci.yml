@@ -8,8 +8,17 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Checkout repository without default token
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${GITHUB_REF}"
+          git checkout --detach "${GITHUB_SHA}" || git checkout --detach FETCH_HEAD
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy --component llvm-tools-preview
+          rustup default stable
       - name: Rust fmt
         run: cargo fmt --all -- --check
       - name: Rust clippy
@@ -18,16 +27,21 @@ jobs:
         run: cargo test --workspace
       - name: 0.01 baseline local runtime conformance
         run: bash scripts/verify-0.01-baseline.sh
-      - name: Install LLVM tools
-        run: rustup component add llvm-tools-preview
-      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
       - name: Rust coverage
         run: cargo llvm-cov --workspace --all-targets --fail-under-lines 95
 
   python:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository without default token
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${GITHUB_REF}"
+          git checkout --detach "${GITHUB_SHA}" || git checkout --detach FETCH_HEAD
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -37,3 +51,25 @@ jobs:
         run: python -m pip install -e python/ pytest pytest-cov
       - name: Python tests
         run: pytest python/tests --cov=splendor --cov-fail-under=95
+
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository without default token
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${GITHUB_REF}"
+          git checkout --detach "${GITHUB_SHA}" || git checkout --detach FETCH_HEAD
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install TypeScript deps
+        run: npm ci
+      - name: TypeScript tests
+        run: npm test
+      - name: TypeScript coverage
+        run: npm run coverage

@@ -1,9 +1,10 @@
 use super::*;
 use splendor_store::{SqliteStateStore, StateData, StateMetadata, StateStore};
 use splendor_types::{
-    Action, AgentId, ContentHash, Feedback, Percept, PerceptProvenance, Reward, RunId,
-    SideEffectClass, SnapshotId, StateHandoffTraceContext, StateReferenceMode, TenantId,
-    TraceEvent, TraceEventId, TraceEventKind, TraceId, VerificationResult,
+    Action, AgentId, ContentHash, Feedback, MessageId, MessageTraceContext, Percept,
+    PerceptProvenance, Reward, RunId, SideEffectClass, SnapshotId, StateHandoffTraceContext,
+    StateReferenceMode, TenantId, TraceEvent, TraceEventId, TraceEventKind, TraceId,
+    VerificationResult,
 };
 use tempfile::NamedTempFile;
 use time::OffsetDateTime;
@@ -97,6 +98,172 @@ fn signed_work_order_block(
 
 fn corrupt_work_order_signature(block: String) -> String {
     block.replace("signature: ", "signature: bad-")
+}
+
+fn fixed_run_id(value: u128) -> RunId {
+    Uuid::from_u128(value).into()
+}
+
+fn fixed_agent_id(value: u128) -> AgentId {
+    Uuid::from_u128(value).into()
+}
+
+fn fixed_message_id(value: u128) -> MessageId {
+    Uuid::from_u128(value).into()
+}
+
+fn message_context(
+    message_id: MessageId,
+    source_agent_id: AgentId,
+    target_agent_id: AgentId,
+    run_id: RunId,
+    causal_sequence: u64,
+) -> MessageTraceContext {
+    MessageTraceContext {
+        message_id,
+        source_agent_id,
+        target_agent_id,
+        run_id: run_id.clone(),
+        schema: "splendor.message.task_request.v1".to_string(),
+        causal_parent: Some(TraceEventId::from_run_sequence(&run_id, causal_sequence)),
+    }
+}
+
+fn local_multi_agent_replay_harness_trace() -> (RunId, Vec<TraceEvent>) {
+    let parent_run_id = fixed_run_id(0x100);
+    let child_run_id = fixed_run_id(0x101);
+    let orchestrator = fixed_agent_id(0x200);
+    let specialist = fixed_agent_id(0x201);
+    let missing_specialist = fixed_agent_id(0x202);
+    let positive_message = fixed_message_id(0x300);
+    let rejected_message = fixed_message_id(0x301);
+    let expired_message = fixed_message_id(0x302);
+    let timestamp = OffsetDateTime::UNIX_EPOCH;
+
+    let positive_context = message_context(
+        positive_message.clone(),
+        orchestrator.clone(),
+        specialist.clone(),
+        parent_run_id.clone(),
+        0,
+    );
+    let rejected_context = message_context(
+        rejected_message,
+        orchestrator.clone(),
+        missing_specialist,
+        parent_run_id.clone(),
+        1,
+    );
+    let expired_context = message_context(
+        expired_message,
+        orchestrator.clone(),
+        specialist.clone(),
+        parent_run_id.clone(),
+        2,
+    );
+    let laundering_action = Action {
+        name: "filesystem.write".to_string(),
+        params: serde_json::json!({"path": "specialist-only.txt"}),
+        side_effect_class: SideEffectClass::Filesystem,
+        cost_estimate: None,
+        required_permissions: vec!["filesystem.write".to_string()],
+        preconditions: Vec::new(),
+        postconditions: Vec::new(),
+    };
+    let laundering_result = VerificationResult {
+        allowed: false,
+        reasons: vec!["permission_laundering_denied".to_string()],
+        artifacts: serde_json::json!({
+            "verifier": "agent_isolation_ledger",
+            "ledger_reason": "specialist cannot inherit orchestrator filesystem.write permission",
+            "source_agent_id": orchestrator.to_string(),
+            "target_agent_id": specialist.to_string(),
+            "required_permission": "filesystem.write"
+        }),
+    };
+
+    let events = vec![
+        TraceEvent::new(
+            parent_run_id.clone(),
+            0,
+            timestamp,
+            TraceEventKind::LoopTickStarted { tick_id: 1 },
+        ),
+        TraceEvent::new(
+            parent_run_id.clone(),
+            1,
+            timestamp,
+            TraceEventKind::MessageQueued {
+                message: positive_context.clone(),
+            },
+        ),
+        TraceEvent::new(
+            parent_run_id.clone(),
+            2,
+            timestamp,
+            TraceEventKind::MessageDelivered {
+                message: positive_context.clone(),
+            },
+        ),
+        TraceEvent::new(
+            parent_run_id.clone(),
+            3,
+            timestamp,
+            TraceEventKind::MessageConsumed {
+                message: positive_context,
+            },
+        ),
+        TraceEvent::new(
+            parent_run_id.clone(),
+            4,
+            timestamp,
+            TraceEventKind::MessageRejected {
+                message: rejected_context,
+                reason: "target agent is not registered".to_string(),
+            },
+        ),
+        TraceEvent::new(
+            parent_run_id.clone(),
+            5,
+            timestamp,
+            TraceEventKind::MessageExpired {
+                message: expired_context,
+                reason: Some("max_message_age exceeded before consumption".to_string()),
+            },
+        ),
+        TraceEvent::new(
+            parent_run_id.clone(),
+            6,
+            timestamp,
+            TraceEventKind::ChildRunLinked {
+                parent_run_id: parent_run_id.clone(),
+                child_run_id,
+                parent_agent_id: orchestrator,
+                child_agent_id: specialist,
+                causal_parent: Some(TraceId::from_run_sequence(&parent_run_id, 3)),
+                source_message_id: Some(positive_message),
+            },
+        ),
+        TraceEvent::new(
+            parent_run_id.clone(),
+            7,
+            timestamp,
+            TraceEventKind::ActionDenied {
+                action: laundering_action,
+                result: laundering_result,
+            },
+        ),
+        TraceEvent::new(
+            parent_run_id.clone(),
+            8,
+            timestamp,
+            TraceEventKind::LoopTickCompleted {
+                tick_id: 1,
+                integrity: None,
+            },
+        ),
+    ];
+    (parent_run_id, events)
 }
 
 #[test]
@@ -491,6 +658,192 @@ fn handoff_boundary_output_contains_previous_head() {
 }
 
 #[test]
+fn replay_reconstructs_local_multi_agent_harness_deterministically() {
+    let trace_temp = NamedTempFile::new().expect("trace db");
+    let state_temp = NamedTempFile::new().expect("state db");
+    let trace_store = SqliteTraceStore::open(trace_temp.path()).expect("trace store");
+    let _state_store = SqliteStateStore::open(state_temp.path()).expect("state store");
+    let (run_id, events) = local_multi_agent_replay_harness_trace();
+
+    for event in events {
+        TraceStore::append(
+            &trace_store,
+            &run_id.to_string(),
+            serde_json::to_value(event).unwrap(),
+        )
+        .expect("append");
+    }
+
+    let first = replay_outputs_from_stores(
+        &trace_temp.path().to_path_buf(),
+        &state_temp.path().to_path_buf(),
+        &run_id.to_string(),
+        None,
+        false,
+    )
+    .expect("first replay");
+    let second = replay_outputs_from_stores(
+        &trace_temp.path().to_path_buf(),
+        &state_temp.path().to_path_buf(),
+        &run_id.to_string(),
+        None,
+        false,
+    )
+    .expect("second replay");
+
+    let first_lines = first
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("first json");
+    let second_lines = second
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("second json");
+    assert_eq!(first_lines, second_lines);
+
+    let values = first
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("json values");
+    let tick = values
+        .iter()
+        .find(|value| value["type"] == "tick")
+        .expect("tick output");
+    let tick_messages = tick["messages"].as_array().expect("tick messages");
+    assert_eq!(tick_messages.len(), 5);
+    assert_eq!(tick["parent_child_runs"].as_array().unwrap().len(), 1);
+    assert_eq!(tick["isolation_denials"].as_array().unwrap().len(), 1);
+
+    let graph = values
+        .iter()
+        .find(|value| value["type"] == "causal_graph")
+        .expect("causal graph output");
+    let run_id_text = run_id.to_string();
+    assert_eq!(graph["run_id"].as_str(), Some(run_id_text.as_str()));
+    assert_eq!(graph["replay_mode"].as_str(), Some("inspect_only"));
+    assert_eq!(graph["side_effects_replayed"].as_bool(), Some(false));
+
+    let messages = graph["messages"].as_array().expect("graph messages");
+    let lifecycles = messages
+        .iter()
+        .map(|message| message["lifecycle"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lifecycles,
+        vec!["queued", "delivered", "consumed", "rejected", "expired"]
+    );
+    for message in messages {
+        assert!(message.get("trace_event_id").is_some());
+        assert!(message.get("message_id").is_some());
+        assert!(message.get("source_agent_id").is_some());
+        assert!(message.get("target_agent_id").is_some());
+        assert_eq!(message["run_id"].as_str(), Some(run_id_text.as_str()));
+    }
+
+    let child_runs = graph["parent_child_runs"].as_array().expect("child runs");
+    assert_eq!(child_runs.len(), 1);
+    assert_eq!(
+        child_runs[0]["parent_run_id"].as_str(),
+        Some(run_id_text.as_str())
+    );
+    assert_eq!(
+        child_runs[0]["side_effects_replayed"].as_bool(),
+        Some(false)
+    );
+
+    let isolation_denials = graph["isolation_denials"]
+        .as_array()
+        .expect("isolation denials");
+    assert_eq!(isolation_denials.len(), 1);
+    assert_eq!(
+        isolation_denials[0]["verifier"].as_str(),
+        Some("agent_isolation_ledger")
+    );
+    assert!(isolation_denials[0]["ledger_reason"]
+        .as_str()
+        .unwrap()
+        .contains("cannot inherit"));
+    assert_eq!(
+        isolation_denials[0]["reasons"],
+        serde_json::json!(["permission_laundering_denied"])
+    );
+
+    let denial_failure_scenarios = usize::from(lifecycles.contains(&"rejected"))
+        + usize::from(lifecycles.contains(&"expired"))
+        + isolation_denials.len();
+    assert!(denial_failure_scenarios >= 3);
+}
+
+#[test]
+fn replay_rejects_message_context_run_mismatch() {
+    let state_temp = NamedTempFile::new().expect("state db");
+    let state_store = SqliteStateStore::open(state_temp.path()).expect("state store");
+    let event_run_id = fixed_run_id(0x110);
+    let message_run_id = fixed_run_id(0x111);
+    let context = message_context(
+        fixed_message_id(0x310),
+        fixed_agent_id(0x210),
+        fixed_agent_id(0x211),
+        message_run_id,
+        0,
+    );
+    let event = TraceEvent::new(
+        event_run_id.clone(),
+        0,
+        OffsetDateTime::UNIX_EPOCH,
+        TraceEventKind::MessageQueued { message: context },
+    );
+
+    let error = collect_replay_outputs(
+        &[event],
+        &state_store,
+        &event_run_id.to_string(),
+        None,
+        None,
+        None,
+        false,
+    )
+    .expect_err("run mismatch should fail");
+    assert!(error.contains("Message trace run mismatch"));
+}
+
+#[test]
+fn replay_rejects_child_run_parent_mismatch() {
+    let state_temp = NamedTempFile::new().expect("state db");
+    let state_store = SqliteStateStore::open(state_temp.path()).expect("state store");
+    let event_run_id = fixed_run_id(0x120);
+    let parent_run_id = fixed_run_id(0x121);
+    let event = TraceEvent::new(
+        event_run_id.clone(),
+        0,
+        OffsetDateTime::UNIX_EPOCH,
+        TraceEventKind::ChildRunLinked {
+            parent_run_id,
+            child_run_id: fixed_run_id(0x122),
+            parent_agent_id: fixed_agent_id(0x220),
+            child_agent_id: fixed_agent_id(0x221),
+            causal_parent: None,
+            source_message_id: None,
+        },
+    );
+
+    let error = collect_replay_outputs(
+        &[event],
+        &state_store,
+        &event_run_id.to_string(),
+        None,
+        None,
+        None,
+        false,
+    )
+    .expect_err("parent mismatch should fail");
+    assert!(error.contains("Child run link parent run mismatch"));
+}
+
+#[test]
 fn replay_errors_on_corrupted_trace_sequence() {
     let trace_temp = NamedTempFile::new().expect("trace db");
     let state_temp = NamedTempFile::new().expect("state db");
@@ -788,7 +1141,7 @@ fn run_from_config_validates_signed_work_order_and_records_metadata() {
     );
 
     let config = format!(
-        "trace_db: {}\nstate_db: {}\nrun_id: {}\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\", \"delete_file\"]\n    allowed_adapters: [\"filesystem\"]\n    allowed_permissions: [\"fs.write\"]\n    quotas:\n      max_actions_per_tick: 5\n      max_filesystem_write_bytes: 1024\nagents:\n  - id: {}\n    tenant_id: {}\n    run_id: {}\n    policy:\n      type: static\n      actions:\n        - name: write_file\n          adapter: filesystem\n          side_effect_class: filesystem\n          required_permissions: [\"fs.write\"]\n          params:\n            path: \"hello.txt\"\n            contents: \"hi\"\n          usage:\n            actions: 1\n            filesystem_write_bytes: 2\nadapters:\n  filesystem:\n    base_dir: {}\n{}",
+        "trace_db: {}\nstate_db: {}\nrun_id: {}\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\", \"delete_file\"]\n    allowed_adapters: [\"filesystem\"]\n    allowed_permissions: [\"fs.write\"]\n    quotas:\n      max_actions_per_tick: 5\n      max_filesystem_write_bytes: 1024\nagents:\n  - id: {}\n    tenant_id: {}\n    run_id: {}\n    allowed_permissions: [\"fs.write\"]\n    policy:\n      type: static\n      actions:\n        - name: write_file\n          adapter: filesystem\n          side_effect_class: filesystem\n          required_permissions: [\"fs.write\"]\n          params:\n            path: \"hello.txt\"\n            contents: \"hi\"\n          usage:\n            actions: 1\n            filesystem_write_bytes: 2\nadapters:\n  filesystem:\n    base_dir: {}\n{}",
         trace_path.display(),
         state_path.display(),
         run_uuid,
@@ -1181,6 +1534,9 @@ fn build_gateway_rejects_missing_adapter() {
             snapshot_interval: None,
             initial_state: None,
             resume: None,
+            allowed_permissions: None,
+            allowed_message_schemas: None,
+            allowed_message_recipients: None,
             percepts: None,
             policy: PolicyConfig::Static {
                 actions: vec![ActionConfig {
@@ -1370,6 +1726,16 @@ fn apply_event_to_tick_populates_fields() {
         postconditions: Vec::new(),
     };
     let outcome_value = serde_json::json!({"result": "ok"});
+    let source_agent_id = AgentId::new();
+    let target_agent_id = AgentId::new();
+    let message = MessageTraceContext {
+        message_id: MessageId::new(),
+        source_agent_id: source_agent_id.clone(),
+        target_agent_id: target_agent_id.clone(),
+        run_id: run_id.clone(),
+        schema: "splendor.message.task_request.v1".to_string(),
+        causal_parent: Some(TraceId::from_run_sequence(&run_id, 5)),
+    };
     let feedback = Feedback {
         kind: "signal".to_string(),
         payload: serde_json::json!({"k": 1}),
@@ -1456,6 +1822,15 @@ fn apply_event_to_tick_populates_fields() {
             run_id.clone(),
             8,
             timestamp,
+            TraceEventKind::MessageRejected {
+                message: message.clone(),
+                reason: "agent_isolation_ledger denied message_schema_not_allowed".to_string(),
+            },
+        ),
+        TraceEvent::new(
+            run_id.clone(),
+            9,
+            timestamp,
             TraceEventKind::OutcomeRecorded {
                 outcome: outcome_value.clone(),
                 feedback: Some(feedback.clone()),
@@ -1464,7 +1839,7 @@ fn apply_event_to_tick_populates_fields() {
         ),
         TraceEvent::new(
             run_id.clone(),
-            9,
+            10,
             timestamp,
             TraceEventKind::StateCommitted {
                 state_hash: node_id.hash().clone(),
@@ -1493,6 +1868,15 @@ fn apply_event_to_tick_populates_fields() {
     assert_eq!(tick.actions[0].status, "executed");
     assert_eq!(tick.actions[1].status, "denied");
     assert_eq!(tick.actions[2].status, "failed");
+    assert_eq!(tick.messages.len(), 1);
+    assert_eq!(tick.messages[0].lifecycle, "rejected");
+    assert_eq!(tick.messages[0].source_agent_id, source_agent_id);
+    assert_eq!(tick.messages[0].target_agent_id, target_agent_id);
+    assert!(tick.messages[0]
+        .reason
+        .as_deref()
+        .unwrap_or_default()
+        .contains("agent_isolation_ledger"));
     assert_eq!(tick.outcome, Some(outcome_value));
     assert_eq!(tick.feedback.as_ref().unwrap().kind, "signal");
     assert_eq!(tick.reward.as_ref().unwrap().value, 1.0);
@@ -1755,6 +2139,9 @@ fn build_gateway_success() {
             snapshot_interval: None,
             initial_state: None,
             resume: None,
+            allowed_permissions: None,
+            allowed_message_schemas: None,
+            allowed_message_recipients: None,
             percepts: None,
             policy: PolicyConfig::Static {
                 actions: vec![ActionConfig {

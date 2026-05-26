@@ -60,8 +60,16 @@ impl ClientPrincipal {
 pub enum EndpointScope {
     /// Create a run from a signed work order.
     RunsCreate,
+    /// Start a local run.
+    RunsStart,
+    /// Read run lifecycle metadata.
+    RunsRead,
+    /// Pause a local run.
+    RunsPause,
     /// Resume an existing run from a signed work order.
     RunsResume,
+    /// Stop a local run.
+    RunsStop,
     /// Append percepts to an existing run.
     PerceptsAppend,
     /// Submit an action request to the action gateway path.
@@ -93,7 +101,11 @@ impl EndpointScope {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::RunsCreate => "splendor.runs.create",
+            Self::RunsStart => "splendor.runs.start",
+            Self::RunsRead => "splendor.runs.read",
+            Self::RunsPause => "splendor.runs.pause",
             Self::RunsResume => "splendor.runs.resume",
+            Self::RunsStop => "splendor.runs.stop",
             Self::PerceptsAppend => "splendor.percepts.append",
             Self::ActionsSubmit => "splendor.actions.submit",
             Self::TracesRead => "splendor.traces.read",
@@ -294,8 +306,16 @@ pub enum GatewayVerificationState {
 pub enum DaemonEndpoint {
     /// `POST /runs`.
     RunCreate { tenant_id: TenantId },
+    /// `POST /runs/:run_id/start`.
+    RunStart { tenant_id: TenantId, run_id: RunId },
+    /// `GET /runs/:run_id`.
+    RunInspect { tenant_id: TenantId, run_id: RunId },
+    /// `POST /runs/:run_id/pause`.
+    RunPause { tenant_id: TenantId, run_id: RunId },
     /// `POST /runs/:run_id/resume`.
     RunResume { tenant_id: TenantId, run_id: RunId },
+    /// `POST /runs/:run_id/stop`.
+    RunStop { tenant_id: TenantId, run_id: RunId },
     /// `POST /runs/:run_id/percepts`.
     PerceptAppend {
         tenant_id: TenantId,
@@ -311,6 +331,10 @@ pub enum DaemonEndpoint {
         run_id: RunId,
         redaction_policy: Option<String>,
     },
+    /// `GET /runs/:run_id/state-head`.
+    StateHeadRead { tenant_id: TenantId, run_id: RunId },
+    /// `POST /runs/:run_id/replay`.
+    ReplayCreate { tenant_id: TenantId, run_id: RunId },
     /// `POST /actions`.
     ActionSubmit {
         tenant_id: TenantId,
@@ -347,9 +371,15 @@ impl DaemonEndpoint {
     pub fn required_scope(&self) -> EndpointScope {
         match self {
             Self::RunCreate { .. } => EndpointScope::RunsCreate,
+            Self::RunStart { .. } => EndpointScope::RunsStart,
+            Self::RunInspect { .. } => EndpointScope::RunsRead,
+            Self::RunPause { .. } => EndpointScope::RunsPause,
             Self::RunResume { .. } => EndpointScope::RunsResume,
+            Self::RunStop { .. } => EndpointScope::RunsStop,
             Self::PerceptAppend { .. } => EndpointScope::PerceptsAppend,
             Self::TraceRead { .. } => EndpointScope::TracesRead,
+            Self::StateHeadRead { .. } => EndpointScope::StateRead,
+            Self::ReplayCreate { .. } => EndpointScope::ReplayCreate,
             Self::ActionSubmit { .. } => EndpointScope::ActionsSubmit,
             Self::Health => EndpointScope::HealthRead,
             Self::Capabilities => EndpointScope::CapabilitiesRead,
@@ -363,9 +393,15 @@ impl DaemonEndpoint {
     fn tenant_id(&self) -> Option<&TenantId> {
         match self {
             Self::RunCreate { tenant_id }
+            | Self::RunStart { tenant_id, .. }
+            | Self::RunInspect { tenant_id, .. }
+            | Self::RunPause { tenant_id, .. }
             | Self::RunResume { tenant_id, .. }
+            | Self::RunStop { tenant_id, .. }
             | Self::PerceptAppend { tenant_id, .. }
             | Self::TraceRead { tenant_id, .. }
+            | Self::StateHeadRead { tenant_id, .. }
+            | Self::ReplayCreate { tenant_id, .. }
             | Self::ActionSubmit { tenant_id, .. } => Some(tenant_id),
             Self::Health
             | Self::Capabilities
@@ -383,9 +419,15 @@ impl DaemonEndpoint {
             | Self::NodeHeartbeat { scope, .. }
             | Self::InstanceHeartbeat { scope, .. } => Some(scope),
             Self::RunCreate { .. }
+            | Self::RunStart { .. }
+            | Self::RunInspect { .. }
+            | Self::RunPause { .. }
             | Self::RunResume { .. }
+            | Self::RunStop { .. }
             | Self::PerceptAppend { .. }
             | Self::TraceRead { .. }
+            | Self::StateHeadRead { .. }
+            | Self::ReplayCreate { .. }
             | Self::ActionSubmit { .. }
             | Self::Health
             | Self::Capabilities => None,
@@ -396,7 +438,10 @@ impl DaemonEndpoint {
         matches!(
             self,
             Self::RunCreate { .. }
+                | Self::RunStart { .. }
+                | Self::RunPause { .. }
                 | Self::RunResume { .. }
+                | Self::RunStop { .. }
                 | Self::PerceptAppend { .. }
                 | Self::ActionSubmit { .. }
                 | Self::NodeRegister { .. }
@@ -766,7 +811,13 @@ fn validate_endpoint_contract(endpoint: &DaemonEndpoint) -> Result<(), DaemonSec
                 .map_err(|_| DaemonSecurityError::InvalidRegistryEndpoint)
         }
         DaemonEndpoint::RunCreate { .. }
+        | DaemonEndpoint::RunStart { .. }
+        | DaemonEndpoint::RunInspect { .. }
+        | DaemonEndpoint::RunPause { .. }
         | DaemonEndpoint::RunResume { .. }
+        | DaemonEndpoint::RunStop { .. }
+        | DaemonEndpoint::StateHeadRead { .. }
+        | DaemonEndpoint::ReplayCreate { .. }
         | DaemonEndpoint::Health
         | DaemonEndpoint::Capabilities => Ok(()),
     }

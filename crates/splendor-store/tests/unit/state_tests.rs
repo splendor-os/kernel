@@ -54,9 +54,12 @@ fn state_store_commits_and_snapshots() {
     };
     let node_id = StateStore::commit_node(&store, Vec::new(), data_ref.clone(), metadata)
         .expect("commit node");
+    let node = StateStore::get_node(&store, &node_id).expect("get node");
     let snapshot_id = StateStore::snapshot(&store, &node_id).expect("snapshot");
     let snapshot = StateStore::load_snapshot(&store, &snapshot_id).expect("load snapshot");
     assert!(!node_id.to_string().is_empty());
+    assert_eq!(node.id, node_id);
+    assert_eq!(node.data_ref, data_ref);
     assert_eq!(snapshot.node_id, node_id);
     assert_eq!(snapshot.state.bytes, state_data.bytes);
     assert_eq!(snapshot.state.content_type, state_data.content_type);
@@ -180,6 +183,10 @@ fn state_store_error_paths() {
         StateStore::snapshot(&store, &missing_node),
         Err(StateStoreError::MissingNode)
     ));
+    assert!(matches!(
+        StateStore::get_node(&store, &missing_node),
+        Err(StateStoreError::MissingNode)
+    ));
 
     let missing_snapshot = SnapshotId::from_bytes(b"missing-snapshot");
     assert!(matches!(
@@ -218,6 +225,8 @@ fn sqlite_store_persists_state() {
     };
     let node_id =
         StateStore::commit_node(&store, Vec::new(), data_ref, metadata).expect("commit node");
+    let node = StateStore::get_node(&store, &node_id).expect("get node");
+    assert_eq!(node.id, node_id);
     let snapshot_id = StateStore::snapshot(&store, &node_id).expect("snapshot");
     let snapshot = StateStore::load_snapshot(&store, &snapshot_id).expect("load snapshot");
     assert_eq!(snapshot.node_id, node_id);

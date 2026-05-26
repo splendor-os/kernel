@@ -6,12 +6,18 @@
 //! changing the canonical message payload.
 
 use crate::{
-    AgentId, EndpointScope, MessageId, RevocationStatus, RunId, TenantId, TraceEventId,
-    WorkOrderAuthorization,
+    AgentId, EndpointScope, MessageId, RevocationStatus, RunId, TenantId, TraceEventId, TraceId,
+    VerificationResult, WorkOrderAuthorization,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::OffsetDateTime;
+
+/// Canonical local task request schema used by 0.02-S4 local delegation.
+pub const TASK_REQUEST_SCHEMA: &str = "splendor.message.task_request.v1";
+
+/// Canonical local task response schema used by 0.02-S4 local delegation.
+pub const TASK_RESPONSE_SCHEMA: &str = "splendor.message.task_response.v1";
 
 /// Canonical message payload schema version supported by the local message
 /// contract.
@@ -115,6 +121,357 @@ pub enum MessageValidationError {
     SchemaVersionMismatch,
 }
 
+/// Explicit local authority delegated from a parent run to a child run.
+///
+/// Empty lists mean no authority for that dimension. They do not inherit tenant,
+/// parent-run, or caller permissions implicitly.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DelegatedAuthority {
+    /// Action names the child run may propose.
+    pub allowed_actions: Vec<String>,
+    /// Adapter identifiers the child run may use.
+    pub allowed_adapters: Vec<String>,
+    /// Permission tokens explicitly delegated to the child run.
+    pub allowed_permissions: Vec<String>,
+}
+
+impl DelegatedAuthority {
+    /// Returns an empty delegation that authorizes no side-effectful action.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Verifies an action against only this delegated scope.
+    pub fn verify_action(
+        &self,
+        action_name: &str,
+        adapter: Option<&str>,
+        required_permissions: &[String],
+    ) -> VerificationResult {
+        let mut reasons = Vec::new();
+        let mut artifacts = serde_json::Map::new();
+
+        if !allowlisted(&self.allowed_actions, action_name) {
+            reasons.push("delegated_action_not_allowed".to_string());
+            artifacts.insert(
+                "action".to_string(),
+                serde_json::json!({
+                    "requested": action_name,
+                    "allowed": &self.allowed_actions,
+                }),
+            );
+        }
+
+        if let Some(adapter) = adapter {
+            if !allowlisted(&self.allowed_adapters, adapter) {
+                reasons.push("delegated_adapter_not_allowed".to_string());
+                artifacts.insert(
+                    "adapter".to_string(),
+                    serde_json::json!({
+                        "requested": adapter,
+                        "allowed": &self.allowed_adapters,
+                    }),
+                );
+            }
+        } else {
+            reasons.push("delegated_adapter_unspecified".to_string());
+            artifacts.insert(
+                "adapter".to_string(),
+                serde_json::json!({
+                    "requested": serde_json::Value::Null,
+                    "allowed": &self.allowed_adapters,
+                }),
+            );
+        }
+
+        if !required_permissions.is_empty() {
+            let missing = required_permissions
+                .iter()
+                .filter(|permission| !allowlisted(&self.allowed_permissions, permission))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                reasons.push("delegated_permission_denied".to_string());
+                artifacts.insert(
+                    "permissions".to_string(),
+                    serde_json::json!({
+                        "required": required_permissions,
+                        "missing": missing,
+                        "allowed": &self.allowed_permissions,
+                    }),
+                );
+            }
+        }
+
+        if reasons.is_empty() {
+            VerificationResult::allow()
+        } else {
+            VerificationResult {
+                allowed: false,
+                reasons,
+                artifacts: serde_json::Value::Object(artifacts),
+            }
+        }
+    }
+
+    /// Returns true when every delegated item is also allowed by `parent`.
+    pub fn is_subset_of(&self, parent: &Self) -> bool {
+        subset(&self.allowed_actions, &parent.allowed_actions)
+            && subset(&self.allowed_adapters, &parent.allowed_adapters)
+            && subset(&self.allowed_permissions, &parent.allowed_permissions)
+    }
+}
+
+/// Structured payload for `splendor.message.task_request.v1`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskRequest {
+    /// Parent run requesting delegated local work.
+    pub parent_run_id: RunId,
+    /// Child run created for the delegated objective.
+    pub child_run_id: RunId,
+    /// Explicit target specialist agent.
+    pub target_agent_id: AgentId,
+    /// Scoped objective for the child run.
+    pub objective: String,
+    /// Explicit authority granted to the child run.
+    pub delegated_authority: DelegatedAuthority,
+}
+
+impl TaskRequest {
+    /// Builds a task request payload and validates required delegation scope.
+    pub fn new(
+        parent_run_id: RunId,
+        child_run_id: RunId,
+        target_agent_id: AgentId,
+        objective: impl Into<String>,
+        delegated_authority: DelegatedAuthority,
+    ) -> Result<Self, MessageValidationError> {
+        let request = Self {
+            parent_run_id,
+            child_run_id,
+            target_agent_id,
+            objective: objective.into(),
+            delegated_authority,
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
+    /// Decodes a task request from a JSON payload.
+    pub fn from_payload(payload: &serde_json::Value) -> Result<Self, MessageValidationError> {
+        let request = serde_json::from_value::<Self>(payload.clone()).map_err(|error| {
+            MessageValidationError::PayloadValidationFailed {
+                schema: TASK_REQUEST_SCHEMA.to_string(),
+                reason: error.to_string(),
+            }
+        })?;
+        request.validate()?;
+        Ok(request)
+    }
+
+    /// Validates the task request payload independent of an envelope.
+    pub fn validate(&self) -> Result<(), MessageValidationError> {
+        if self.parent_run_id.as_uuid().is_nil() {
+            return Err(payload_error(
+                TASK_REQUEST_SCHEMA,
+                "parent_run_id is required",
+            ));
+        }
+        if self.child_run_id.as_uuid().is_nil() {
+            return Err(payload_error(
+                TASK_REQUEST_SCHEMA,
+                "child_run_id is required",
+            ));
+        }
+        if self.parent_run_id == self.child_run_id {
+            return Err(payload_error(
+                TASK_REQUEST_SCHEMA,
+                "child_run_id must be distinct from parent_run_id",
+            ));
+        }
+        if self.target_agent_id.as_uuid().is_nil() {
+            return Err(payload_error(
+                TASK_REQUEST_SCHEMA,
+                "target_agent_id is required",
+            ));
+        }
+        if self.objective.trim().is_empty() {
+            return Err(payload_error(TASK_REQUEST_SCHEMA, "objective is required"));
+        }
+        Ok(())
+    }
+
+    fn validate_message_scope(&self, message: &Message) -> Result<(), MessageValidationError> {
+        self.validate()?;
+        if self.parent_run_id != message.run_id {
+            return Err(payload_error(
+                TASK_REQUEST_SCHEMA,
+                "parent_run_id must match message run_id",
+            ));
+        }
+        if self.target_agent_id != message.target_agent_id {
+            return Err(payload_error(
+                TASK_REQUEST_SCHEMA,
+                "target_agent_id must match message target_agent_id",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Status of a local task response.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskResponseStatus {
+    /// Child run completed successfully.
+    Completed,
+    /// Child run failed with a structured failure.
+    Failed,
+    /// Child run or delegation request was denied.
+    Denied,
+    /// Child run was cancelled.
+    Cancelled,
+}
+
+/// Structured child-run failure returned in task responses and traces.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskFailure {
+    /// Stable failure code suitable for replay and policy inspection.
+    pub code: String,
+    /// Human-readable failure reason.
+    pub reason: String,
+    /// Whether the parent may retry the delegated work safely.
+    pub retryable: bool,
+    /// Optional trace event that recorded the failure.
+    pub trace_id: Option<TraceId>,
+}
+
+impl TaskFailure {
+    /// Creates a structured task failure.
+    pub fn new(code: impl Into<String>, reason: impl Into<String>, retryable: bool) -> Self {
+        Self {
+            code: code.into(),
+            reason: reason.into(),
+            retryable,
+            trace_id: None,
+        }
+    }
+
+    /// Adds the trace event that recorded this failure.
+    pub fn with_trace_id(mut self, trace_id: TraceId) -> Self {
+        self.trace_id = Some(trace_id);
+        self
+    }
+}
+
+/// Structured payload for `splendor.message.task_response.v1`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TaskResponse {
+    /// Parent run that requested the child work.
+    pub parent_run_id: RunId,
+    /// Child run that produced this response.
+    pub child_run_id: RunId,
+    /// Final child task status.
+    pub status: TaskResponseStatus,
+    /// Optional output payload or reference for a successful child run.
+    pub output: Option<serde_json::Value>,
+    /// Structured failure for failed, denied, or cancelled child runs.
+    pub failure: Option<TaskFailure>,
+}
+
+impl TaskResponse {
+    /// Creates and validates a task response payload.
+    pub fn new(
+        parent_run_id: RunId,
+        child_run_id: RunId,
+        status: TaskResponseStatus,
+        output: Option<serde_json::Value>,
+        failure: Option<TaskFailure>,
+    ) -> Result<Self, MessageValidationError> {
+        let response = Self {
+            parent_run_id,
+            child_run_id,
+            status,
+            output,
+            failure,
+        };
+        response.validate()?;
+        Ok(response)
+    }
+
+    /// Decodes a task response from a JSON payload.
+    pub fn from_payload(payload: &serde_json::Value) -> Result<Self, MessageValidationError> {
+        let response = serde_json::from_value::<Self>(payload.clone()).map_err(|error| {
+            MessageValidationError::PayloadValidationFailed {
+                schema: TASK_RESPONSE_SCHEMA.to_string(),
+                reason: error.to_string(),
+            }
+        })?;
+        response.validate()?;
+        Ok(response)
+    }
+
+    /// Validates task response identities and structured failure consistency.
+    pub fn validate(&self) -> Result<(), MessageValidationError> {
+        if self.parent_run_id.as_uuid().is_nil() {
+            return Err(payload_error(
+                TASK_RESPONSE_SCHEMA,
+                "parent_run_id is required",
+            ));
+        }
+        if self.child_run_id.as_uuid().is_nil() {
+            return Err(payload_error(
+                TASK_RESPONSE_SCHEMA,
+                "child_run_id is required",
+            ));
+        }
+        if self.parent_run_id == self.child_run_id {
+            return Err(payload_error(
+                TASK_RESPONSE_SCHEMA,
+                "child_run_id must be distinct from parent_run_id",
+            ));
+        }
+        match self.status {
+            TaskResponseStatus::Completed => {
+                if self.failure.is_some() {
+                    return Err(payload_error(
+                        TASK_RESPONSE_SCHEMA,
+                        "completed task_response must not include failure",
+                    ));
+                }
+            }
+            TaskResponseStatus::Failed
+            | TaskResponseStatus::Denied
+            | TaskResponseStatus::Cancelled => {
+                let failure = self.failure.as_ref().ok_or_else(|| {
+                    payload_error(
+                        TASK_RESPONSE_SCHEMA,
+                        "failed, denied, or cancelled task_response requires failure",
+                    )
+                })?;
+                if failure.code.trim().is_empty() || failure.reason.trim().is_empty() {
+                    return Err(payload_error(
+                        TASK_RESPONSE_SCHEMA,
+                        "failure code and reason are required",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_message_scope(&self, message: &Message) -> Result<(), MessageValidationError> {
+        self.validate()?;
+        if self.parent_run_id != message.run_id {
+            return Err(payload_error(
+                TASK_RESPONSE_SCHEMA,
+                "parent_run_id must match message run_id",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Transport-neutral message sent from one agent runtime context to another.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Message {
@@ -174,7 +531,9 @@ impl Message {
         if self.payload.is_null() {
             return Err(MessageValidationError::MissingPayload);
         }
-        MessageSchemaVersion::from_schema(&self.schema)
+        let version = MessageSchemaVersion::from_schema(&self.schema)?;
+        validate_schema_payload(self)?;
+        Ok(version)
     }
 
     /// Creates a structured validation failure that can be recorded as a
@@ -609,6 +968,33 @@ fn validate_schema_name(schema: &str) -> Result<(), MessageValidationError> {
         });
     }
     Ok(())
+}
+
+fn validate_schema_payload(message: &Message) -> Result<(), MessageValidationError> {
+    match message.schema.as_str() {
+        TASK_REQUEST_SCHEMA => {
+            TaskRequest::from_payload(&message.payload)?.validate_message_scope(message)
+        }
+        TASK_RESPONSE_SCHEMA => {
+            TaskResponse::from_payload(&message.payload)?.validate_message_scope(message)
+        }
+        _ => Ok(()),
+    }
+}
+
+fn payload_error(schema: &str, reason: impl Into<String>) -> MessageValidationError {
+    MessageValidationError::PayloadValidationFailed {
+        schema: schema.to_string(),
+        reason: reason.into(),
+    }
+}
+
+fn allowlisted(allowlist: &[String], value: &str) -> bool {
+    allowlist.iter().any(|item| item == value)
+}
+
+fn subset(candidate: &[String], parent: &[String]) -> bool {
+    candidate.iter().all(|item| allowlisted(parent, item))
 }
 
 #[cfg(test)]

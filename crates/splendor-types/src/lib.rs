@@ -68,9 +68,11 @@ pub use ids::{
     TraceIdentityContext, WorkOrderId, WorkOrderIdError,
 };
 pub use message::{
-    Message, MessageDeliveryStatus, MessageEnvelope, MessageSchemaVersion, MessageTraceContext,
-    MessageTraceLinks, MessageValidationError, RemoteMessageEnvelope, RemoteMessageEnvelopeVersion,
-    RemoteMessageRetryPolicy, RemoteMessageTraceContext, RemoteMessageValidationError,
+    DelegatedAuthority, Message, MessageDeliveryStatus, MessageEnvelope, MessageSchemaVersion,
+    MessageTraceContext, MessageTraceLinks, MessageValidationError, RemoteMessageEnvelope,
+    RemoteMessageEnvelopeVersion, RemoteMessageRetryPolicy, RemoteMessageTraceContext,
+    RemoteMessageValidationError, TaskFailure, TaskRequest, TaskResponse, TaskResponseStatus,
+    TASK_REQUEST_SCHEMA, TASK_RESPONSE_SCHEMA,
 };
 pub use node_registry::{
     HealthStatus, InstanceHealth, InstanceHeartbeat, InstanceRegistration, ManagementAuditEvent,
@@ -91,7 +93,7 @@ pub use state_handoff::{
     StateHandoff, StateHandoffAuthority, StateHandoffSnapshot, StateHandoffTraceContext,
     StateReference, StateReferenceMode,
 };
-pub use trace::{TraceEvent, TraceEventKind, TraceIntegrity};
+pub use trace::{LocalDelegationTraceContext, TraceEvent, TraceEventKind, TraceIntegrity};
 pub use work_order::{
     validate_work_order, ValidatedWorkOrder, WorkOrder, WorkOrderEnvelope, WorkOrderKeyring,
     WorkOrderPlacement, WorkOrderQuotaPolicy, WorkOrderValidationContext, WorkOrderValidationError,

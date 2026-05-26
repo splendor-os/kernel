@@ -1,9 +1,10 @@
 # Local Message Router Reference
 
-The local message router is the Splendor 0.02-S2 reference implementation for
+The local message router is the Splendor 0.02 reference implementation for
 in-process agent-to-agent message delivery inside one Splendor instance. It
-strengthens the `message`, `trace store`, and local runtime-context primitives
-without adding remote transport, delegation, or daemon API behavior.
+strengthens the `message`, `trace store`, and local runtime-context primitives.
+0.02-S3 adds source-agent schema and recipient grants without adding remote
+transport, delegation, or daemon API behavior.
 
 Implemented in Rust as `splendor_kernel::{MessageRouter,
 LocalMessageRouter}`.
@@ -56,6 +57,11 @@ pub trait MessageRouter {
 }
 ```
 
+`LocalMessageRouter::register_agent_with_policy(agent_id, AgentIsolationPolicy)`
+registers explicit message grants for a source agent. `register_agent` registers
+an agent with an empty profile, which is useful for receive-only agents but does
+not authorize sends.
+
 `MessageTraceRecorder` is implemented for `KernelRuntime`. The recorder run must
 match the message run. A mismatch fails closed instead of writing a trace event
 under the wrong run.
@@ -70,8 +76,9 @@ under the wrong run.
 | `max_outbox_messages` | `1024` | Maximum routed messages retained in one source outbox. |
 | `max_message_age` | `None` | Optional TTL; stale messages expire before delivery or consumption. |
 
-The queue limits are the S2 capacity/quota behavior. Per-agent permission and
-quota ledgers remain future 0.02-S3 scope.
+The queue limits are local router capacity controls. 0.02-S3 agent isolation
+adds source-agent allowed schemas and recipients; quota action/resource counters
+are documented in [`quotas.md`](quotas.md).
 
 ## Lifecycle
 
@@ -79,7 +86,8 @@ quota ledgers remain future 0.02-S3 scope.
    `LocalMessageRouter::register_agent_context`.
 2. Build a S1 `MessageEnvelope` around a typed `Message`.
 3. Call `send`/`send_at` with a trace recorder scoped to the message run.
-4. The router validates the envelope, source, target, TTL, and queue capacity.
+4. The router validates the envelope, source, target, TTL, source-agent message
+   schema/recipient grants, and queue capacity.
 5. On success, the router emits `message.queued` and `message.delivered`, stores
    the delivered envelope in the source outbox and target inbox, and returns the
    delivered envelope with trace links.
@@ -116,6 +124,8 @@ The router fails closed and does not enqueue messages when:
 - the envelope schema or identity validation fails;
 - the source agent is not registered;
 - the target agent is not registered;
+- the source agent is not allowed to send the message schema;
+- the source agent is not allowed to address the target recipient;
 - the target inbox or source outbox is full;
 - the message is expired by router TTL;
 - the trace recorder is scoped to a different run;
@@ -131,9 +141,11 @@ Message routing does not mutate the state graph and does not create state nodes.
 It updates explicit router inbox/outbox queues only. Inbox and outbox reads return
 snapshots and do not mutate unrelated agent state.
 
-Replay remains inspect-only. The router's trace events preserve message identity
-and causal parent data so later 0.02-S7 replay work can reconstruct local
-multi-agent causality without re-delivering messages or executing adapters.
+Replay remains inspect-only. The router's trace events preserve message identity,
+source/target agent identity, schema, rejection reason, and causal parent data.
+`splendorctl replay` includes these persisted message decisions without
+re-delivering messages or executing adapters.
+0.02-S7 multi-agent replay uses the same events to reconstruct local causality.
 
 ## Non-goals
 
@@ -142,7 +154,6 @@ multi-agent causality without re-delivering messages or executing adapters.
 - No durable remote queue or broker semantics.
 - No exactly-once distributed delivery.
 - No scoped delegation model.
-- No per-agent permission ledger beyond registered local source/target checks.
 - No daemon API or TypeScript client surface.
 
 ## Minimal example
@@ -160,7 +171,11 @@ let runtime = KernelRuntime::new(splendor_kernel::KernelRuntimeConfig {
     ..Default::default()
 });
 let router = LocalMessageRouter::new();
-router.register_agent(source.clone())?;
+router.register_agent_with_policy(source.clone(), splendor_kernel::AgentIsolationPolicy {
+    allowed_message_schemas: vec!["splendor.message.task_request.v1".to_string()],
+    allowed_message_recipients: vec![target.clone()],
+    ..Default::default()
+})?;
 router.register_agent(target.clone())?;
 
 let message = Message::new(

@@ -1698,25 +1698,27 @@ export interface ActionOutcome {
 export class SplendorClient {
   constructor(private readonly opts: { baseUrl: string; token: string }) {}
 
-  createRun(config: RunConfig): Promise<{ run_id: string }>;
+  createRun(request: CreateRunRequest): Promise<CreateRunResponse>;
 
-  startRun(runId: string): Promise<void>;
+  inspectRun(runId: string): Promise<RunInspectResponse>;
 
-  pauseRun(runId: string): Promise<void>;
+  startRun(runId: string, request: LifecycleRequest): Promise<TickResponse>;
 
-  resumeRun(runId: string): Promise<void>;
+  pauseRun(runId: string, request: LifecycleRequest): Promise<RunInspectResponse>;
 
-  stopRun(runId: string): Promise<void>;
+  resumeRun(runId: string, request: LifecycleRequest): Promise<TickResponse>;
 
-  appendPercept(runId: string, agentId: string, percept: Percept): Promise<void>;
+  stopRun(runId: string, request: LifecycleRequest): Promise<RunInspectResponse>;
 
-  submitAction(request: ActionRequest): Promise<ActionOutcome>;
+  appendPercept(runId: string, percept: Percept, options?: AppendPerceptOptions): Promise<AppendPerceptResponse>;
+
+  submitAction(request: SubmitActionRequest): Promise<ActionOutcome>;
 
   streamTraces(runId: string): AsyncIterable<TraceEvent>;
 
-  getStateHead(runId: string, agentId: string): Promise<{ state_node_id: string }>;
+  getStateHead(runId: string): Promise<StateHeadResponse>;
 
-  replayRun(runId: string): Promise<{ replay_id: string }>;
+  requestReplay(runId: string, options?: RequestReplayOptions): Promise<ReplayResponse>;
 }
 ```
 

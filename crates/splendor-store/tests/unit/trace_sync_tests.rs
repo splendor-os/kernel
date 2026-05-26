@@ -151,6 +151,113 @@ fn corrupted_trace_chain_is_rejected_and_quarantined() {
 }
 
 #[test]
+fn rejects_empty_gap_conflict_payload_and_hash_mismatches_without_mutation() {
+    let run_id = RunId::new();
+
+    let empty_index = InMemoryCentralTraceIndex::default();
+    let empty_error = empty_index
+        .sync_batch(TraceSyncBatch {
+            scope: scope_for(&run_id),
+            records: Vec::new(),
+        })
+        .expect_err("empty sync batch is rejected");
+    assert!(matches!(empty_error, TraceSyncError::EmptyBatch { .. }));
+    assert!(empty_index.quarantined().expect("quarantine").is_empty());
+
+    let local_with_gap = InMemoryTraceStore::default();
+    append_basic_run(&local_with_gap, &run_id);
+    let mut gap_batch =
+        TraceSyncBatch::from_store(scope_for(&run_id), &local_with_gap, 0, 3).expect("gap batch");
+    gap_batch.records.remove(1);
+    let gap_index = InMemoryCentralTraceIndex::default();
+    let gap_error = gap_index
+        .sync_batch(gap_batch)
+        .expect_err("in-batch sequence gap is rejected");
+    assert!(matches!(
+        gap_error,
+        TraceSyncError::MissingSegment {
+            expected_sequence: 1,
+            actual_sequence: 2,
+            ..
+        }
+    ));
+    assert!(gap_index.quarantined().expect("quarantine").is_empty());
+
+    let conflict_index = InMemoryCentralTraceIndex::default();
+    let conflict_first = InMemoryTraceStore::default();
+    append_event(
+        &conflict_first,
+        &run_id,
+        0,
+        TraceEventKind::LoopTickStarted { tick_id: 1 },
+    );
+    conflict_index
+        .sync_batch(
+            TraceSyncBatch::from_store(scope_for(&run_id), &conflict_first, 0, 1)
+                .expect("first conflict batch"),
+        )
+        .expect("first conflict sync");
+    let conflict_second = InMemoryTraceStore::default();
+    append_event(
+        &conflict_second,
+        &run_id,
+        0,
+        TraceEventKind::LoopTickCompleted {
+            tick_id: 1,
+            integrity: None,
+        },
+    );
+    let conflict_error = conflict_index
+        .sync_batch(
+            TraceSyncBatch::from_store(scope_for(&run_id), &conflict_second, 0, 1)
+                .expect("second conflict batch"),
+        )
+        .expect_err("conflicting central sequence is rejected");
+    assert!(matches!(
+        conflict_error,
+        TraceSyncError::CentralConflict { .. }
+    ));
+    assert_eq!(conflict_index.quarantined().expect("quarantine").len(), 1);
+
+    let payload_index = InMemoryCentralTraceIndex::default();
+    let payload_store = InMemoryTraceStore::default();
+    append_event(
+        &payload_store,
+        &run_id,
+        0,
+        TraceEventKind::LoopTickStarted { tick_id: 1 },
+    );
+    let mut payload_batch = TraceSyncBatch::from_store(scope_for(&run_id), &payload_store, 0, 1)
+        .expect("payload batch");
+    payload_batch.records[0].payload["run_id"] = serde_json::json!(RunId::new().to_string());
+    let payload_error = payload_index
+        .sync_batch(payload_batch)
+        .expect_err("payload run mismatch is rejected");
+    assert!(matches!(
+        payload_error,
+        TraceSyncError::PayloadRunIdentityMismatch { .. }
+    ));
+    assert_eq!(payload_index.quarantined().expect("quarantine").len(), 1);
+
+    let hash_index = InMemoryCentralTraceIndex::default();
+    let hash_store = InMemoryTraceStore::default();
+    append_event(
+        &hash_store,
+        &run_id,
+        0,
+        TraceEventKind::LoopTickStarted { tick_id: 1 },
+    );
+    let mut hash_batch =
+        TraceSyncBatch::from_store(scope_for(&run_id), &hash_store, 0, 1).expect("hash batch");
+    hash_batch.records[0].event_hash = ContentHash::blake3(b"wrong-event-hash");
+    let hash_error = hash_index
+        .sync_batch(hash_batch)
+        .expect_err("event hash mismatch is rejected");
+    assert!(matches!(hash_error, TraceSyncError::HashMismatch { .. }));
+    assert_eq!(hash_index.quarantined().expect("quarantine").len(), 1);
+}
+
+#[test]
 fn mismatched_run_identity_is_rejected_and_quarantined() {
     let record_run_id = RunId::new();
     let scope_run_id = RunId::new();
@@ -244,4 +351,12 @@ fn central_index_queries_available_identity_dimensions() {
         })
         .expect("query work order");
     assert_eq!(by_work_order.len(), 3);
+
+    let by_nonmatching_action_id = index
+        .query(&TraceIndexQuery {
+            action_id: Some("action-id-not-present".to_string()),
+            ..TraceIndexQuery::default()
+        })
+        .expect("query nonmatching action id");
+    assert!(by_nonmatching_action_id.is_empty());
 }
