@@ -370,8 +370,13 @@ components:
         - traces_read
         - state_read
         - replay_create
+        - messages_send
         - health_read
         - capabilities_read
+        - nodes_register
+        - instances_register
+        - nodes_heartbeat
+        - instances_heartbeat
     JsonValue: true
     ClientPrincipal:
       type: object

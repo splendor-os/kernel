@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   ACTION_STATUS_VALUES,
   CANONICAL_SCHEMA_FIELDS,
+  ENDPOINT_SCOPE_LABELS,
   ENDPOINT_SCOPE_VALUES,
   TRACE_EVENT_KIND_VARIANTS
 } from "@splendor/types";
@@ -37,6 +38,18 @@ function extractEnumVariants(source: string, name: string): string[] {
     }
   }
   throw new Error(`enum ${name} closing brace not found`);
+}
+
+function extractOpenApiStringEnum(source: string, schema: string): string[] {
+  const schemaMatch = new RegExp(`\\n    ${schema}:\\n`).exec(source);
+  assert.ok(schemaMatch, `OpenAPI schema ${schema} must exist`);
+  const start = schemaMatch.index;
+  const remainder = source.slice(start + 1);
+  const nextSchema = /\n    [A-Za-z][A-Za-z0-9]+:\n/.exec(remainder.slice(1));
+  const block = nextSchema ? remainder.slice(0, nextSchema.index + 1) : remainder;
+  const enumIndex = block.indexOf("\n      enum:");
+  assert.notEqual(enumIndex, -1, `OpenAPI schema ${schema} must define an enum`);
+  return Array.from(block.slice(enumIndex).matchAll(/^        - ([a-z_]+)$/gm), (entry) => entry[1]);
 }
 
 test("TypeScript primitive field contracts match canonical Rust structs", () => {
@@ -106,4 +119,10 @@ test("TypeScript enum contracts match canonical Rust gateway and trace variants"
   assert.deepEqual([...TRACE_EVENT_KIND_VARIANTS], extractEnumVariants(trace, "TraceEventKind"));
   assert.deepEqual([...ACTION_STATUS_VALUES], extractEnumVariants(gateway, "ActionStatus"));
   assert.deepEqual([...ENDPOINT_SCOPE_VALUES], extractEnumVariants(readRepoFile("crates/splendor-types/src/daemon_security.rs"), "EndpointScope"));
+});
+
+test("OpenAPI endpoint scopes stay aligned with TypeScript client scope labels", () => {
+  const openapi = readRepoFile("openapi/splendor-runtime-daemon.yaml");
+  const openapiScopes = extractOpenApiStringEnum(openapi, "EndpointScope");
+  assert.deepEqual(openapiScopes, Object.keys(ENDPOINT_SCOPE_LABELS));
 });
