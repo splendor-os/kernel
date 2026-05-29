@@ -1343,6 +1343,17 @@ fn circuit_breaker_config_builds_trace_contexts_and_validates_state() {
     }]))
     .expect_err("cleared breaker requires authority");
     assert!(error.contains("requires authorized_by"));
+
+    let error = build_circuit_breaker_trace_contexts(Some(&[CircuitBreakerConfig {
+        id: "cb_malformed_action_class".to_string(),
+        scope: "action_class".to_string(),
+        value: Some("filessystem".to_string()),
+        reason: "typo should not install a custom breaker".to_string(),
+        state: Some("tripped".to_string()),
+        authorized_by: Some("operator:carol".to_string()),
+    }]))
+    .expect_err("malformed action class");
+    assert!(error.contains("Unsupported action_class"));
 }
 
 #[test]
@@ -1406,13 +1417,20 @@ fn parse_circuit_breaker_scope_covers_supported_values_and_failures() {
         assert_eq!(scope.value(), expected_value);
     }
 
-    let custom_scope =
-        parse_circuit_breaker_scope(&config("action_class", Some("domain_specific".to_string())))
-            .expect("custom action class");
+    let custom_scope = parse_circuit_breaker_scope(&config(
+        "action_class",
+        Some("custom:domain_specific".to_string()),
+    ))
+    .expect("custom action class");
     assert_eq!(
         custom_scope.value(),
         Some("custom:domain_specific".to_string())
     );
+
+    let malformed =
+        parse_circuit_breaker_scope(&config("action_class", Some("domain_specific".to_string())))
+            .expect_err("unprefixed custom action class");
+    assert!(malformed.contains("Unsupported action_class"));
 
     let missing = parse_circuit_breaker_scope(&config("tenant", None)).expect_err("missing value");
     assert!(missing.contains("requires value"));

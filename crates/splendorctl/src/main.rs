@@ -1887,7 +1887,7 @@ fn parse_circuit_breaker_scope(
         )),
         "action_class" => Ok(CircuitBreakerScope::ActionClass(parse_action_class_value(
             required_scope_value("action_class", value)?,
-        ))),
+        )?)),
         other => Err(format!("Unsupported circuit breaker scope: {other}")),
     }
 }
@@ -2045,14 +2045,8 @@ fn side_effect_class_name(value: &SideEffectClass) -> String {
     }
 }
 
-fn parse_action_class_value(value: &str) -> SideEffectClass {
-    match value {
-        "filesystem" => SideEffectClass::Filesystem,
-        "network" => SideEffectClass::Network,
-        "read_only" => SideEffectClass::ReadOnly,
-        "external" => SideEffectClass::External,
-        other => SideEffectClass::Custom(other.to_string()),
-    }
+fn parse_action_class_value(value: &str) -> Result<SideEffectClass, String> {
+    parse_side_effect_class(value).map_err(|_| format!("Unsupported action_class: {value}"))
 }
 
 fn parse_http_method(value: String) -> Result<HttpMethod, String> {
