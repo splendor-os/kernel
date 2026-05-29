@@ -87,3 +87,12 @@ jobs:
             SPLENDOR_IMAGE_VERSION=${{ github.ref_name }}
             VCS_REF=${{ github.sha }}
             BUILD_DATE=${{ steps.build-date.outputs.created }}
+
+      - name: Make GHCR package public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_NAME: ${{ github.event.repository.name }}
+        run: |
+          gh api --method PATCH \
+            "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/${PACKAGE_NAME}/visibility" \
+            -f visibility=public
