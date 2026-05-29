@@ -470,6 +470,72 @@ fn valid_scoped_approval_grant_allows_execution() {
 }
 
 #[test]
+fn approval_policy_expiry_needs_intervention_without_adapter_execution() {
+    let request = base_request();
+    let mut policy = approval_policy_for(&request);
+    policy.expires_at = Some(OffsetDateTime::now_utc() - time::Duration::minutes(1));
+    let tenant_access = Arc::new(TestTenantAccess {
+        policy: VerificationResult::allow(),
+        quota: VerificationResult::allow(),
+    });
+    let mut gateway = VerifiedActionGateway::new(tenant_access);
+    let adapter = Arc::new(CountingAdapter::default());
+    gateway.register_adapter("noop", "adapter", adapter.clone());
+    gateway.set_approval_verifier(Arc::new(PolicyApprovalVerifier::new(vec![policy])));
+
+    let outcome = gateway.submit(request).expect("outcome");
+
+    assert!(matches!(outcome.status, ActionStatus::NeedsIntervention));
+    assert!(outcome
+        .verification
+        .reasons
+        .contains(&"approval_policy_expired".to_string()));
+    assert_eq!(
+        outcome.verification.artifacts["approval_status"].as_str(),
+        Some("intervention_required")
+    );
+    assert_eq!(*adapter.calls.lock().expect("calls lock"), 0);
+}
+
+#[test]
+fn approval_policy_permission_and_side_effect_triggers_require_approval() {
+    for trigger in ["permission", "side_effect"] {
+        let mut request = base_request();
+        request.action.required_permissions = vec!["artifact.publish".to_string()];
+        request.action.side_effect_class = SideEffectClass::External;
+        let mut policy = ApprovalPolicy::new(
+            format!("approval_policy_{trigger}"),
+            request.tenant_id.clone(),
+            format!("{trigger} requires approval"),
+        );
+        policy.agent_id = Some(request.agent_id.clone());
+        if trigger == "permission" {
+            policy.required_permission = Some("artifact.publish".to_string());
+        } else {
+            policy.side_effect_class = Some(SideEffectClass::External);
+        }
+
+        let tenant_access = Arc::new(TestTenantAccess {
+            policy: VerificationResult::allow(),
+            quota: VerificationResult::allow(),
+        });
+        let mut gateway = VerifiedActionGateway::new(tenant_access);
+        let adapter = Arc::new(CountingAdapter::default());
+        gateway.register_adapter("noop", "adapter", adapter.clone());
+        gateway.set_approval_verifier(Arc::new(PolicyApprovalVerifier::new(vec![policy])));
+
+        let outcome = gateway.submit(request).expect("outcome");
+
+        assert!(matches!(outcome.status, ActionStatus::NeedsApproval));
+        assert!(outcome
+            .verification
+            .reasons
+            .contains(&"approval_required".to_string()));
+        assert_eq!(*adapter.calls.lock().expect("calls lock"), 0);
+    }
+}
+
+#[test]
 fn approval_wrong_scope_is_denied_without_adapter_execution() {
     for mut evidence in [
         {

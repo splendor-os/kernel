@@ -1738,6 +1738,63 @@ mod tests {
     }
 
     #[test]
+    fn approval_trace_and_replay_helpers_cover_all_lifecycles() {
+        let run_id = RunId::new();
+        let approval = ApprovalTraceContext {
+            approval_id: splendor_types::ApprovalId::new(),
+            tenant_id: TenantId::new(),
+            agent_id: splendor_types::AgentId::new(),
+            run_id: run_id.clone(),
+            action_id: Some(ActionId::new()),
+            action_name: "artifact.publish".to_string(),
+            adapter: Some("artifact-store".to_string()),
+            decision: Some(splendor_types::ApprovalDecision::Granted),
+            reason: Some("operator decision".to_string()),
+            policy_id: Some("publish_policy".to_string()),
+            risk_level: Some("external".to_string()),
+            issued_at: Some(OffsetDateTime::now_utc()),
+            expires_at: Some(OffsetDateTime::now_utc() + time::Duration::minutes(10)),
+            revoked: false,
+        };
+
+        for (sequence, (status, replay_lifecycle, expected_reason)) in [
+            ("required", "requested", None),
+            ("granted", "granted", None),
+            ("expired", "expired", Some("approval_expired")),
+            ("revoked", "revoked", Some("approval_revoked")),
+            (
+                "intervention_required",
+                "denied",
+                Some("approval_policy_expired"),
+            ),
+            ("denied", "denied", Some("approval_denied")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let kind = approval_trace_kind(status, approval.clone());
+            let event = TraceEvent::new(
+                run_id.clone(),
+                sequence as u64,
+                OffsetDateTime::now_utc(),
+                kind,
+            );
+            let replay = approval_replay_event(event).expect("approval replay event");
+            assert_eq!(replay.lifecycle, replay_lifecycle);
+            assert_eq!(replay.reason.as_deref(), expected_reason);
+            assert_eq!(replay.sequence, sequence as u64);
+        }
+
+        let non_approval = TraceEvent::new(
+            run_id,
+            99,
+            OffsetDateTime::now_utc(),
+            TraceEventKind::RunStarted,
+        );
+        assert!(approval_replay_event(non_approval).is_none());
+    }
+
+    #[test]
     fn registration_defaults_and_trace_recording_fail_closed_paths_are_stable() {
         let tenant_id = TenantId::new();
         let agent_id = splendor_types::AgentId::new();

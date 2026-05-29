@@ -870,6 +870,250 @@ async fn action_endpoint_uses_gateway_and_returns_structured_denial() {
 }
 
 #[tokio::test]
+async fn action_endpoint_traces_approval_lifecycles_without_adapter_bypass() {
+    let app = router(DaemonState::local_dev());
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let mut create = create_request(
+        tenant_id.clone(),
+        agent_id.clone(),
+        Vec::new(),
+        vec![RegisteredAction {
+            name: "allowed_action".to_string(),
+            adapter: "daemon.local".to_string(),
+        }],
+    );
+    create.approval_policies = vec![approval_policy(&tenant_id, &agent_id, "allowed_action")];
+    let (status, created): (StatusCode, CreateRunResponse) = call_json(
+        app.clone(),
+        Method::POST,
+        "/runs",
+        serde_json::to_value(create).expect("create request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, traces): (StatusCode, TracePageResponse) = call_empty(
+        app.clone(),
+        Method::GET,
+        &format!("/runs/{}/traces?redaction_policy=none", created.run_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let causal_trace_id = traces.records.first().and_then(|record| {
+        serde_json::from_value::<TraceEvent>(record.payload.clone())
+            .ok()
+            .map(|event| event.trace_event_id)
+    });
+
+    let approval_required = SubmitActionRequest {
+        run_id: created.run_id.clone(),
+        tenant_id: tenant_id.clone(),
+        agent_id: agent_id.clone(),
+        credential: None,
+        audit_attribution: Some(attribution()),
+        causal_trace_id: causal_trace_id.clone(),
+        action: action("allowed_action"),
+        adapter: Some("daemon.local".to_string()),
+        quota_usage: None,
+        satisfied_preconditions: Vec::new(),
+        approval_evidence: None,
+    };
+    let (status, outcome): (StatusCode, splendor_gateway::ActionOutcome) = call_json(
+        app.clone(),
+        Method::POST,
+        "/actions",
+        serde_json::to_value(approval_required).expect("approval submit request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        outcome.status,
+        splendor_gateway::ActionStatus::NeedsApproval
+    );
+
+    let (status, inspected): (StatusCode, RunInspectResponse) = call_empty(
+        app.clone(),
+        Method::GET,
+        &format!("/runs/{}", created.run_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(inspected.status, RunStatus::WaitingForApproval);
+    assert_eq!(inspected.adapter_executions, 0);
+
+    let grant = approval_evidence(
+        &tenant_id,
+        &agent_id,
+        &created.run_id,
+        "allowed_action",
+        ApprovalDecision::Granted,
+    );
+    let approval_granted = SubmitActionRequest {
+        run_id: created.run_id.clone(),
+        tenant_id: tenant_id.clone(),
+        agent_id: agent_id.clone(),
+        credential: None,
+        audit_attribution: Some(attribution()),
+        causal_trace_id,
+        action: action("allowed_action"),
+        adapter: Some("daemon.local".to_string()),
+        quota_usage: None,
+        satisfied_preconditions: Vec::new(),
+        approval_evidence: Some(grant),
+    };
+    let (status, outcome): (StatusCode, splendor_gateway::ActionOutcome) = call_json(
+        app.clone(),
+        Method::POST,
+        "/actions",
+        serde_json::to_value(approval_granted).expect("approval grant submit request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(outcome.status, splendor_gateway::ActionStatus::Executed);
+
+    let (status, inspected): (StatusCode, RunInspectResponse) = call_empty(
+        app.clone(),
+        Method::GET,
+        &format!("/runs/{}", created.run_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(inspected.adapter_executions, 1);
+
+    let (status, traces): (StatusCode, TracePageResponse) = call_empty(
+        app.clone(),
+        Method::GET,
+        &format!("/runs/{}/traces?redaction_policy=none", created.run_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let events = traces
+        .records
+        .iter()
+        .filter_map(|record| serde_json::from_value::<TraceEvent>(record.payload.clone()).ok())
+        .collect::<Vec<_>>();
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.kind, TraceEventKind::ApprovalRequested { .. })));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.kind, TraceEventKind::ApprovalGranted { .. })));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.kind, TraceEventKind::ActionNeedsApproval { .. })));
+
+    let (status, replay): (StatusCode, ReplayResponse) = call_json(
+        app.clone(),
+        Method::POST,
+        &format!("/runs/{}/replay", created.run_id),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(replay
+        .approval_events
+        .iter()
+        .any(|event| event.lifecycle == "requested"));
+    assert!(replay
+        .approval_events
+        .iter()
+        .any(|event| event.lifecycle == "granted"));
+
+    let expired_tenant_id = TenantId::new();
+    let expired_agent_id = AgentId::new();
+    let mut expired_create = create_request(
+        expired_tenant_id.clone(),
+        expired_agent_id.clone(),
+        Vec::new(),
+        vec![RegisteredAction {
+            name: "allowed_action".to_string(),
+            adapter: "daemon.local".to_string(),
+        }],
+    );
+    let mut expired_policy =
+        approval_policy(&expired_tenant_id, &expired_agent_id, "allowed_action");
+    expired_policy.expires_at = Some(OffsetDateTime::now_utc() - time::Duration::minutes(1));
+    expired_create.approval_policies = vec![expired_policy];
+    let (status, expired_created): (StatusCode, CreateRunResponse) = call_json(
+        app.clone(),
+        Method::POST,
+        "/runs",
+        serde_json::to_value(expired_create).expect("expired create request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, expired_traces): (StatusCode, TracePageResponse) = call_empty(
+        app.clone(),
+        Method::GET,
+        &format!(
+            "/runs/{}/traces?redaction_policy=none",
+            expired_created.run_id
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let expired_causal_trace_id = expired_traces.records.first().and_then(|record| {
+        serde_json::from_value::<TraceEvent>(record.payload.clone())
+            .ok()
+            .map(|event| event.trace_event_id)
+    });
+    let expired_submit = SubmitActionRequest {
+        run_id: expired_created.run_id.clone(),
+        tenant_id: expired_tenant_id,
+        agent_id: expired_agent_id,
+        credential: None,
+        audit_attribution: Some(attribution()),
+        causal_trace_id: expired_causal_trace_id,
+        action: action("allowed_action"),
+        adapter: Some("daemon.local".to_string()),
+        quota_usage: None,
+        satisfied_preconditions: Vec::new(),
+        approval_evidence: None,
+    };
+    let (status, outcome): (StatusCode, splendor_gateway::ActionOutcome) = call_json(
+        app.clone(),
+        Method::POST,
+        "/actions",
+        serde_json::to_value(expired_submit).expect("expired submit request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        outcome.status,
+        splendor_gateway::ActionStatus::NeedsIntervention
+    );
+
+    let (status, inspected): (StatusCode, RunInspectResponse) = call_empty(
+        app.clone(),
+        Method::GET,
+        &format!("/runs/{}", expired_created.run_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(inspected.status, RunStatus::Failed);
+    assert_eq!(inspected.adapter_executions, 0);
+    let (status, traces): (StatusCode, TracePageResponse) = call_empty(
+        app,
+        Method::GET,
+        &format!(
+            "/runs/{}/traces?redaction_policy=none",
+            expired_created.run_id
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(traces.records.iter().any(|record| {
+        serde_json::from_value::<TraceEvent>(record.payload.clone())
+            .map(|event| {
+                matches!(event.kind, TraceEventKind::ApprovalDenied { ref reason, .. }
+                    if reason == "approval_policy_expired")
+            })
+            .unwrap_or(false)
+    }));
+}
+
+#[tokio::test]
 async fn daemon_error_paths_cover_state_trace_lifecycle_scope_and_percepts() {
     let state = DaemonState::local_dev();
     let app = router(state.clone());
