@@ -433,3 +433,437 @@ fn run_scoped_governance_transition_rejects_trace_run_mismatch() {
         ))
     ));
 }
+
+#[test]
+fn circuit_breaker_runtime_helpers_cover_scopes_artifacts_and_failures() {
+    let now = OffsetDateTime::now_utc();
+    let fleet_id = FleetId::new();
+    let node_id = NodeId::new();
+    let instance_id = InstanceId::new();
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let scopes = vec![
+        (CircuitBreakerScope::Global, "global", None),
+        (
+            CircuitBreakerScope::Fleet(fleet_id.clone()),
+            "fleet",
+            Some(fleet_id.to_string()),
+        ),
+        (
+            CircuitBreakerScope::Node(node_id.clone()),
+            "node",
+            Some(node_id.to_string()),
+        ),
+        (
+            CircuitBreakerScope::Instance(instance_id.clone()),
+            "instance",
+            Some(instance_id.to_string()),
+        ),
+        (
+            CircuitBreakerScope::Tenant(tenant_id.clone()),
+            "tenant",
+            Some(tenant_id.to_string()),
+        ),
+        (
+            CircuitBreakerScope::Agent(agent_id.clone()),
+            "agent",
+            Some(agent_id.to_string()),
+        ),
+        (
+            CircuitBreakerScope::Adapter("filesystem".to_string()),
+            "adapter",
+            Some("filesystem".to_string()),
+        ),
+        (
+            CircuitBreakerScope::Action("artifact.publish".to_string()),
+            "action",
+            Some("artifact.publish".to_string()),
+        ),
+        (
+            CircuitBreakerScope::ActionClass(SideEffectClass::ReadOnly),
+            "action_class",
+            Some("read_only".to_string()),
+        ),
+        (
+            CircuitBreakerScope::ActionClass(SideEffectClass::Filesystem),
+            "action_class",
+            Some("filesystem".to_string()),
+        ),
+        (
+            CircuitBreakerScope::ActionClass(SideEffectClass::Network),
+            "action_class",
+            Some("network".to_string()),
+        ),
+        (
+            CircuitBreakerScope::ActionClass(SideEffectClass::External),
+            "action_class",
+            Some("external".to_string()),
+        ),
+        (
+            CircuitBreakerScope::ActionClass(SideEffectClass::Custom("robot.high".to_string())),
+            "action_class",
+            Some("custom:robot.high".to_string()),
+        ),
+    ];
+
+    for (idx, (scope, label, value)) in scopes.into_iter().enumerate() {
+        assert_eq!(scope.label(), label);
+        assert_eq!(scope.value(), value);
+        let breaker = CircuitBreaker::tripped(
+            CircuitBreakerId::try_new(format!("cb_{idx}_{label}")).expect("breaker id"),
+            scope.clone(),
+            "operator hold",
+            now,
+        )
+        .expect("tripped breaker");
+        assert!(breaker.is_tripped());
+
+        let trip = breaker
+            .trip_trace_context("operator:alice", now)
+            .expect("trip trace context");
+        assert_eq!(trip.state, CircuitBreakerState::Tripped);
+        assert_eq!(trip.scope, scope);
+
+        let artifact = breaker.as_match().to_artifact();
+        assert_eq!(artifact["scope"], json!(label));
+        assert_eq!(artifact["scope_value"], json!(value));
+        assert_eq!(artifact["state"], json!("tripped"));
+
+        let (cleared, clear_trace) = breaker
+            .clone()
+            .clear_with_authority(
+                "incident resolved",
+                "operator:alice",
+                now + Duration::minutes(1),
+            )
+            .expect("clear breaker");
+        assert!(!cleared.is_tripped());
+        assert_eq!(clear_trace.state, CircuitBreakerState::Cleared);
+        let cleared_artifact = cleared.as_match().to_artifact();
+        assert_eq!(cleared_artifact["state"], json!("cleared"));
+    }
+
+    assert_eq!(
+        CircuitBreakerId::try_new("   "),
+        Err(CircuitBreakerValidationError::EmptyBreakerId)
+    );
+    assert_eq!(
+        CircuitBreaker::tripped(
+            CircuitBreakerId::new(),
+            CircuitBreakerScope::Global,
+            "",
+            now,
+        ),
+        Err(CircuitBreakerValidationError::EmptyReason)
+    );
+    assert!(matches!(
+        CircuitBreakerTraceContext::try_new(
+            CircuitBreakerId::new(),
+            CircuitBreakerScope::Global,
+            CircuitBreakerState::Cleared,
+            "clear",
+            " ",
+            now,
+        ),
+        Err(CircuitBreakerValidationError::MissingAuthority)
+    ));
+}
+
+#[test]
+fn governance_state_conversions_and_object_refs_cover_all_variants() {
+    assert_eq!(
+        GovernanceState::from(ApprovalStatus::Requested),
+        GovernanceState::Requested
+    );
+    assert_eq!(
+        GovernanceState::from(ApprovalStatus::Granted),
+        GovernanceState::Granted
+    );
+    assert_eq!(
+        GovernanceState::from(ApprovalStatus::Denied),
+        GovernanceState::Denied
+    );
+    assert_eq!(
+        GovernanceState::from(ApprovalStatus::Expired),
+        GovernanceState::Expired
+    );
+    assert_eq!(
+        GovernanceState::from(ApprovalStatus::Revoked),
+        GovernanceState::Revoked
+    );
+    assert_eq!(
+        GovernanceState::from(EscalationStatus::Open),
+        GovernanceState::Open
+    );
+    assert_eq!(
+        GovernanceState::from(EscalationStatus::Resolved),
+        GovernanceState::Resolved
+    );
+    assert_eq!(
+        GovernanceState::from(EscalationStatus::Expired),
+        GovernanceState::Expired
+    );
+    assert_eq!(
+        GovernanceState::from(EscalationStatus::Revoked),
+        GovernanceState::Revoked
+    );
+    assert_eq!(
+        GovernanceState::from(InterventionStatus::Requested),
+        GovernanceState::Requested
+    );
+    assert_eq!(
+        GovernanceState::from(InterventionStatus::Resolved),
+        GovernanceState::Resolved
+    );
+    assert_eq!(
+        GovernanceState::from(InterventionStatus::Cancelled),
+        GovernanceState::Cancelled
+    );
+    assert_eq!(
+        GovernanceState::from(InterventionStatus::Expired),
+        GovernanceState::Expired
+    );
+    assert_eq!(
+        GovernanceState::from(InterventionStatus::Revoked),
+        GovernanceState::Revoked
+    );
+    assert_eq!(
+        GovernanceState::from(CircuitBreakerStatus::Active),
+        GovernanceState::Active
+    );
+    assert_eq!(
+        GovernanceState::from(CircuitBreakerStatus::Cleared),
+        GovernanceState::Cleared
+    );
+    assert_eq!(
+        GovernanceState::from(CircuitBreakerStatus::Expired),
+        GovernanceState::Expired
+    );
+    assert_eq!(
+        GovernanceState::from(CircuitBreakerStatus::Revoked),
+        GovernanceState::Revoked
+    );
+    assert_eq!(
+        GovernanceState::from(KillSwitchStatus::Active),
+        GovernanceState::Active
+    );
+    assert_eq!(
+        GovernanceState::from(KillSwitchStatus::Cleared),
+        GovernanceState::Cleared
+    );
+    assert_eq!(
+        GovernanceState::from(KillSwitchStatus::Expired),
+        GovernanceState::Expired
+    );
+    assert_eq!(
+        GovernanceState::from(KillSwitchStatus::Revoked),
+        GovernanceState::Revoked
+    );
+
+    let objects = vec![
+        (
+            GovernanceObjectRef::Approval {
+                approval_id: ApprovalId::new(),
+            },
+            GovernanceObjectKind::Approval,
+        ),
+        (
+            GovernanceObjectRef::Escalation {
+                escalation_id: EscalationId::new(),
+            },
+            GovernanceObjectKind::Escalation,
+        ),
+        (
+            GovernanceObjectRef::Intervention {
+                intervention_id: InterventionId::new(),
+            },
+            GovernanceObjectKind::Intervention,
+        ),
+        (
+            GovernanceObjectRef::CircuitBreaker {
+                circuit_breaker_id: CircuitBreakerId::new(),
+            },
+            GovernanceObjectKind::CircuitBreaker,
+        ),
+        (
+            GovernanceObjectRef::KillSwitch {
+                kill_switch_id: KillSwitchId::new(),
+            },
+            GovernanceObjectKind::KillSwitch,
+        ),
+    ];
+
+    for (object, kind) in objects {
+        assert_eq!(object.kind(), kind);
+        assert!(!object.object_id().is_empty());
+        object.validate().expect("object ref validates");
+    }
+
+    assert!(matches!(
+        GovernanceObjectRef::Approval {
+            approval_id: ApprovalId::parse("00000000-0000-0000-0000-000000000000")
+                .expect("nil approval id"),
+        }
+        .validate(),
+        Err(GovernanceValidationError::Missing {
+            field: "approval_id"
+        })
+    ));
+}
+
+#[test]
+fn governance_validation_rejects_malformed_common_fields_and_lifecycle_markers() {
+    let now = OffsetDateTime::now_utc();
+    let run_id = RunId::new();
+    let scope = action_scope(&run_id);
+    let request = ApprovalRequest::new(
+        ApprovalId::new(),
+        scope.clone(),
+        now,
+        Some(now + Duration::minutes(30)),
+        "approval required",
+        issuer(),
+        trace_link(&run_id, 30),
+        GovernanceExtensions::new(),
+    )
+    .expect("request");
+
+    let mut unsupported_schema = request.clone();
+    unsupported_schema.schema_version = "splendor.governance_state.v0".to_string();
+    assert!(matches!(
+        unsupported_schema.validate(),
+        Err(GovernanceValidationError::UnsupportedSchema { .. })
+    ));
+
+    let mut blank_reason = request.clone();
+    blank_reason.reason = " invalid whitespace ".to_string();
+    assert!(matches!(
+        blank_reason.validate(),
+        Err(GovernanceValidationError::Missing { field: "reason" })
+    ));
+
+    let mut expired_without_expiry = request.clone();
+    expired_without_expiry.status = ApprovalStatus::Expired;
+    expired_without_expiry.expires_at = None;
+    assert!(matches!(
+        expired_without_expiry.validate(),
+        Err(GovernanceValidationError::Missing {
+            field: "expires_at"
+        })
+    ));
+
+    let mut revoked = request.clone();
+    revoked.status = ApprovalStatus::Revoked;
+    revoked.revocation = Some(
+        GovernanceRevocation::new(
+            now + Duration::minutes(1),
+            "revoked by operator",
+            issuer(),
+            trace_link(&run_id, 31),
+        )
+        .expect("revocation"),
+    );
+    revoked
+        .validate()
+        .expect("revoked request validates with marker");
+
+    let mut unexpected_revocation = revoked.clone();
+    unexpected_revocation.status = ApprovalStatus::Requested;
+    assert!(matches!(
+        unexpected_revocation.validate(),
+        Err(GovernanceValidationError::InvalidStatus { .. })
+    ));
+
+    let grant = request
+        .grant(
+            now + Duration::minutes(1),
+            Some(now + Duration::hours(1)),
+            "granted",
+            issuer(),
+            trace_link(&run_id, 32),
+            GovernanceExtensions::new(),
+        )
+        .expect("grant");
+    let mut grant_with_bad_status = grant.clone();
+    grant_with_bad_status.status = ApprovalStatus::Requested;
+    assert!(matches!(
+        grant_with_bad_status.validate(),
+        Err(GovernanceValidationError::InvalidStatus {
+            object: "approval_grant",
+            ..
+        })
+    ));
+
+    let denial = request
+        .deny(
+            now + Duration::minutes(2),
+            "denied",
+            issuer(),
+            trace_link(&run_id, 33),
+            GovernanceExtensions::new(),
+        )
+        .expect("denial");
+    let mut denial_with_bad_status = denial.clone();
+    denial_with_bad_status.status = ApprovalStatus::Granted;
+    assert!(matches!(
+        denial_with_bad_status.validate(),
+        Err(GovernanceValidationError::InvalidStatus {
+            object: "approval_denial",
+            ..
+        })
+    ));
+
+    let mut escalation = Escalation::open(
+        EscalationId::new(),
+        scope.clone(),
+        now,
+        Some(now + Duration::minutes(10)),
+        "escalate",
+        issuer(),
+        trace_link(&run_id, 34),
+    )
+    .expect("escalation");
+    escalation.status = EscalationStatus::Expired;
+    escalation.expires_at = None;
+    assert!(matches!(
+        escalation.validate(),
+        Err(GovernanceValidationError::Missing {
+            field: "expires_at"
+        })
+    ));
+
+    let mut blank_extension = GovernanceExtensions::new();
+    blank_extension.insert(" ".to_string(), json!("ignored"));
+    assert!(matches!(
+        ApprovalRequest::new(
+            ApprovalId::new(),
+            GovernanceScope::Global,
+            now,
+            Some(now + Duration::minutes(5)),
+            "bad extension key",
+            issuer(),
+            trace_link(&run_id, 35),
+            blank_extension,
+        ),
+        Err(GovernanceValidationError::InvalidExtensions { .. })
+    ));
+
+    let mut array_extension = GovernanceExtensions::new();
+    array_extension.insert(
+        "x_future".to_string(),
+        json!([{ "metadata": true }, { "signature": "not allowed" }]),
+    );
+    assert!(matches!(
+        ApprovalRequest::new(
+            ApprovalId::new(),
+            GovernanceScope::Global,
+            now,
+            Some(now + Duration::minutes(5)),
+            "bad extension array",
+            issuer(),
+            trace_link(&run_id, 36),
+            array_extension,
+        ),
+        Err(GovernanceValidationError::InvalidExtensions { .. })
+    ));
+}

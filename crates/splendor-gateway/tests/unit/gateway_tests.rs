@@ -1,8 +1,8 @@
 use super::*;
 use splendor_types::{
     AgentId, ApprovalDecision, ApprovalEvidence, ApprovalId, ApprovalPolicy, CircuitBreaker,
-    CircuitBreakerId, CircuitBreakerScope, NodeId, QuotaUsage, RunId, RuntimeIdentityContext,
-    SideEffectClass, TenantId,
+    CircuitBreakerId, CircuitBreakerScope, FleetId, InstanceId, NodeId, QuotaUsage, RunId,
+    RuntimeIdentityContext, SideEffectClass, TenantId,
 };
 use std::future::Future;
 use std::pin::Pin;
@@ -926,4 +926,300 @@ fn combine_verifications_denies_when_reasons_empty() {
     assert!(!result.allowed);
     assert!(result.reasons.is_empty());
     assert!(result.artifacts["policy"].is_object());
+}
+
+#[test]
+fn breaker_scope_matching_covers_identity_action_and_admission_paths() {
+    let mut request = base_request();
+    request.action.name = "artifact.publish".to_string();
+    request.action.side_effect_class = SideEffectClass::External;
+    request.adapter = Some("artifact-store".to_string());
+    let fleet_id = FleetId::new();
+    let node_id = NodeId::new();
+    let instance_id = InstanceId::new();
+    let identity = RuntimeIdentityContext {
+        fleet_id: Some(fleet_id.clone()),
+        node_id: Some(node_id.clone()),
+        instance_id: Some(instance_id.clone()),
+        tenant_id: Some(request.tenant_id.clone()),
+        agent_id: Some(request.agent_id.clone()),
+    };
+
+    assert_eq!(
+        breaker_scope_matches(&CircuitBreakerScope::Global, &identity, None, None, true),
+        BreakerScopeMatch::Matches
+    );
+    assert_eq!(
+        breaker_scope_matches(
+            &CircuitBreakerScope::Fleet(fleet_id.clone()),
+            &identity,
+            None,
+            None,
+            true,
+        ),
+        BreakerScopeMatch::Matches
+    );
+    assert_eq!(
+        breaker_scope_matches(
+            &CircuitBreakerScope::Fleet(FleetId::new()),
+            &identity,
+            None,
+            None,
+            true,
+        ),
+        BreakerScopeMatch::DoesNotMatch
+    );
+    assert_eq!(
+        breaker_scope_matches(
+            &CircuitBreakerScope::Fleet(fleet_id),
+            &RuntimeIdentityContext::default(),
+            None,
+            None,
+            true,
+        ),
+        BreakerScopeMatch::Unknown("fleet_id")
+    );
+    assert_eq!(
+        breaker_scope_matches(
+            &CircuitBreakerScope::Node(node_id.clone()),
+            &identity,
+            None,
+            None,
+            true,
+        ),
+        BreakerScopeMatch::Matches
+    );
+    assert_eq!(
+        breaker_scope_matches(
+            &CircuitBreakerScope::Node(NodeId::new()),
+            &identity,
+            None,
+            None,
+            true,
+        ),
+        BreakerScopeMatch::DoesNotMatch
+    );
+    assert_eq!(
+        breaker_scope_matches(
+            &CircuitBreakerScope::Node(node_id),
+            &RuntimeIdentityContext::default(),
+            None,
+            None,
+            true,
+        ),
+        BreakerScopeMatch::Unknown("node_id")
+    );
+    assert_eq!(
+        breaker_scope_matches(
+            &CircuitBreakerScope::Instance(instance_id.clone()),
+            &identity,
+            None,
+            None,
+            true,
+        ),
+        BreakerScopeMatch::Matches
+    );
+    assert_eq!(
+        breaker_scope_matches(
+            &CircuitBreakerScope::Instance(InstanceId::new()),
+            &identity,
+            None,
+            None,
+            true,
+        ),
+        BreakerScopeMatch::DoesNotMatch
+    );
+    assert_eq!(
+        breaker_scope_matches(
+            &CircuitBreakerScope::Instance(instance_id),
+            &RuntimeIdentityContext::default(),
+            None,
+            None,
+            true,
+        ),
+        BreakerScopeMatch::Unknown("instance_id")
+    );
+
+    for (scope, adapter, unknown_field) in [
+        (
+            CircuitBreakerScope::Tenant(request.tenant_id.clone()),
+            Some("artifact-store"),
+            "tenant_id",
+        ),
+        (
+            CircuitBreakerScope::Agent(request.agent_id.clone()),
+            Some("artifact-store"),
+            "agent_id",
+        ),
+        (
+            CircuitBreakerScope::Adapter("artifact-store".to_string()),
+            Some("artifact-store"),
+            "adapter",
+        ),
+        (
+            CircuitBreakerScope::Action("artifact.publish".to_string()),
+            Some("artifact-store"),
+            "action",
+        ),
+        (
+            CircuitBreakerScope::ActionClass(SideEffectClass::External),
+            Some("artifact-store"),
+            "action_class",
+        ),
+    ] {
+        assert_eq!(
+            breaker_scope_matches(&scope, &identity, Some(&request), adapter, false),
+            BreakerScopeMatch::Matches
+        );
+        assert_eq!(
+            breaker_scope_matches(&scope, &identity, None, None, true),
+            BreakerScopeMatch::DoesNotMatch
+        );
+        assert_eq!(
+            breaker_scope_matches(&scope, &identity, None, None, false),
+            BreakerScopeMatch::Unknown(unknown_field)
+        );
+    }
+
+    let mut other = request.clone();
+    other.tenant_id = TenantId::new();
+    other.agent_id = AgentId::new();
+    other.action.name = "ticket.create".to_string();
+    other.action.side_effect_class = SideEffectClass::Network;
+    assert_eq!(
+        breaker_scope_matches(
+            &CircuitBreakerScope::Tenant(request.tenant_id.clone()),
+            &identity,
+            Some(&other),
+            Some("artifact-store"),
+            false,
+        ),
+        BreakerScopeMatch::DoesNotMatch
+    );
+    assert_eq!(
+        breaker_scope_matches(
+            &CircuitBreakerScope::Agent(request.agent_id.clone()),
+            &identity,
+            Some(&other),
+            Some("artifact-store"),
+            false,
+        ),
+        BreakerScopeMatch::DoesNotMatch
+    );
+    assert_eq!(
+        breaker_scope_matches(
+            &CircuitBreakerScope::Adapter("filesystem".to_string()),
+            &identity,
+            Some(&request),
+            Some("artifact-store"),
+            false,
+        ),
+        BreakerScopeMatch::DoesNotMatch
+    );
+    assert_eq!(
+        breaker_scope_matches(
+            &CircuitBreakerScope::Action("ticket.create".to_string()),
+            &identity,
+            Some(&request),
+            Some("artifact-store"),
+            false,
+        ),
+        BreakerScopeMatch::DoesNotMatch
+    );
+    assert_eq!(
+        breaker_scope_matches(
+            &CircuitBreakerScope::ActionClass(SideEffectClass::Network),
+            &identity,
+            Some(&request),
+            Some("artifact-store"),
+            false,
+        ),
+        BreakerScopeMatch::DoesNotMatch
+    );
+}
+
+#[test]
+fn gateway_effective_side_effect_and_artifact_helpers_cover_edge_shapes() {
+    let mut request = base_request();
+    request.action.side_effect_class = SideEffectClass::ReadOnly;
+
+    let normalized = action_request_with_effective_side_effect_class(&request, "filesystem");
+    assert_eq!(
+        normalized.action.side_effect_class,
+        SideEffectClass::Filesystem
+    );
+    let unchanged = action_request_with_effective_side_effect_class(&request, "custom-adapter");
+    assert_eq!(
+        unchanged.action.side_effect_class,
+        SideEffectClass::ReadOnly
+    );
+
+    let mismatch = verify_declared_side_effect_class(&request, "filesystem")
+        .expect("filesystem mismatch denied");
+    assert!(!mismatch.allowed);
+    assert_eq!(
+        mismatch.artifacts["declared_side_effect_class"].as_str(),
+        Some("read_only")
+    );
+    assert_eq!(
+        mismatch.artifacts["effective_side_effect_class"].as_str(),
+        Some("filesystem")
+    );
+
+    let mut network_request = request.clone();
+    network_request.action.side_effect_class = SideEffectClass::Network;
+    assert!(verify_declared_side_effect_class(&network_request, "http").is_none());
+    assert!(verify_declared_side_effect_class(&network_request, "unknown").is_none());
+    assert_eq!(
+        side_effect_class_label(&SideEffectClass::External),
+        "external"
+    );
+    assert_eq!(
+        side_effect_class_label(&SideEffectClass::Custom("robot.high".to_string())),
+        "custom:robot.high"
+    );
+
+    let mut allowed = VerificationResult::allow();
+    attach_allowed_artifact(&mut allowed, "ignored", serde_json::Value::Null);
+    assert!(allowed.artifacts.is_null());
+    attach_allowed_artifact(
+        &mut allowed,
+        "approval",
+        serde_json::json!({"status": "granted"}),
+    );
+    assert_eq!(
+        allowed.artifacts["approval"]["status"].as_str(),
+        Some("granted")
+    );
+
+    let mut non_object = VerificationResult {
+        allowed: true,
+        reasons: Vec::new(),
+        artifacts: serde_json::json!("raw-detail"),
+    };
+    attach_allowed_artifact(
+        &mut non_object,
+        "policy",
+        serde_json::json!({"bundle": "policy_main"}),
+    );
+    assert_eq!(non_object.artifacts["detail"].as_str(), Some("raw-detail"));
+    assert_eq!(
+        non_object.artifacts["policy"]["bundle"].as_str(),
+        Some("policy_main")
+    );
+
+    let mut denied = VerificationResult::deny("policy");
+    attach_request_context(&mut denied, &request);
+    assert!(denied.artifacts["context"].is_object());
+    let mut denied_with_detail = VerificationResult {
+        allowed: false,
+        reasons: vec!["policy".to_string()],
+        artifacts: serde_json::json!("opaque"),
+    };
+    attach_request_context(&mut denied_with_detail, &request);
+    assert_eq!(
+        denied_with_detail.artifacts["detail"].as_str(),
+        Some("opaque")
+    );
+    assert!(denied_with_detail.artifacts["context"].is_object());
 }

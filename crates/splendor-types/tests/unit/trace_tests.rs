@@ -3,14 +3,14 @@ use crate::{
     ActionId, AgentId, ApprovalDecision, ApprovalId, AuditAttribution, CircuitBreaker,
     CircuitBreakerId, CircuitBreakerScope, CircuitBreakerState, ClientPrincipal,
     DelegatedAuthority, EndpointScope, EscalationContext, EscalationDecision, EscalationId,
-    EscalationScope, EscalationTrigger, GovernanceExtensions, GovernanceIssuer,
+    EscalationScope, EscalationTrigger, FleetId, GovernanceExtensions, GovernanceIssuer,
     GovernanceObjectRef, GovernanceScope, GovernanceState, GovernanceTraceLink,
-    GovernanceTransition, GovernanceTransitionError, InterventionId, KillSwitchId,
-    LocalDelegationTraceContext, Message, MessageEnvelope, MessageId, MessageTraceContext, Percept,
-    PerceptProvenance, RemoteMessageEnvelope, RemoteMessageRetryPolicy, RemoteMessageTraceContext,
-    RevocationStatus, SideEffectClass, SnapshotId, StateHandoffTraceContext, StateReferenceMode,
-    TaskFailure, TaskRequest, TenantId, TraceId, WorkOrderAuthorization, WorkOrderSignature,
-    TASK_REQUEST_SCHEMA,
+    GovernanceTransition, GovernanceTransitionError, InstanceId, InterventionId, KillSwitchId,
+    LocalDelegationTraceContext, Message, MessageEnvelope, MessageId, MessageTraceContext, NodeId,
+    Percept, PerceptProvenance, RemoteMessageEnvelope, RemoteMessageRetryPolicy,
+    RemoteMessageTraceContext, RevocationStatus, SideEffectClass, SnapshotId,
+    StateHandoffTraceContext, StateReferenceMode, TaskFailure, TaskRequest, TenantId, TraceId,
+    WorkOrderAuthorization, WorkOrderSignature, TASK_REQUEST_SCHEMA,
 };
 
 #[test]
@@ -951,5 +951,162 @@ fn circuit_breaker_trace_events_round_trip() {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+}
+
+#[test]
+fn governance_scope_identity_application_covers_all_scope_shapes() {
+    let run_id = RunId::new();
+    let now = OffsetDateTime::now_utc();
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let action_id = ActionId::new();
+    let fleet_id = FleetId::new();
+    let node_id = NodeId::new();
+    let instance_id = InstanceId::new();
+    let cases = vec![
+        (GovernanceScope::Global, None, None, None, None, None, None),
+        (
+            GovernanceScope::Fleet {
+                fleet_id: fleet_id.clone(),
+            },
+            Some(fleet_id.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+        (
+            GovernanceScope::Node {
+                node_id: node_id.clone(),
+            },
+            None,
+            Some(node_id.clone()),
+            None,
+            None,
+            None,
+            None,
+        ),
+        (
+            GovernanceScope::Instance {
+                instance_id: instance_id.clone(),
+            },
+            None,
+            None,
+            Some(instance_id.clone()),
+            None,
+            None,
+            None,
+        ),
+        (
+            GovernanceScope::Tenant {
+                tenant_id: tenant_id.clone(),
+            },
+            None,
+            None,
+            None,
+            Some(tenant_id.clone()),
+            None,
+            None,
+        ),
+        (
+            GovernanceScope::Agent {
+                tenant_id: tenant_id.clone(),
+                agent_id: agent_id.clone(),
+            },
+            None,
+            None,
+            None,
+            Some(tenant_id.clone()),
+            Some(agent_id.clone()),
+            None,
+        ),
+        (
+            GovernanceScope::Run {
+                tenant_id: tenant_id.clone(),
+                agent_id: agent_id.clone(),
+                run_id: run_id.clone(),
+            },
+            None,
+            None,
+            None,
+            Some(tenant_id.clone()),
+            Some(agent_id.clone()),
+            None,
+        ),
+        (
+            GovernanceScope::Action {
+                tenant_id: tenant_id.clone(),
+                agent_id: agent_id.clone(),
+                run_id: run_id.clone(),
+                action_id: action_id.clone(),
+            },
+            None,
+            None,
+            None,
+            Some(tenant_id.clone()),
+            Some(agent_id.clone()),
+            Some(action_id.clone()),
+        ),
+        (
+            GovernanceScope::Adapter {
+                tenant_id: Some(tenant_id.clone()),
+                adapter: "filesystem".to_string(),
+            },
+            None,
+            None,
+            None,
+            Some(tenant_id.clone()),
+            None,
+            None,
+        ),
+        (
+            GovernanceScope::Adapter {
+                tenant_id: None,
+                adapter: "http".to_string(),
+            },
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+    ];
+
+    for (idx, (scope, fleet, node, instance, tenant, agent, action)) in
+        cases.into_iter().enumerate()
+    {
+        let transition = GovernanceTransition::try_new(
+            GovernanceObjectRef::CircuitBreaker {
+                circuit_breaker_id: CircuitBreakerId::new(),
+            },
+            scope,
+            None,
+            GovernanceState::Active,
+            now,
+            "scope identity",
+            GovernanceIssuer::new("operator", "daemon").expect("issuer"),
+            GovernanceTraceLink::new(
+                TraceEventId::from_run_sequence(&run_id, 60 + idx as u64),
+                Some(run_id.clone()),
+            ),
+            GovernanceExtensions::new(),
+        )
+        .expect("transition");
+        let event = TraceEvent::new(
+            run_id.clone(),
+            60 + idx as u64,
+            now,
+            TraceEventKind::GovernanceCircuitBreakerTripped { transition },
+        );
+
+        assert_eq!(event.identity.fleet_id, fleet);
+        assert_eq!(event.identity.node_id, node);
+        assert_eq!(event.identity.instance_id, instance);
+        assert_eq!(event.identity.tenant_id, tenant);
+        assert_eq!(event.identity.agent_id, agent);
+        assert_eq!(event.identity.action_id, action);
     }
 }
