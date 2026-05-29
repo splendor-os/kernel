@@ -72,6 +72,8 @@ That step must run `scripts/verify-0.03-kernel-e2e.sh` and archive
 - [ ] Breaking changes include a changelog or migration note.
 - [ ] Docker release images build, run as non-root, and preserve the daemon's
   local-only insecure-mode boundary.
+- [ ] GHCR package visibility is public for unauthenticated installs, either via
+  package settings or a package-admin `GHCR_VISIBILITY_TOKEN` workflow secret.
 
 ## 0.03 kernel E2E merge gate
 
