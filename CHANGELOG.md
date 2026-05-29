@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.04-dev — Governance workflows
+
+### Implemented primitives
+
+- Added the 0.04-S1 governance state model with typed approval, escalation,
+  intervention, circuit-breaker, and kill-switch IDs and schemas.
+- Added explicit governance scopes for global, fleet, node, instance, tenant,
+  agent, run, action, and adapter boundaries.
+- Added trace-ready governance transition and rejection records plus governance
+  `TraceEventKind` variants for lifecycle changes and invalid transition
+  rejection.
+- Added recursive validation for non-authoritative governance extension fields so
+  metadata cannot smuggle permissions, work orders, credentials, signatures, or
+  approval tokens.
+- Added the 0.04-S3 escalation engine with versioned escalation policy rules,
+  deterministic threshold evaluation, `NeedsIntervention` action outcomes,
+  escalation trace events, and inspect-only replay reconstruction.
+- Added 0.04-S4 circuit-breaker schemas, scoped gateway enforcement, local
+  `splendorctl run` config support, trip/clear trace event variants, and
+  inspect-only replay output for breaker-denied actions.
+- Added 0.04-S5 central policy distribution with signed `PolicyBundle` envelopes,
+  daemon policy sync, local policy cache/degraded mode, policy TTL/revocation
+  denial, trace-safe policy metadata, and Rust/TypeScript/OpenAPI contract
+  coverage.
+
+### Explicitly not included
+
+- No approval UI, enterprise IAM integration, broad workflow language, ticketing
+  integration, notification platform, approval workflow engine, escalation
+  automation, kill-switch propagation, external control-plane adapter,
+  monitoring platform, UI dashboard, enterprise policy authoring product,
+  global policy consensus, production PKI/key management, or side-effect path
+  outside the Action Gateway.
+
 ## 0.03-dev — Resident nodes + fleet execution foundation
 
 ### Implemented primitives

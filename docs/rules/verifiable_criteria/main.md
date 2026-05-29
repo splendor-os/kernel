@@ -222,6 +222,35 @@ documentation
 clear non-goals
 ```
 
+### 3.4 Kernel-level E2E integration gate through 0.03
+
+Sprint-local tests are required, but they are not sufficient for a final
+Splendor0.03-dev completion claim. The aggregate kernel E2E rule pack is:
+
+```text
+docs/rules/verifiable_criteria/kernel-e2e-through-0.03.md
+```
+
+That rule pack defines the required real end-to-end scenarios for 0.01 local
+runtime behavior, 0.02 daemon/local multi-agent behavior, and 0.03 resident/fleet
+execution behavior. It must be used as the completion gate for any claim that the
+kernel integration surface is complete through 0.03-S8.
+
+The required aggregate command is:
+
+```bash
+bash scripts/verify-0.03-kernel-e2e.sh
+```
+
+Until that script exists, reviewers must follow the reproduction guide in:
+
+```text
+docs/development/kernel-e2e-integration-tests.md
+```
+
+The 0.03 E2E gate is blocked if any required scenario lacks positive, denial,
+failure, trace, state, replay, quota/permission, and compatibility evidence.
+
 ---
 
 ## 4. Sprint index

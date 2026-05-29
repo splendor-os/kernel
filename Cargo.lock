@@ -1086,6 +1086,7 @@ dependencies = [
  "axum",
  "serde",
  "serde_json",
+ "serde_yaml",
  "splendor-gateway",
  "splendor-kernel",
  "splendor-store",

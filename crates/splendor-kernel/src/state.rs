@@ -23,8 +23,9 @@
 use splendor_store::SnapshotId;
 use splendor_store::{StateData, StateMetadata, StateNodeId, StateStore, StateStoreError};
 use splendor_types::{
-    AgentId, EndpointScope, RevocationStatus, RunId, StateHandoff, StateHandoffAuthority,
-    StateReference, StateReferenceMode, TenantId, TraceEventId, WorkOrderAuthorization,
+    AgentId, ContentHash, EndpointScope, RevocationStatus, RunId, StateHandoff,
+    StateHandoffAuthority, StateReference, StateReferenceMode, TenantId, TraceEventId,
+    WorkOrderAuthorization,
 };
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -267,6 +268,19 @@ impl StateGraph {
         if reference.source_trace_id.is_none() {
             return Err(StateGraphError::MissingTraceContinuity);
         }
+        if let (Some(snapshot_id), Some(expected_hash)) = (
+            reference.snapshot_id.as_ref(),
+            reference.state_hash.as_ref(),
+        ) {
+            let snapshot = self.store.load_snapshot(snapshot_id)?;
+            let actual_hash = ContentHash::blake3(&snapshot.state.bytes);
+            if &actual_hash != expected_hash {
+                return Err(StateGraphError::StateReferenceHashMismatch {
+                    expected: expected_hash.to_string(),
+                    actual: actual_hash.to_string(),
+                });
+            }
+        }
         self.read_only_references.push(reference);
         Ok(())
     }
@@ -371,6 +385,14 @@ pub enum StateGraphError {
         expected: Option<String>,
         /// Actual receiver state head.
         actual: Option<String>,
+    },
+    /// A read-only state reference declared a hash that did not match its snapshot.
+    #[error("read-only state reference hash mismatch: expected {expected}, found {actual}")]
+    StateReferenceHashMismatch {
+        /// Expected hash declared by the reference.
+        expected: String,
+        /// Actual hash computed from the referenced snapshot.
+        actual: String,
     },
     /// A mutation was attempted through a read-only state reference.
     #[error("read-only state reference {reference_id} cannot be mutated")]

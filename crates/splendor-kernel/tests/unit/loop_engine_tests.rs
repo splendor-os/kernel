@@ -5,9 +5,11 @@ use splendor_store::{
     StateNodeId, StateSnapshot, StateStore, StateStoreError,
 };
 use splendor_types::{
-    ConstraintKind, ConstraintScope, DelegatedAuthority, PerceptProvenance, QuotaUsage,
-    RevocationStatus, RunId, TraceEvent, WorkOrder, WorkOrderId, WorkOrderPlacement,
-    WorkOrderQuotaPolicy, WORK_ORDER_SCHEMA_VERSION,
+    ActionId, ApprovalDecision, ApprovalEvidence, ApprovalId, ApprovalTraceContext, ConstraintKind,
+    ConstraintScope, DelegatedAuthority, PerceptProvenance, PolicyBundle, PolicyBundleId,
+    PolicyBundleTraceContext, PolicyDegradedMode, QuotaUsage, RevocationStatus, RunId, TenantId,
+    TraceEvent, WorkOrder, WorkOrderId, WorkOrderPlacement, WorkOrderQuotaPolicy,
+    WORK_ORDER_SCHEMA_VERSION,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -276,6 +278,26 @@ fn work_order_for(agent: &AgentContext, run_id: RunId) -> WorkOrder {
         issued_at: now - time::Duration::minutes(1),
         expires_at: now + time::Duration::hours(1),
         revocation: RevocationStatus::Active,
+    }
+}
+
+fn policy_bundle_for(
+    agent: &AgentContext,
+    expires_at: OffsetDateTime,
+    allow_low_risk_cached: bool,
+) -> PolicyBundle {
+    PolicyBundle {
+        schema_version: splendor_types::POLICY_BUNDLE_SCHEMA_VERSION.to_string(),
+        policy_bundle_id: PolicyBundleId::try_new("pol_loop").expect("policy bundle id"),
+        version: "v1".to_string(),
+        tenant_id: agent.tenant_id.clone(),
+        agent_id: Some(agent.agent_id.clone()),
+        issued_at: expires_at - time::Duration::hours(1),
+        expires_at,
+        revocation: RevocationStatus::Active,
+        degraded_mode: PolicyDegradedMode {
+            allow_low_risk_cached,
+        },
     }
 }
 
@@ -940,13 +962,102 @@ fn action_candidate_builder_methods() {
         actions: 2,
         ..QuotaUsage::default()
     };
+    let run_id = RunId::new();
+    let evidence = ApprovalEvidence::new(
+        ApprovalId::new(),
+        TenantId::new(),
+        splendor_types::AgentId::new(),
+        run_id,
+        ApprovalDecision::Granted,
+        OffsetDateTime::now_utc() + time::Duration::minutes(5),
+    )
+    .with_action_name("build")
+    .with_adapter("adapter");
     let candidate = ActionCandidate::new(action)
         .with_adapter("adapter".to_string())
         .with_usage(usage)
-        .with_satisfied_preconditions(vec!["ready".to_string()]);
+        .with_satisfied_preconditions(vec!["ready".to_string()])
+        .with_approval_evidence(evidence.clone());
     assert_eq!(candidate.adapter.as_deref(), Some("adapter"));
     assert_eq!(candidate.usage.actions, 2);
     assert_eq!(candidate.satisfied_preconditions, vec!["ready".to_string()]);
+    assert_eq!(candidate.approval_evidence.as_ref(), Some(&evidence));
+}
+
+#[test]
+fn approval_artifact_and_trace_kind_cover_lifecycle_variants() {
+    let run_id = RunId::new();
+    let approval = ApprovalTraceContext {
+        approval_id: ApprovalId::new(),
+        tenant_id: TenantId::new(),
+        agent_id: splendor_types::AgentId::new(),
+        run_id: run_id.clone(),
+        action_id: Some(ActionId::new()),
+        action_name: "artifact.publish".to_string(),
+        adapter: Some("artifact-store".to_string()),
+        decision: Some(ApprovalDecision::Granted),
+        reason: Some("operator decision".to_string()),
+        policy_id: Some("publish_policy".to_string()),
+        risk_level: Some("external".to_string()),
+        issued_at: Some(OffsetDateTime::now_utc()),
+        expires_at: Some(OffsetDateTime::now_utc() + time::Duration::minutes(10)),
+        revoked: false,
+    };
+
+    let direct = VerificationResult {
+        allowed: false,
+        reasons: vec!["approval_required".to_string()],
+        artifacts: serde_json::json!({
+            "approval_status": "required",
+            "approval_context": approval,
+        }),
+    };
+    let (status, parsed) = approval_artifact(&direct).expect("direct approval artifact");
+    assert_eq!(status, "required");
+    assert_eq!(parsed.action_name, "artifact.publish");
+
+    let nested = VerificationResult {
+        allowed: true,
+        reasons: Vec::new(),
+        artifacts: serde_json::json!({
+            "approval": {
+                "approval_status": "granted",
+                "approval": parsed,
+            }
+        }),
+    };
+    let (status, approval) = approval_artifact(&nested).expect("nested approval artifact");
+    assert_eq!(status, "granted");
+
+    for (status, expected) in [
+        ("required", "requested"),
+        ("granted", "granted"),
+        ("expired", "expired"),
+        ("revoked", "revoked"),
+        ("intervention_required", "policy_expired"),
+        ("denied", "denied"),
+    ] {
+        let kind = approval_trace_kind(status, approval.clone());
+        match (expected, kind) {
+            ("requested", TraceEventKind::ApprovalRequested { .. }) => {}
+            ("granted", TraceEventKind::ApprovalGranted { .. }) => {}
+            ("expired", TraceEventKind::ApprovalExpired { reason, .. }) => {
+                assert_eq!(reason, "approval_expired")
+            }
+            ("revoked", TraceEventKind::ApprovalRevoked { reason, .. }) => {
+                assert_eq!(reason, "approval_revoked")
+            }
+            ("policy_expired", TraceEventKind::ApprovalDenied { reason, .. }) => {
+                assert_eq!(reason, "approval_policy_expired")
+            }
+            ("denied", TraceEventKind::ApprovalDenied { reason, .. }) => {
+                assert_eq!(reason, "approval_denied")
+            }
+            (expected, other) => panic!("expected {expected}, got {other:?}"),
+        }
+    }
+
+    assert!(approval_artifact(&VerificationResult::allow()).is_none());
 }
 
 #[test]
@@ -1041,16 +1152,129 @@ fn loop_engine_records_validated_work_order_metadata() {
     }
 }
 
+#[test]
+fn loop_engine_records_policy_bundle_metadata() {
+    let trace_store = Arc::new(InMemoryTraceStore::default());
+    let store = Arc::new(InMemoryStateStore::default());
+    let graph = StateGraph::new(store, SnapshotPolicy::default());
+    let run_id = RunId::new();
+    let agent = AgentContext::new(
+        splendor_types::AgentId::new(),
+        splendor_types::TenantId::new(),
+        crate::AgentRuntimeConfig::default(),
+    );
+    let policy_bundle = PolicyBundleTraceContext::from(&policy_bundle_for(
+        &agent,
+        OffsetDateTime::now_utc() + time::Duration::hours(1),
+        true,
+    ));
+    let context =
+        RunTraceContext::new(Some(run_id.clone())).with_policy_bundle(policy_bundle.clone());
+
+    let engine = LoopEngine::with_trace_store_and_work_order(
+        agent,
+        graph,
+        StateData {
+            bytes: Vec::new(),
+            content_type: None,
+        },
+        Box::new(StaticPolicy),
+        Arc::new(StubGateway),
+        trace_store.clone(),
+        context,
+    )
+    .expect("engine");
+
+    assert_eq!(
+        engine.agent.config.metadata.get("policy_bundle_id"),
+        Some(&"pol_loop".to_string())
+    );
+    assert_eq!(
+        engine.agent.config.metadata.get("policy_bundle_version"),
+        Some(&"v1".to_string())
+    );
+    let records = trace_store.read(&run_id.to_string()).expect("records");
+    assert_eq!(records.len(), 2);
+    let accepted: TraceEvent = serde_json::from_value(records[1].payload.clone()).unwrap();
+    match accepted.kind {
+        TraceEventKind::PolicyBundleAccepted { bundle } => {
+            assert_eq!(bundle.policy_bundle_id, policy_bundle.policy_bundle_id);
+            assert_eq!(bundle.version, policy_bundle.version);
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn loop_engine_rejects_policy_before_policy_invoked_when_bundle_expired() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = CapturingTraceSink {
+        events: Arc::clone(&events),
+    };
+    let runtime = KernelRuntime::new(KernelRuntimeConfig {
+        trace_sink: Arc::new(sink),
+        ..KernelRuntimeConfig::default()
+    });
+    let store = Arc::new(InMemoryStateStore::default());
+    let graph = StateGraph::new(store, SnapshotPolicy::default());
+    let initial_state = StateData {
+        bytes: vec![1],
+        content_type: None,
+    };
+    let agent = AgentContext::new(
+        splendor_types::AgentId::new(),
+        splendor_types::TenantId::new(),
+        crate::AgentRuntimeConfig::default(),
+    );
+    let cache = crate::PolicyCache::with_bundle(
+        policy_bundle_for(
+            &agent,
+            OffsetDateTime::now_utc() - time::Duration::minutes(1),
+            false,
+        ),
+        OffsetDateTime::now_utc(),
+    );
+    let mut engine = LoopEngine::with_runtime(
+        agent,
+        graph,
+        initial_state,
+        Box::new(StaticPolicy),
+        Arc::new(StubGateway),
+        runtime,
+    );
+    engine.set_policy_runtime_authority(Arc::new(cache));
+
+    let error = engine
+        .tick(1)
+        .expect_err("expired policy denies invocation");
+    assert!(matches!(error, LoopError::Policy(message) if message == "policy_expired"));
+
+    let recorded = events.lock().expect("events lock");
+    assert!(recorded
+        .iter()
+        .any(|event| matches!(event.kind, TraceEventKind::PolicyExpired { .. })));
+    assert!(!recorded
+        .iter()
+        .any(|event| matches!(event.kind, TraceEventKind::PolicyInvoked { .. })));
+}
+
 fn event_kind_label(kind: &TraceEventKind) -> &'static str {
     match kind {
         TraceEventKind::RunStarted => "RunStarted",
         TraceEventKind::WorkOrderAccepted { .. } => "WorkOrderAccepted",
         TraceEventKind::WorkOrderRejected { .. } => "WorkOrderRejected",
+        TraceEventKind::PolicyBundleAccepted { .. } => "PolicyBundleAccepted",
+        TraceEventKind::PolicyBundleRejected { .. } => "PolicyBundleRejected",
+        TraceEventKind::PolicySyncFailed { .. } => "PolicySyncFailed",
+        TraceEventKind::PolicyExpired { .. } => "PolicyExpired",
+        TraceEventKind::PolicyRevoked { .. } => "PolicyRevoked",
         TraceEventKind::RunPaused { .. } => "RunPaused",
         TraceEventKind::RunResumed { .. } => "RunResumed",
         TraceEventKind::RunStopped { .. } => "RunStopped",
         TraceEventKind::PerceptsAppended { .. } => "PerceptsAppended",
         TraceEventKind::DaemonAudit { .. } => "DaemonAudit",
+        TraceEventKind::CircuitBreakerTripped { .. } => "CircuitBreakerTripped",
+        TraceEventKind::CircuitBreakerCleared { .. } => "CircuitBreakerCleared",
         TraceEventKind::LoopTickStarted { .. } => "LoopTickStarted",
         TraceEventKind::PerceptsReceived { .. } => "PerceptsReceived",
         TraceEventKind::StateLoaded { .. } => "StateLoaded",
@@ -1060,9 +1284,17 @@ fn event_kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::ConstraintsEvaluated { .. } => "ConstraintsEvaluated",
         TraceEventKind::ActionVerificationStarted { .. } => "ActionVerificationStarted",
         TraceEventKind::ActionVerificationCompleted { .. } => "ActionVerificationCompleted",
+        TraceEventKind::ActionNeedsApproval { .. } => "ActionNeedsApproval",
         TraceEventKind::ActionExecuted { .. } => "ActionExecuted",
         TraceEventKind::ActionDenied { .. } => "ActionDenied",
         TraceEventKind::ActionFailed { .. } => "ActionFailed",
+        TraceEventKind::ApprovalRequested { .. } => "ApprovalRequested",
+        TraceEventKind::ApprovalGranted { .. } => "ApprovalGranted",
+        TraceEventKind::ApprovalDenied { .. } => "ApprovalDenied",
+        TraceEventKind::ApprovalExpired { .. } => "ApprovalExpired",
+        TraceEventKind::ApprovalRevoked { .. } => "ApprovalRevoked",
+        TraceEventKind::ActionNeedsIntervention { .. } => "ActionNeedsIntervention",
+        TraceEventKind::EscalationTriggered { .. } => "EscalationTriggered",
         TraceEventKind::OutcomeRecorded { .. } => "OutcomeRecorded",
         TraceEventKind::StateCommitted { .. } => "StateCommitted",
         TraceEventKind::StateHandoffExported { .. } => "StateHandoffExported",
@@ -1088,6 +1320,29 @@ fn event_kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::ChildRunCompleted { .. } => "ChildRunCompleted",
         TraceEventKind::ChildRunFailed { .. } => "ChildRunFailed",
         TraceEventKind::ChildRunLinked { .. } => "ChildRunLinked",
+        TraceEventKind::GovernanceApprovalRequested { .. } => "GovernanceApprovalRequested",
+        TraceEventKind::GovernanceApprovalGranted { .. } => "GovernanceApprovalGranted",
+        TraceEventKind::GovernanceApprovalDenied { .. } => "GovernanceApprovalDenied",
+        TraceEventKind::GovernanceApprovalExpired { .. } => "GovernanceApprovalExpired",
+        TraceEventKind::GovernanceApprovalRevoked { .. } => "GovernanceApprovalRevoked",
+        TraceEventKind::EscalationOpened { .. } => "EscalationOpened",
+        TraceEventKind::EscalationResolved { .. } => "EscalationResolved",
+        TraceEventKind::EscalationExpired { .. } => "EscalationExpired",
+        TraceEventKind::EscalationRevoked { .. } => "EscalationRevoked",
+        TraceEventKind::InterventionRequested { .. } => "InterventionRequested",
+        TraceEventKind::InterventionResolved { .. } => "InterventionResolved",
+        TraceEventKind::InterventionCancelled { .. } => "InterventionCancelled",
+        TraceEventKind::InterventionExpired { .. } => "InterventionExpired",
+        TraceEventKind::InterventionRevoked { .. } => "InterventionRevoked",
+        TraceEventKind::GovernanceCircuitBreakerTripped { .. } => "GovernanceCircuitBreakerTripped",
+        TraceEventKind::GovernanceCircuitBreakerCleared { .. } => "GovernanceCircuitBreakerCleared",
+        TraceEventKind::GovernanceCircuitBreakerExpired { .. } => "GovernanceCircuitBreakerExpired",
+        TraceEventKind::GovernanceCircuitBreakerRevoked { .. } => "GovernanceCircuitBreakerRevoked",
+        TraceEventKind::KillSwitchActivated { .. } => "KillSwitchActivated",
+        TraceEventKind::KillSwitchCleared { .. } => "KillSwitchCleared",
+        TraceEventKind::KillSwitchExpired { .. } => "KillSwitchExpired",
+        TraceEventKind::KillSwitchRevoked { .. } => "KillSwitchRevoked",
+        TraceEventKind::GovernanceTransitionRejected { .. } => "GovernanceTransitionRejected",
         TraceEventKind::LoopTickCompleted { .. } => "LoopTickCompleted",
     }
 }

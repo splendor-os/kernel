@@ -58,6 +58,7 @@ fn request(side_effect_class: SideEffectClass) -> ActionRequest {
         quota_usage: QuotaUsage::single_action(),
         satisfied_preconditions: vec![],
         requested_at: OffsetDateTime::now_utc(),
+        approval_evidence: None,
     }
 }
 

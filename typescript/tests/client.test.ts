@@ -47,7 +47,10 @@ const createRunRequest: CreateRunRequest = {
   allowed_adapters: ["daemon.local"],
   allowed_permissions: [],
   policy_actions: [],
+  policy_bundle_required: false,
+  policy_bundle: null,
   registered_actions: [],
+  approval_policies: [],
   allowed_percept_schemas: ["splendor.percept.test.v1"],
   allowed_percept_sources: ["daemon-client-local"],
   initial_state: { seed: true },
@@ -58,7 +61,8 @@ const lifecycleRequest: LifecycleRequest = {
   credential: null,
   work_order: null,
   audit_attribution: audit,
-  reason: "test"
+  reason: "test",
+  approval_evidence: null
 };
 
 const action: Action = {
@@ -254,7 +258,8 @@ test("submitAction stays trace-linked and audit-attributed", async () => {
     action,
     adapter: "daemon.local",
     quota_usage: null,
-    satisfied_preconditions: []
+    satisfied_preconditions: [],
+    approval_evidence: null
   };
 
   assert.equal((await client.submitAction(request)).status, "Denied");
@@ -314,7 +319,7 @@ test("getStateHead and requestReplay call daemon inspection endpoints", async ()
   assert.equal(head.state_node_id, "state_1");
   assert.equal(new URL(stateFetch.calls[0].url).pathname, `/runs/${runId}/state-head`);
 
-  const replayFetch = makeFetch({ replay_id: "replay_test", run_id: runId, mode: "inspect_only", event_count: 3, action_event_count: 0 });
+  const replayFetch = makeFetch({ replay_id: "replay_test", run_id: runId, mode: "inspect_only", event_count: 3, action_event_count: 0, approval_events: [] });
   const replayClient = new SplendorClient({ baseUrl: "https://daemon.example", token: "token", fetch: replayFetch.fetcher });
 
   const replay = await replayClient.requestReplay(runId);

@@ -1,5 +1,5 @@
 /**
- * Schema-aligned TypeScript types for Splendor 0.02-dev daemon and runtime
+ * Schema-aligned TypeScript types for Splendor daemon and runtime
  * primitives. These types intentionally contain no kernel execution logic.
  */
 
@@ -11,12 +11,20 @@ export type MessageId = string;
 export type TraceId = string;
 export type TraceEventId = TraceId;
 export type ActionId = string;
+export type ApprovalId = string;
 export type FleetId = string;
 export type NodeId = string;
 export type InstanceId = string;
 export type TickId = number;
 export type StateNodeId = string;
 export type WorkOrderId = string;
+export type EscalationId = string;
+export type InterventionId = string;
+export type CircuitBreakerId = string;
+export type KillSwitchId = string;
+export type PolicyBundleId = string;
+
+export const CIRCUIT_BREAKER_SCHEMA_VERSION = "splendor.circuit_breaker.v1" as const;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -87,6 +95,88 @@ export interface VerificationResult {
   allowed: boolean;
   reasons: string[];
   artifacts: JsonValue;
+}
+
+export type ApprovalDecision = "Granted" | "Denied";
+
+export interface ApprovalPolicy {
+  schema_version: string;
+  policy_id: string;
+  tenant_id: TenantId;
+  agent_id: AgentId | null;
+  action_name: string | null;
+  adapter: string | null;
+  required_permission: string | null;
+  side_effect_class: SideEffectClass | null;
+  risk_level: string | null;
+  reason: string;
+  expires_at: ISODateTime | null;
+}
+
+export interface ApprovalEvidence {
+  schema_version: string;
+  approval_id: ApprovalId;
+  tenant_id: TenantId;
+  agent_id: AgentId;
+  run_id: RunId;
+  action_id: ActionId | null;
+  action_name: string | null;
+  adapter: string | null;
+  decision: ApprovalDecision;
+  reason: string | null;
+  issued_at: ISODateTime;
+  expires_at: ISODateTime;
+  revoked: boolean;
+  trace_event_id: TraceEventId | null;
+}
+
+export interface ApprovalTraceContext {
+  approval_id: ApprovalId;
+  tenant_id: TenantId;
+  agent_id: AgentId;
+  run_id: RunId;
+  action_id: ActionId | null;
+  action_name: string;
+  adapter: string | null;
+  decision: ApprovalDecision | null;
+  reason: string | null;
+  policy_id: string | null;
+  risk_level: string | null;
+  issued_at: ISODateTime | null;
+  expires_at: ISODateTime | null;
+  revoked: boolean;
+}
+
+export type CircuitBreakerScope =
+  | { scope: "global" }
+  | { scope: "fleet"; value: FleetId }
+  | { scope: "node"; value: NodeId }
+  | { scope: "instance"; value: InstanceId }
+  | { scope: "tenant"; value: TenantId }
+  | { scope: "agent"; value: AgentId }
+  | { scope: "adapter"; value: string }
+  | { scope: "action"; value: string }
+  | { scope: "action_class"; value: SideEffectClass };
+
+export type CircuitBreakerState = "tripped" | "cleared";
+
+export interface CircuitBreaker {
+  schema_version: string;
+  breaker_id: CircuitBreakerId;
+  scope: CircuitBreakerScope;
+  state: CircuitBreakerState;
+  reason: string;
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
+export interface CircuitBreakerTraceContext {
+  breaker_id: CircuitBreakerId;
+  scope: CircuitBreakerScope;
+  state: CircuitBreakerState;
+  reason: string;
+  authorized_by: string;
+  recorded_at: ISODateTime;
 }
 
 export interface Feedback {
@@ -168,6 +258,35 @@ export interface TaskFailure {
   trace_id: TraceId | null;
 }
 
+export interface PolicyDegradedMode {
+  allow_low_risk_cached: boolean;
+}
+
+export interface PolicyBundle {
+  schema_version: string;
+  policy_bundle_id: PolicyBundleId;
+  version: string;
+  tenant_id: TenantId;
+  agent_id: AgentId | null;
+  issued_at: ISODateTime;
+  expires_at: ISODateTime;
+  revocation: RevocationStatus;
+  degraded_mode: PolicyDegradedMode;
+}
+
+export interface PolicyBundleEnvelope extends PolicyBundle {
+  signature: WorkOrderSignature | null;
+}
+
+export interface PolicyBundleTraceContext {
+  policy_bundle_id: PolicyBundleId;
+  version: string;
+  tenant_id: TenantId;
+  agent_id: AgentId | null;
+  expires_at: ISODateTime;
+  degraded_mode: PolicyDegradedMode;
+}
+
 export type StateReferenceMode = "snapshot_import" | "read_only_reference";
 
 export interface StateHandoffTraceContext {
@@ -196,6 +315,160 @@ export interface RemoteMessageTraceContext {
   idempotency_key: string | null;
 }
 
+export type GovernanceExtensions = Record<string, JsonValue>;
+
+export type GovernanceScope =
+  | { scope_type: "global" }
+  | { scope_type: "fleet"; fleet_id: FleetId }
+  | { scope_type: "node"; node_id: NodeId }
+  | { scope_type: "instance"; instance_id: InstanceId }
+  | { scope_type: "tenant"; tenant_id: TenantId }
+  | { scope_type: "agent"; tenant_id: TenantId; agent_id: AgentId }
+  | { scope_type: "run"; tenant_id: TenantId; agent_id: AgentId; run_id: RunId }
+  | { scope_type: "action"; tenant_id: TenantId; agent_id: AgentId; run_id: RunId; action_id: ActionId }
+  | { scope_type: "adapter"; tenant_id?: TenantId | null; adapter: string };
+
+export interface GovernanceIssuer {
+  issuer_id: string;
+  source: string;
+}
+
+export interface GovernanceTraceLink {
+  trace_event_id: TraceEventId;
+  run_id?: RunId | null;
+}
+
+export interface GovernanceRevocation {
+  revoked_at: ISODateTime;
+  reason: string;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+}
+
+export type ApprovalStatus = "requested" | "granted" | "denied" | "expired" | "revoked";
+export type EscalationStatus = "open" | "resolved" | "expired" | "revoked";
+export type InterventionStatus = "requested" | "resolved" | "cancelled" | "expired" | "revoked";
+export type CircuitBreakerStatus = "active" | "cleared" | "expired" | "revoked";
+export type KillSwitchStatus = "active" | "cleared" | "expired" | "revoked";
+export type GovernanceState =
+  | "requested"
+  | "granted"
+  | "denied"
+  | "open"
+  | "resolved"
+  | "active"
+  | "cleared"
+  | "cancelled"
+  | "expired"
+  | "revoked";
+
+export type GovernanceObjectKind = "approval" | "escalation" | "intervention" | "circuit_breaker" | "kill_switch";
+
+export type GovernanceObjectRef =
+  | { object_type: "approval"; approval_id: ApprovalId }
+  | { object_type: "escalation"; escalation_id: EscalationId }
+  | { object_type: "intervention"; intervention_id: InterventionId }
+  | { object_type: "circuit_breaker"; circuit_breaker_id: CircuitBreakerId }
+  | { object_type: "kill_switch"; kill_switch_id: KillSwitchId };
+
+export interface GovernanceTransition {
+  schema_version: string;
+  object: GovernanceObjectRef;
+  scope: GovernanceScope;
+  from?: GovernanceState | null;
+  to: GovernanceState;
+  occurred_at: ISODateTime;
+  reason: string;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+  extensions?: GovernanceExtensions;
+}
+
+export interface GovernanceTransitionRejection {
+  schema_version: string;
+  object: GovernanceObjectRef;
+  scope: GovernanceScope;
+  from?: GovernanceState | null;
+  attempted: GovernanceState;
+  reason: string;
+  rejected_at: ISODateTime;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+}
+
+export interface ApprovalRequest {
+  schema_version: string;
+  approval_id: ApprovalId;
+  scope: GovernanceScope;
+  status: ApprovalStatus;
+  created_at: ISODateTime;
+  expires_at: ISODateTime | null;
+  reason: string;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+  revocation?: GovernanceRevocation | null;
+  extensions?: GovernanceExtensions;
+}
+
+export interface ApprovalGrant extends ApprovalRequest {}
+export interface ApprovalDenial extends ApprovalRequest {}
+
+export interface Escalation {
+  schema_version: string;
+  escalation_id: EscalationId;
+  scope: GovernanceScope;
+  status: EscalationStatus;
+  created_at: ISODateTime;
+  expires_at: ISODateTime | null;
+  reason: string;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+  revocation?: GovernanceRevocation | null;
+  extensions?: GovernanceExtensions;
+}
+
+export interface Intervention {
+  schema_version: string;
+  intervention_id: InterventionId;
+  scope: GovernanceScope;
+  status: InterventionStatus;
+  created_at: ISODateTime;
+  expires_at: ISODateTime | null;
+  reason: string;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+  revocation?: GovernanceRevocation | null;
+  extensions?: GovernanceExtensions;
+}
+
+export interface GovernanceCircuitBreaker {
+  schema_version: string;
+  circuit_breaker_id: CircuitBreakerId;
+  scope: GovernanceScope;
+  status: CircuitBreakerStatus;
+  created_at: ISODateTime;
+  expires_at: ISODateTime | null;
+  reason: string;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+  revocation?: GovernanceRevocation | null;
+  extensions?: GovernanceExtensions;
+}
+
+export interface KillSwitch {
+  schema_version: string;
+  kill_switch_id: KillSwitchId;
+  scope: GovernanceScope;
+  status: KillSwitchStatus;
+  created_at: ISODateTime;
+  expires_at: ISODateTime | null;
+  reason: string;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+  revocation?: GovernanceRevocation | null;
+  extensions?: GovernanceExtensions;
+}
+
 export interface TraceIdentityContext {
   fleet_id?: FleetId | null;
   node_id?: NodeId | null;
@@ -205,6 +478,7 @@ export interface TraceIdentityContext {
   run_id: RunId;
   tick_id?: TickId | null;
   action_id?: ActionId | null;
+  approval_id?: ApprovalId | null;
   state_node_id?: StateNodeId | null;
   message_id?: MessageId | null;
 }
@@ -212,6 +486,35 @@ export interface TraceIdentityContext {
 export interface TraceIntegrity {
   prev_event_hash: ContentHash | null;
   event_hash: ContentHash;
+}
+
+export type EscalationTrigger =
+  | "VerifierUncertainty"
+  | "RepeatedAdapterFailure"
+  | "ApprovalTimeout"
+  | "QuotaPressure"
+  | "PolicyExpired"
+  | "SafetyRisk";
+
+export type EscalationDecision = "NoAction" | "Deny" | "Pause" | "NeedsIntervention";
+
+export type EscalationScope = "Tenant" | "Agent" | "Run" | "Action" | "Adapter";
+
+export interface EscalationContext {
+  trigger: EscalationTrigger;
+  threshold: number;
+  observed_count: number;
+  scope: EscalationScope;
+  decision: EscalationDecision;
+  tenant_id: TenantId;
+  agent_id: AgentId;
+  run_id: RunId;
+  action_id: ActionId | null;
+  action_name: string | null;
+  adapter: string | null;
+  reason: string;
+  evidence: JsonValue;
+  decided_at: ISODateTime;
 }
 
 export type TraceEventKind =
@@ -233,11 +536,42 @@ export type TraceEventKind =
         reason: string;
       };
     }
+  | { PolicyBundleAccepted: { bundle: PolicyBundleTraceContext } }
+  | {
+      PolicyBundleRejected: {
+        policy_bundle_id: PolicyBundleId | null;
+        version: string | null;
+        reason: string;
+      };
+    }
+  | {
+      PolicySyncFailed: {
+        policy_bundle_id: PolicyBundleId | null;
+        version: string | null;
+        reason: string;
+      };
+    }
+  | {
+      PolicyExpired: {
+        policy_bundle_id: PolicyBundleId;
+        version: string;
+        action: string | null;
+      };
+    }
+  | {
+      PolicyRevoked: {
+        policy_bundle_id: PolicyBundleId;
+        version: string;
+        reason: string;
+      };
+    }
   | { RunPaused: { reason: string | null } }
   | { RunResumed: { reason: string | null } }
   | { RunStopped: { reason: string | null } }
   | { PerceptsAppended: { count: number; schemas: string[] } }
   | { DaemonAudit: { endpoint: string; audit: AuditAttribution } }
+  | { CircuitBreakerTripped: { breaker: CircuitBreakerTraceContext } }
+  | { CircuitBreakerCleared: { breaker: CircuitBreakerTraceContext } }
   | { LoopTickStarted: { tick_id: number } }
   | { PerceptsReceived: { percepts: Percept[] } }
   | { StateLoaded: { state_hash: ContentHash | null } }
@@ -247,9 +581,17 @@ export type TraceEventKind =
   | { ConstraintsEvaluated: { constraints: Constraint[]; result: VerificationResult } }
   | { ActionVerificationStarted: { action: Action } }
   | { ActionVerificationCompleted: { action: Action; result: VerificationResult } }
+  | { ActionNeedsApproval: { action: Action; result: VerificationResult } }
   | { ActionExecuted: { action: Action; outcome: JsonValue } }
   | { ActionDenied: { action: Action; result: VerificationResult } }
   | { ActionFailed: { action: Action; error: string; result: VerificationResult } }
+  | { ApprovalRequested: { approval: ApprovalTraceContext } }
+  | { ApprovalGranted: { approval: ApprovalTraceContext } }
+  | { ApprovalDenied: { approval: ApprovalTraceContext; reason: string } }
+  | { ApprovalExpired: { approval: ApprovalTraceContext; reason: string } }
+  | { ApprovalRevoked: { approval: ApprovalTraceContext; reason: string } }
+  | { ActionNeedsIntervention: { action: Action; result: VerificationResult } }
+  | { EscalationTriggered: { escalation: EscalationContext } }
   | { OutcomeRecorded: { outcome: JsonValue; feedback: Feedback | null; reward: Reward | null } }
   | { StateCommitted: { state_hash: ContentHash; snapshot_id: SnapshotId | null } }
   | { StateHandoffExported: { handoff: StateHandoffTraceContext } }
@@ -284,6 +626,29 @@ export type TraceEventKind =
         source_message_id: MessageId | null;
       };
     }
+  | { GovernanceApprovalRequested: { transition: GovernanceTransition } }
+  | { GovernanceApprovalGranted: { transition: GovernanceTransition } }
+  | { GovernanceApprovalDenied: { transition: GovernanceTransition } }
+  | { GovernanceApprovalExpired: { transition: GovernanceTransition } }
+  | { GovernanceApprovalRevoked: { transition: GovernanceTransition } }
+  | { EscalationOpened: { transition: GovernanceTransition } }
+  | { EscalationResolved: { transition: GovernanceTransition } }
+  | { EscalationExpired: { transition: GovernanceTransition } }
+  | { EscalationRevoked: { transition: GovernanceTransition } }
+  | { InterventionRequested: { transition: GovernanceTransition } }
+  | { InterventionResolved: { transition: GovernanceTransition } }
+  | { InterventionCancelled: { transition: GovernanceTransition } }
+  | { InterventionExpired: { transition: GovernanceTransition } }
+  | { InterventionRevoked: { transition: GovernanceTransition } }
+  | { GovernanceCircuitBreakerTripped: { transition: GovernanceTransition } }
+  | { GovernanceCircuitBreakerCleared: { transition: GovernanceTransition } }
+  | { GovernanceCircuitBreakerExpired: { transition: GovernanceTransition } }
+  | { GovernanceCircuitBreakerRevoked: { transition: GovernanceTransition } }
+  | { KillSwitchActivated: { transition: GovernanceTransition } }
+  | { KillSwitchCleared: { transition: GovernanceTransition } }
+  | { KillSwitchExpired: { transition: GovernanceTransition } }
+  | { KillSwitchRevoked: { transition: GovernanceTransition } }
+  | { GovernanceTransitionRejected: { rejection: GovernanceTransitionRejection } }
   | { LoopTickCompleted: { tick_id: number; integrity: TraceIntegrity | null } };
 
 export interface TraceEvent {
@@ -295,7 +660,7 @@ export interface TraceEvent {
   kind: TraceEventKind;
 }
 
-export type ActionStatus = "Executed" | "Denied" | "Failed";
+export type ActionStatus = "Executed" | "Denied" | "NeedsApproval" | "NeedsIntervention" | "Failed";
 
 export interface ActionRequest {
   action_id: ActionId;
@@ -307,6 +672,7 @@ export interface ActionRequest {
   quota_usage: QuotaUsage;
   satisfied_preconditions: string[];
   requested_at: ISODateTime;
+  approval_evidence: ApprovalEvidence | null;
 }
 
 export interface ActionOutcome {
@@ -328,7 +694,7 @@ export interface StateHead {
   label: string | null;
 }
 
-export type RunStatus = "created" | "running" | "paused" | "stopped" | "failed";
+export type RunStatus = "created" | "running" | "waiting_for_approval" | "paused" | "denied" | "expired" | "stopped" | "failed";
 
 export interface RunConfig {
   trace_db: string;
@@ -444,6 +810,7 @@ export type EndpointScope =
   | "messages_send"
   | "health_read"
   | "capabilities_read"
+  | "policies_sync"
   | "nodes_register"
   | "instances_register"
   | "nodes_heartbeat"
@@ -510,7 +877,10 @@ export interface CreateRunRequest {
   allowed_adapters: string[];
   allowed_permissions: string[];
   policy_actions: DaemonActionCandidate[];
+  policy_bundle_required: boolean;
+  policy_bundle: PolicyBundleEnvelope | null;
   registered_actions: RegisteredAction[];
+  approval_policies: ApprovalPolicy[];
   allowed_percept_schemas: string[];
   allowed_percept_sources: string[];
   initial_state: JsonValue | null;
@@ -527,6 +897,7 @@ export interface LifecycleRequest {
   work_order: WorkOrderAuthorization | null;
   audit_attribution: AuditAttribution | null;
   reason: string | null;
+  approval_evidence: ApprovalEvidence | null;
 }
 
 export interface RunInspectResponse {
@@ -537,8 +908,32 @@ export interface RunInspectResponse {
   state_head: string | null;
   ticks: number;
   adapter_executions: number;
+  policy_bundle: PolicyBundleTraceContext | null;
   created_at: ISODateTime;
   updated_at: ISODateTime;
+}
+
+export interface PolicySyncRequest {
+  credential: CallerCredential | null;
+  audit_attribution: AuditAttribution | null;
+  policy_bundle: PolicyBundleEnvelope | null;
+  sync_error: string | null;
+  disconnected: boolean | null;
+}
+
+export interface PolicyCacheStatusResponse {
+  enforcement_required: boolean;
+  disconnected: boolean;
+  policy_bundle: PolicyBundleTraceContext | null;
+  revoked_reason: string | null;
+  last_sync_failure: string | null;
+}
+
+export interface PolicySyncResponse {
+  run_id: RunId;
+  accepted: boolean;
+  policy_bundle: PolicyBundleTraceContext | null;
+  cache_status: PolicyCacheStatusResponse;
 }
 
 export interface TickResponse {
@@ -570,6 +965,15 @@ export interface ReplayResponse {
   mode: string;
   event_count: number;
   action_event_count: number;
+  approval_events: ApprovalReplayEvent[];
+}
+
+export interface ApprovalReplayEvent {
+  lifecycle: string;
+  approval: ApprovalTraceContext;
+  reason: string | null;
+  trace_event_id: TraceId;
+  sequence: number;
 }
 
 export interface TracePageResponse {
@@ -588,6 +992,7 @@ export interface SubmitActionRequest {
   adapter: string | null;
   quota_usage: QuotaUsage | null;
   satisfied_preconditions: string[];
+  approval_evidence: ApprovalEvidence | null;
 }
 
 export interface HealthResponse {
@@ -636,9 +1041,11 @@ export const CANONICAL_SCHEMA_FIELDS = {
     "adapter",
     "quota_usage",
     "satisfied_preconditions",
-    "requested_at"
+    "requested_at",
+    "approval_evidence"
   ],
   action_outcome: ["action_id", "status", "verification", "post_verification", "output", "error", "completed_at"],
+  circuit_breaker: ["schema_version", "breaker_id", "scope", "state", "reason", "created_at", "updated_at"],
   trace_event: ["trace_event_id", "run_id", "sequence", "timestamp", "identity", "kind"],
   state_head: ["run_id", "state_node_id", "parent_state_node_ids", "data_hash", "created_at", "label"],
   create_run_request: [
@@ -651,13 +1058,16 @@ export const CANONICAL_SCHEMA_FIELDS = {
     "allowed_adapters",
     "allowed_permissions",
     "policy_actions",
+    "policy_bundle_required",
+    "policy_bundle",
     "registered_actions",
+    "approval_policies",
     "allowed_percept_schemas",
     "allowed_percept_sources",
     "initial_state",
     "snapshot_interval"
   ],
-  lifecycle_request: ["credential", "work_order", "audit_attribution", "reason"],
+  lifecycle_request: ["credential", "work_order", "audit_attribution", "reason", "approval_evidence"],
   run_inspect_response: [
     "run_id",
     "tenant_id",
@@ -666,13 +1076,23 @@ export const CANONICAL_SCHEMA_FIELDS = {
     "state_head",
     "ticks",
     "adapter_executions",
+    "policy_bundle",
     "created_at",
     "updated_at"
   ],
   tick_response: ["run_id", "status", "tick_id", "state_node_id", "action_outcomes"],
   append_percept_request: ["credential", "audit_attribution", "percept"],
+  policy_sync_request: ["credential", "audit_attribution", "policy_bundle", "sync_error", "disconnected"],
+  policy_cache_status_response: [
+    "enforcement_required",
+    "disconnected",
+    "policy_bundle",
+    "revoked_reason",
+    "last_sync_failure"
+  ],
+  policy_sync_response: ["run_id", "accepted", "policy_bundle", "cache_status"],
   trace_page_response: ["run_id", "records"],
-  replay_response: ["replay_id", "run_id", "mode", "event_count", "action_event_count"],
+  replay_response: ["replay_id", "run_id", "mode", "event_count", "action_event_count", "approval_events"],
   submit_action_request: [
     "run_id",
     "tenant_id",
@@ -683,7 +1103,8 @@ export const CANONICAL_SCHEMA_FIELDS = {
     "action",
     "adapter",
     "quota_usage",
-    "satisfied_preconditions"
+    "satisfied_preconditions",
+    "approval_evidence"
   ],
   health_response: ["status", "local_only", "runtime_available"],
   capabilities_response: ["daemon_api_version", "local_only", "replay_modes", "endpoints"]
@@ -693,6 +1114,7 @@ export const CANONICAL_SCHEMA_FIELDS = {
   percept: readonly (keyof Percept)[];
   action_request: readonly (keyof ActionRequest)[];
   action_outcome: readonly (keyof ActionOutcome)[];
+  circuit_breaker: readonly (keyof CircuitBreaker)[];
   trace_event: readonly (keyof TraceEvent)[];
   state_head: readonly (keyof StateHead)[];
   create_run_request: readonly (keyof CreateRunRequest)[];
@@ -700,6 +1122,9 @@ export const CANONICAL_SCHEMA_FIELDS = {
   run_inspect_response: readonly (keyof RunInspectResponse)[];
   tick_response: readonly (keyof TickResponse)[];
   append_percept_request: readonly (keyof AppendPerceptRequest)[];
+  policy_sync_request: readonly (keyof PolicySyncRequest)[];
+  policy_cache_status_response: readonly (keyof PolicyCacheStatusResponse)[];
+  policy_sync_response: readonly (keyof PolicySyncResponse)[];
   trace_page_response: readonly (keyof TracePageResponse)[];
   replay_response: readonly (keyof ReplayResponse)[];
   submit_action_request: readonly (keyof SubmitActionRequest)[];
@@ -711,11 +1136,18 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "RunStarted",
   "WorkOrderAccepted",
   "WorkOrderRejected",
+  "PolicyBundleAccepted",
+  "PolicyBundleRejected",
+  "PolicySyncFailed",
+  "PolicyExpired",
+  "PolicyRevoked",
   "RunPaused",
   "RunResumed",
   "RunStopped",
   "PerceptsAppended",
   "DaemonAudit",
+  "CircuitBreakerTripped",
+  "CircuitBreakerCleared",
   "LoopTickStarted",
   "PerceptsReceived",
   "StateLoaded",
@@ -725,9 +1157,17 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "ConstraintsEvaluated",
   "ActionVerificationStarted",
   "ActionVerificationCompleted",
+  "ActionNeedsApproval",
   "ActionExecuted",
   "ActionDenied",
   "ActionFailed",
+  "ApprovalRequested",
+  "ApprovalGranted",
+  "ApprovalDenied",
+  "ApprovalExpired",
+  "ApprovalRevoked",
+  "ActionNeedsIntervention",
+  "EscalationTriggered",
   "OutcomeRecorded",
   "StateCommitted",
   "StateHandoffExported",
@@ -753,10 +1193,33 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "ChildRunCompleted",
   "ChildRunFailed",
   "ChildRunLinked",
+  "GovernanceApprovalRequested",
+  "GovernanceApprovalGranted",
+  "GovernanceApprovalDenied",
+  "GovernanceApprovalExpired",
+  "GovernanceApprovalRevoked",
+  "EscalationOpened",
+  "EscalationResolved",
+  "EscalationExpired",
+  "EscalationRevoked",
+  "InterventionRequested",
+  "InterventionResolved",
+  "InterventionCancelled",
+  "InterventionExpired",
+  "InterventionRevoked",
+  "GovernanceCircuitBreakerTripped",
+  "GovernanceCircuitBreakerCleared",
+  "GovernanceCircuitBreakerExpired",
+  "GovernanceCircuitBreakerRevoked",
+  "KillSwitchActivated",
+  "KillSwitchCleared",
+  "KillSwitchExpired",
+  "KillSwitchRevoked",
+  "GovernanceTransitionRejected",
   "LoopTickCompleted"
 ] as const;
 
-export const ACTION_STATUS_VALUES = ["Executed", "Denied", "Failed"] as const satisfies readonly ActionStatus[];
+export const ACTION_STATUS_VALUES = ["Executed", "Denied", "NeedsApproval", "NeedsIntervention", "Failed"] as const satisfies readonly ActionStatus[];
 
 export const ENDPOINT_SCOPE_VALUES = [
   "RunsCreate",
@@ -773,6 +1236,7 @@ export const ENDPOINT_SCOPE_VALUES = [
   "MessagesSend",
   "HealthRead",
   "CapabilitiesRead",
+  "PoliciesSync",
   "NodesRegister",
   "InstancesRegister",
   "NodesHeartbeat",
@@ -794,6 +1258,7 @@ export const ENDPOINT_SCOPE_LABELS: Record<EndpointScope, string> = {
   messages_send: "splendor.messages.send",
   health_read: "splendor.health.read",
   capabilities_read: "splendor.capabilities.read",
+  policies_sync: "splendor.policies.sync",
   nodes_register: "splendor.nodes.register",
   instances_register: "splendor.instances.register",
   nodes_heartbeat: "splendor.nodes.heartbeat",

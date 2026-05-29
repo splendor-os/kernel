@@ -23,6 +23,7 @@ fn build_action(tenant_id: TenantId, name: &str, params: serde_json::Value) -> A
         quota_usage: QuotaUsage::single_action(),
         satisfied_preconditions: Vec::new(),
         requested_at: OffsetDateTime::now_utc(),
+        approval_evidence: None,
     }
 }
 
