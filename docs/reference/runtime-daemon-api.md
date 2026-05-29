@@ -54,21 +54,37 @@ directly; `/actions` always submits to the `VerifiedActionGateway` path with
 - an in-memory state store;
 - a queued perceptor for daemon-submitted percepts;
 - a scheduler containing one loop engine;
-- a `VerifiedActionGateway` with explicitly registered local adapters.
+- a `VerifiedActionGateway` with explicitly registered local adapters;
+- optional `approval_policies` evaluated by the gateway approval verifier.
 
-`start` and `resume` execute exactly one scheduler tick. This keeps 0.02-S5 small
-and deterministic while proving the daemon boundary. Continuous/background
-scheduling is not introduced in this sprint.
+`CreateRunRequest.approval_policies` installs local approval policies for the run.
+`LifecycleRequest.approval_evidence` and `SubmitActionRequest.approval_evidence`
+carry scoped approval evidence into the verifier chain. Evidence is never treated
+as direct action authority.
+
+`start` and `resume` execute exactly one scheduler tick. This keeps the local
+daemon deterministic while proving the daemon boundary. Continuous/background
+scheduling is not introduced here.
 
 Run statuses are:
 
 ```text
 created
 running
+waiting_for_approval
 paused
+denied
+expired
 stopped
 failed
 ```
+
+When a tick returns an approval-required action, the daemon records
+`RunPaused { reason: "waiting_for_approval" }`, stores the pending approval
+context for inspection/replay, and returns `waiting_for_approval`. Resume from
+that state requires a signed resume work order and
+`LifecycleRequest.approval_evidence`; missing evidence returns
+`403 approval_required` before a tick is run.
 
 ## Percept ingestion
 
@@ -119,17 +135,26 @@ Action submissions through `/actions` emit normal action trace events:
 ```text
 ActionVerificationStarted
 ActionVerificationCompleted
-ActionExecuted | ActionDenied | ActionFailed
+ActionNeedsApproval | ActionExecuted | ActionDenied | ActionFailed
 OutcomeRecorded
 ```
+
+Approval flows may also emit `ApprovalRequested`, `ApprovalGranted`,
+`ApprovalDenied`, `ApprovalExpired`, and `ApprovalRevoked`. These are verifier
+facts only; they do not authorize adapter execution outside the gateway.
 
 ## Replay behavior
 
 `POST /runs/{run_id}/replay` is inspect-only. It reads trace records, validates
 that sequence numbers are contiguous and run-scoped, and returns a replay summary
-with event counts. It does not invoke perceptors, policies, gateways, verifiers,
-or adapters, and cannot repeat filesystem, network, database, webhook, shell, or
-external-service side effects.
+with event counts and `approval_events`. It does not invoke perceptors, policies,
+gateways, verifiers, or adapters, and cannot repeat filesystem, network,
+database, webhook, shell, or external-service side effects.
+
+`approval_events` reports approval lifecycle events with lifecycle label,
+approval context, optional reason, trace event ID, and sequence. It explains why
+approval was required and what grant, denial, expiry, or revocation changed the
+outcome without resuming the run or executing an adapter.
 
 ## Structured errors
 
@@ -151,6 +176,7 @@ Required 0.02-S5 failures include:
 | Malformed percept body | `400` | `malformed_percept` |
 | Unauthorized or missing scope/action trace link | `403` | daemon security error code |
 | Runtime unavailable | `503` | `runtime_unavailable` |
+| Resume from `waiting_for_approval` without evidence | `403` | `approval_required` |
 | Gateway denial | `200` with `ActionOutcome.status = Denied` | action outcome |
 
 Gateway denials are action outcomes, not HTTP transport failures, because the
@@ -168,6 +194,7 @@ duplicating runtime semantics.
 - No remote node registry.
 - No fleet scheduling.
 - No production OAuth/OIDC/PKI server.
-- No governance approval workflow.
+- No approval queue UI, notification system, escalation engine, circuit breaker,
+  or workflow DSL.
 - No background resident scheduler.
 - No TypeScript client implementation in this sprint.

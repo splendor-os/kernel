@@ -9,7 +9,8 @@ use splendor_daemon::{
     TickResponse, TracePageResponse,
 };
 use splendor_types::{
-    Action, AgentId, AuditAttribution, ClientPrincipal, CredentialAudience, EndpointScope, Percept,
+    Action, AgentId, ApprovalDecision, ApprovalEvidence, ApprovalId, ApprovalPolicy,
+    AuditAttribution, ClientPrincipal, CredentialAudience, EndpointScope, Percept,
     PerceptProvenance, QuotaUsage, RevocationStatus, RunId, SideEffectClass, TenantId, TraceEvent,
     TraceEventKind, WorkOrderAuthorization, WorkOrderSignature,
 };
@@ -61,6 +62,39 @@ fn action(name: &str) -> Action {
     }
 }
 
+fn approval_policy(tenant_id: &TenantId, agent_id: &AgentId, action_name: &str) -> ApprovalPolicy {
+    let mut policy = ApprovalPolicy::new(
+        "daemon_approval_policy",
+        tenant_id.clone(),
+        "external action requires approval",
+    );
+    policy.agent_id = Some(agent_id.clone());
+    policy.action_name = Some(action_name.to_string());
+    policy.adapter = Some("daemon.local".to_string());
+    policy.side_effect_class = Some(SideEffectClass::External);
+    policy.risk_level = Some("high".to_string());
+    policy
+}
+
+fn approval_evidence(
+    tenant_id: &TenantId,
+    agent_id: &AgentId,
+    run_id: &RunId,
+    action_name: &str,
+    decision: ApprovalDecision,
+) -> ApprovalEvidence {
+    ApprovalEvidence::new(
+        ApprovalId::new(),
+        tenant_id.clone(),
+        agent_id.clone(),
+        run_id.clone(),
+        decision,
+        OffsetDateTime::now_utc() + time::Duration::hours(1),
+    )
+    .with_action_name(action_name)
+    .with_adapter("daemon.local")
+}
+
 fn percept(schema: &str) -> Percept {
     Percept {
         schema: schema.to_string(),
@@ -90,6 +124,7 @@ fn create_request(
         allowed_permissions: Vec::new(),
         policy_actions,
         registered_actions,
+        approval_policies: Vec::new(),
         allowed_percept_schemas: vec!["splendor.percept.test.v1".to_string()],
         allowed_percept_sources: vec!["daemon-client-local".to_string()],
         initial_state: Some(json!({"seed": true})),
@@ -195,6 +230,7 @@ async fn daemon_run_lifecycle_state_trace_and_replay_are_local_and_ordered() {
         work_order: None,
         audit_attribution: Some(attribution()),
         reason: Some("test".to_string()),
+        approval_evidence: None,
     };
     let (status, tick): (StatusCode, TickResponse) = call_json(
         app.clone(),
@@ -228,6 +264,7 @@ async fn daemon_run_lifecycle_state_trace_and_replay_are_local_and_ordered() {
         )),
         audit_attribution: Some(attribution()),
         reason: Some("wrong-agent".to_string()),
+        approval_evidence: None,
     };
     let (status, error): (StatusCode, ApiErrorBody) = call_json(
         app.clone(),
@@ -249,6 +286,7 @@ async fn daemon_run_lifecycle_state_trace_and_replay_are_local_and_ordered() {
         )),
         audit_attribution: Some(attribution()),
         reason: Some("resume".to_string()),
+        approval_evidence: None,
     };
     let (status, resumed): (StatusCode, TickResponse) = call_json(
         app.clone(),
@@ -369,6 +407,298 @@ async fn daemon_run_lifecycle_state_trace_and_replay_are_local_and_ordered() {
 }
 
 #[tokio::test]
+async fn approval_required_run_pauses_and_valid_grant_resumes_execution() {
+    let app = router(DaemonState::local_dev());
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let policy_actions = vec![DaemonActionCandidate {
+        action: action("allowed_action"),
+        adapter: Some("daemon.local".to_string()),
+        quota_usage: None,
+        satisfied_preconditions: Vec::new(),
+    }];
+    let mut create = create_request(
+        tenant_id.clone(),
+        agent_id.clone(),
+        policy_actions,
+        Vec::new(),
+    );
+    create.approval_policies = vec![approval_policy(&tenant_id, &agent_id, "allowed_action")];
+    let (status, created): (StatusCode, CreateRunResponse) = call_json(
+        app.clone(),
+        Method::POST,
+        "/runs",
+        serde_json::to_value(create).expect("create request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let start = LifecycleRequest {
+        credential: None,
+        work_order: None,
+        audit_attribution: Some(attribution()),
+        reason: Some("start approval test".to_string()),
+        approval_evidence: None,
+    };
+    let (status, waiting): (StatusCode, TickResponse) = call_json(
+        app.clone(),
+        Method::POST,
+        &format!("/runs/{}/start", created.run_id),
+        serde_json::to_value(start).expect("start request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(waiting.status, RunStatus::WaitingForApproval);
+    assert_eq!(
+        waiting.action_outcomes[0].status,
+        splendor_gateway::ActionStatus::NeedsApproval
+    );
+
+    let (status, inspected): (StatusCode, RunInspectResponse) = call_empty(
+        app.clone(),
+        Method::GET,
+        &format!("/runs/{}", created.run_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(inspected.status, RunStatus::WaitingForApproval);
+    assert_eq!(inspected.adapter_executions, 0);
+
+    let missing_approval_resume = LifecycleRequest {
+        credential: None,
+        work_order: Some(signed_work_order(
+            tenant_id.clone(),
+            agent_id.clone(),
+            Some(created.run_id.clone()),
+            vec![EndpointScope::RunsResume],
+        )),
+        audit_attribution: Some(attribution()),
+        reason: Some("missing approval".to_string()),
+        approval_evidence: None,
+    };
+    let (status, error): (StatusCode, ApiErrorBody) = call_json(
+        app.clone(),
+        Method::POST,
+        &format!("/runs/{}/resume", created.run_id),
+        serde_json::to_value(missing_approval_resume).expect("missing approval resume"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(error.code, "approval_required");
+
+    let grant = approval_evidence(
+        &tenant_id,
+        &agent_id,
+        &created.run_id,
+        "allowed_action",
+        ApprovalDecision::Granted,
+    );
+    let resume = LifecycleRequest {
+        credential: None,
+        work_order: Some(signed_work_order(
+            tenant_id.clone(),
+            agent_id.clone(),
+            Some(created.run_id.clone()),
+            vec![EndpointScope::RunsResume],
+        )),
+        audit_attribution: Some(attribution()),
+        reason: Some("approval granted".to_string()),
+        approval_evidence: Some(grant),
+    };
+    let (status, resumed): (StatusCode, TickResponse) = call_json(
+        app.clone(),
+        Method::POST,
+        &format!("/runs/{}/resume", created.run_id),
+        serde_json::to_value(resume).expect("resume request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(resumed.status, RunStatus::Running);
+    assert_eq!(
+        resumed.action_outcomes[0].status,
+        splendor_gateway::ActionStatus::Executed
+    );
+
+    let (status, inspected): (StatusCode, RunInspectResponse) = call_empty(
+        app.clone(),
+        Method::GET,
+        &format!("/runs/{}", created.run_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(inspected.adapter_executions, 1);
+
+    let (status, traces): (StatusCode, TracePageResponse) = call_empty(
+        app.clone(),
+        Method::GET,
+        &format!("/runs/{}/traces?redaction_policy=none", created.run_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(traces.records.iter().any(|record| {
+        serde_json::from_value::<TraceEvent>(record.payload.clone())
+            .map(|event| matches!(event.kind, TraceEventKind::ActionNeedsApproval { .. }))
+            .unwrap_or(false)
+    }));
+    assert!(traces.records.iter().any(|record| {
+        serde_json::from_value::<TraceEvent>(record.payload.clone())
+            .map(|event| matches!(event.kind, TraceEventKind::ApprovalRequested { .. }))
+            .unwrap_or(false)
+    }));
+    assert!(traces.records.iter().any(|record| {
+        serde_json::from_value::<TraceEvent>(record.payload.clone())
+            .map(|event| matches!(event.kind, TraceEventKind::ApprovalGranted { .. }))
+            .unwrap_or(false)
+    }));
+    assert!(traces.records.iter().any(|record| {
+        serde_json::from_value::<TraceEvent>(record.payload.clone())
+            .map(|event| {
+                matches!(event.kind, TraceEventKind::RunPaused { ref reason }
+                    if reason.as_deref() == Some("waiting_for_approval"))
+            })
+            .unwrap_or(false)
+    }));
+
+    let (status, replay): (StatusCode, ReplayResponse) = call_json(
+        app.clone(),
+        Method::POST,
+        &format!("/runs/{}/replay", created.run_id),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replay.mode, "inspect_only");
+    assert!(replay
+        .approval_events
+        .iter()
+        .any(|event| event.lifecycle == "requested"));
+    assert!(replay
+        .approval_events
+        .iter()
+        .any(|event| event.lifecycle == "granted"));
+}
+
+#[tokio::test]
+async fn approval_denial_expiry_and_wrong_scope_do_not_execute_adapter() {
+    for scenario in [
+        "denied",
+        "expired",
+        "wrong_tenant",
+        "wrong_agent",
+        "wrong_action",
+        "wrong_adapter",
+        "incomplete_action_scope",
+        "incomplete_adapter_scope",
+        "revoked",
+    ] {
+        let app = router(DaemonState::local_dev());
+        let tenant_id = TenantId::new();
+        let agent_id = AgentId::new();
+        let policy_actions = vec![DaemonActionCandidate {
+            action: action("allowed_action"),
+            adapter: Some("daemon.local".to_string()),
+            quota_usage: None,
+            satisfied_preconditions: Vec::new(),
+        }];
+        let mut create = create_request(
+            tenant_id.clone(),
+            agent_id.clone(),
+            policy_actions,
+            Vec::new(),
+        );
+        create.approval_policies = vec![approval_policy(&tenant_id, &agent_id, "allowed_action")];
+        let (status, created): (StatusCode, CreateRunResponse) = call_json(
+            app.clone(),
+            Method::POST,
+            "/runs",
+            serde_json::to_value(create).expect("create request"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let start = LifecycleRequest {
+            credential: None,
+            work_order: None,
+            audit_attribution: Some(attribution()),
+            reason: None,
+            approval_evidence: None,
+        };
+        let (status, waiting): (StatusCode, TickResponse) = call_json(
+            app.clone(),
+            Method::POST,
+            &format!("/runs/{}/start", created.run_id),
+            serde_json::to_value(start).expect("start request"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(waiting.status, RunStatus::WaitingForApproval);
+
+        let mut evidence = approval_evidence(
+            &tenant_id,
+            &agent_id,
+            &created.run_id,
+            "allowed_action",
+            ApprovalDecision::Granted,
+        );
+        match scenario {
+            "denied" => evidence.decision = ApprovalDecision::Denied,
+            "expired" => {
+                evidence.expires_at = OffsetDateTime::now_utc() - time::Duration::minutes(1)
+            }
+            "wrong_tenant" => evidence.tenant_id = TenantId::new(),
+            "wrong_agent" => evidence.agent_id = AgentId::new(),
+            "wrong_action" => evidence.action_name = Some("different_action".to_string()),
+            "wrong_adapter" => evidence.adapter = Some("different_adapter".to_string()),
+            "incomplete_action_scope" => {
+                evidence.action_id = None;
+                evidence.action_name = None;
+            }
+            "incomplete_adapter_scope" => evidence.adapter = None,
+            "revoked" => evidence.revoked = true,
+            _ => unreachable!(),
+        }
+
+        let resume = LifecycleRequest {
+            credential: None,
+            work_order: Some(signed_work_order(
+                tenant_id.clone(),
+                agent_id.clone(),
+                Some(created.run_id.clone()),
+                vec![EndpointScope::RunsResume],
+            )),
+            audit_attribution: Some(attribution()),
+            reason: Some(format!("approval {scenario}")),
+            approval_evidence: Some(evidence),
+        };
+        let (status, resumed): (StatusCode, TickResponse) = call_json(
+            app.clone(),
+            Method::POST,
+            &format!("/runs/{}/resume", created.run_id),
+            serde_json::to_value(resume).expect("resume request"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            resumed.action_outcomes[0].status,
+            splendor_gateway::ActionStatus::Denied
+        );
+        assert!(matches!(
+            resumed.status,
+            RunStatus::Denied | RunStatus::Expired
+        ));
+
+        let (status, inspected): (StatusCode, RunInspectResponse) = call_empty(
+            app.clone(),
+            Method::GET,
+            &format!("/runs/{}", created.run_id),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(inspected.adapter_executions, 0);
+    }
+}
+
+#[tokio::test]
 async fn create_run_rejects_incompatible_and_duplicate_work_orders() {
     let app = router(DaemonState::local_dev());
     let tenant_id = TenantId::new();
@@ -441,6 +771,7 @@ async fn action_endpoint_uses_gateway_and_returns_structured_denial() {
         work_order: None,
         audit_attribution: Some(attribution()),
         reason: None,
+        approval_evidence: None,
     };
     let (status, _tick): (StatusCode, TickResponse) = call_json(
         app.clone(),
@@ -462,6 +793,7 @@ async fn action_endpoint_uses_gateway_and_returns_structured_denial() {
         adapter: Some("daemon.local".to_string()),
         quota_usage: None,
         satisfied_preconditions: Vec::new(),
+        approval_evidence: None,
     };
     let (status, error): (StatusCode, ApiErrorBody) = call_json(
         app.clone(),
@@ -497,6 +829,7 @@ async fn action_endpoint_uses_gateway_and_returns_structured_denial() {
         adapter: Some("daemon.local".to_string()),
         quota_usage: None,
         satisfied_preconditions: Vec::new(),
+        approval_evidence: None,
     };
     let (status, outcome): (StatusCode, splendor_gateway::ActionOutcome) = call_json(
         app.clone(),
@@ -600,6 +933,7 @@ async fn daemon_error_paths_cover_state_trace_lifecycle_scope_and_percepts() {
         )),
         audit_attribution: Some(attribution()),
         reason: Some("not-paused".to_string()),
+        approval_evidence: None,
     };
     let (status, error): (StatusCode, ApiErrorBody) = call_json(
         app.clone(),
@@ -622,6 +956,7 @@ async fn daemon_error_paths_cover_state_trace_lifecycle_scope_and_percepts() {
         adapter: Some("daemon.local".to_string()),
         quota_usage: None,
         satisfied_preconditions: Vec::new(),
+        approval_evidence: None,
     };
     let (status, error): (StatusCode, ApiErrorBody) = call_json(
         app.clone(),
@@ -638,6 +973,7 @@ async fn daemon_error_paths_cover_state_trace_lifecycle_scope_and_percepts() {
         work_order: None,
         audit_attribution: Some(attribution()),
         reason: Some("stop".to_string()),
+        approval_evidence: None,
     };
     let (status, stopped): (StatusCode, RunInspectResponse) = call_json(
         app.clone(),
@@ -703,6 +1039,7 @@ async fn daemon_executes_allowed_actions_and_pages_trace_ranges() {
         work_order: None,
         audit_attribution: Some(attribution()),
         reason: None,
+        approval_evidence: None,
     };
     let (status, tick): (StatusCode, TickResponse) = call_json(
         app.clone(),
@@ -747,6 +1084,7 @@ async fn daemon_executes_allowed_actions_and_pages_trace_ranges() {
         adapter: Some("daemon.local".to_string()),
         quota_usage: Some(QuotaUsage::single_action()),
         satisfied_preconditions: Vec::new(),
+        approval_evidence: None,
     };
     let (status, outcome): (StatusCode, splendor_gateway::ActionOutcome) = call_json(
         app.clone(),
@@ -771,6 +1109,7 @@ async fn daemon_executes_allowed_actions_and_pages_trace_ranges() {
         adapter: Some("daemon.local".to_string()),
         quota_usage: Some(QuotaUsage::single_action()),
         satisfied_preconditions: Vec::new(),
+        approval_evidence: None,
     };
     let failed_run_id = failed_submit.run_id.clone();
     let (status, failed): (StatusCode, splendor_gateway::ActionOutcome) = call_json(
@@ -846,6 +1185,7 @@ async fn structured_errors_cover_invalid_run_malformed_percept_and_unavailable_r
         work_order: None,
         audit_attribution: Some(attribution()),
         reason: None,
+        approval_evidence: None,
     };
     let (status, unavailable): (StatusCode, ApiErrorBody) = call_json(
         app,

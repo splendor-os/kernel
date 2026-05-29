@@ -11,7 +11,7 @@ sequence number within a `RunId` and must be emitted in strict tick order.
 - `run_id` (`RunId`): owning run.
 - `sequence` (`u64`): monotonic per-run sequence number.
 - `timestamp` (`OffsetDateTime`): capture time at emission.
-- `identity` (`TraceIdentityContext`): runtime identity context containing required `run_id` and optional fleet, node, instance, tenant, agent, tick, action, state, and message IDs when applicable.
+- `identity` (`TraceIdentityContext`): runtime identity context containing required `run_id` and optional fleet, node, instance, tenant, agent, tick, action, approval, state, and message IDs when applicable.
 - `kind` (`TraceEventKind`): event payload.
 
 Trace events are serialized into `TraceRecord` entries within a `TraceStore`.
@@ -35,7 +35,7 @@ following order for each tick:
 7. `ConstraintsEvaluated`
 8. `ActionVerificationStarted`
 9. `ActionVerificationCompleted`
-10. `ActionExecuted`, `ActionDenied`, or `ActionFailed`
+10. `ActionNeedsApproval`, `ActionExecuted`, `ActionDenied`, or `ActionFailed`
 11. `OutcomeRecorded`
 12. `StateCommitted`
 13. `LoopTickCompleted`
@@ -44,8 +44,8 @@ These Rust enum names correspond to the canonical runtime event classes used in
 the rule documents: `run.started`, `tick.started`, `percepts.received`, `state.loaded`,
 `policy.invoked`, `policy.completed`, `actions.proposed`,
 `constraints.evaluated`, `verification.started`, `verification.completed`,
-`action.executed`, `action.denied`, or `action.failed`, `outcome.recorded`,
-`state.committed`, and `tick.completed`.
+`action.needs_approval`, `action.executed`, `action.denied`, or
+`action.failed`, `outcome.recorded`, `state.committed`, and `tick.completed`.
 
 If post-verification fails after an action executes, the kernel records
 `ActionExecuted` followed by `ActionFailed` with the post-verification result.
@@ -62,9 +62,10 @@ duplicate, and transport failure.
 Every trace event carries `identity.run_id`; runtime emission validates that it
 matches the top-level `run_id` before persistence. Loop events emitted by the
 kernel include tenant, agent, run, and tick identity where applicable. Action
-events include `action_id`; state commit events include `state_node_id`; message
-lifecycle events include `message_id`. Fleet, node, and instance IDs are optional
-until later 0.03 registry and transport sprints populate them.
+events include `action_id`; approval lifecycle events include `approval_id`; state
+commit events include `state_node_id`; message lifecycle events include
+`message_id`. Fleet, node, and instance IDs are optional until later 0.03
+registry and transport sprints populate them.
 
 Node and instance registry lifecycle events introduced in 0.03-S2 are management
 audit events rather than run-scoped `TraceEventKind` variants. They are documented
@@ -82,6 +83,11 @@ by each affected run's sequence counter and carry explicit parent/child IDs.
 same run trace runtime, preserving monotonic sequence order before the next tick
 or replay inspection. Mutating daemon calls also emit `DaemonAudit` before the
 mutation so caller attribution is persisted in the run trace.
+
+0.04-S2 approval lifecycle events are emitted by the gateway/daemon approval path
+when an action requires approval, a grant is presented, evidence is denied,
+evidence is expired, or evidence is revoked. They are ordered in the same run
+trace and do not authorize adapter execution outside the gateway.
 
 ## TraceEventKind Payloads
 
@@ -102,9 +108,15 @@ mutation so caller attribution is persisted in the run trace.
 - `ConstraintsEvaluated { constraints: Vec<Constraint>, result: VerificationResult }`
 - `ActionVerificationStarted { action: Action }`
 - `ActionVerificationCompleted { action: Action, result: VerificationResult }`
+- `ActionNeedsApproval { action: Action, result: VerificationResult }`
 - `ActionExecuted { action: Action, outcome: serde_json::Value }`
 - `ActionDenied { action: Action, result: VerificationResult }`
 - `ActionFailed { action: Action, error: String, result: VerificationResult }`
+- `ApprovalRequested { approval: ApprovalTraceContext }`
+- `ApprovalGranted { approval: ApprovalTraceContext }`
+- `ApprovalDenied { approval: ApprovalTraceContext, reason: String }`
+- `ApprovalExpired { approval: ApprovalTraceContext, reason: String }`
+- `ApprovalRevoked { approval: ApprovalTraceContext, reason: String }`
 - `OutcomeRecorded { outcome: serde_json::Value, feedback: Option<Feedback>, reward: Option<Reward> }`
 - `StateCommitted { state_hash: ContentHash, snapshot_id: Option<SnapshotId> }`
 - `StateHandoffExported { handoff: StateHandoffTraceContext }`
@@ -218,6 +230,25 @@ and carries:
 These events do not authorize side effects. They only make accepted mutating
 daemon calls trace/audit attributable; action execution still requires the
 gateway/verifier path.
+
+## Approval Events
+
+0.04-S2 approval event variants correspond to these canonical event classes:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `ActionNeedsApproval` | `action.needs_approval` | The approval verifier paused the action before adapter execution. |
+| `ApprovalRequested` | `approval.requested` | A policy-created approval request was recorded. |
+| `ApprovalGranted` | `approval.granted` | Scoped approval grant evidence was presented. |
+| `ApprovalDenied` | `approval.denied` | Approval denial or wrong-scope evidence was rejected. |
+| `ApprovalExpired` | `approval.expired` | Expired approval evidence was rejected. |
+| `ApprovalRevoked` | `approval.revoked` | Revoked approval evidence was rejected. |
+
+All approval lifecycle events carry `ApprovalTraceContext`, which includes
+`approval_id`, tenant, agent, run, action, adapter, decision, reason, policy/risk
+metadata where available, expiry, and revocation state. Replay reconstructs these
+events as approval facts only; it does not call approval services, verifiers,
+gateways, or adapters.
 
 ## Work-order Events
 

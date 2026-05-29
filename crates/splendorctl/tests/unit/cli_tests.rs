@@ -2190,6 +2190,7 @@ fn build_gateway_success() {
         quota_usage: QuotaUsage::single_action(),
         satisfied_preconditions: Vec::new(),
         requested_at: OffsetDateTime::now_utc(),
+        approval_evidence: None,
     };
     request.action.name = "write_file".to_string();
     let _ = gateway.submit(request).expect("submit");

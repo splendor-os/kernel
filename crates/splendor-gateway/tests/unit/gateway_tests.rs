@@ -1,5 +1,8 @@
 use super::*;
-use splendor_types::{AgentId, QuotaUsage, RunId, SideEffectClass, TenantId};
+use splendor_types::{
+    AgentId, ApprovalDecision, ApprovalEvidence, ApprovalId, ApprovalPolicy, QuotaUsage, RunId,
+    SideEffectClass, TenantId,
+};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -48,6 +51,7 @@ fn sample_action() -> ActionRequest {
         quota_usage: QuotaUsage::single_action(),
         satisfied_preconditions: Vec::new(),
         requested_at: OffsetDateTime::now_utc(),
+        approval_evidence: None,
     }
 }
 
@@ -195,7 +199,51 @@ fn base_request() -> ActionRequest {
         quota_usage: QuotaUsage::single_action(),
         satisfied_preconditions: Vec::new(),
         requested_at: OffsetDateTime::now_utc(),
+        approval_evidence: None,
     }
+}
+
+fn approval_policy_for(request: &ActionRequest) -> ApprovalPolicy {
+    let mut policy = ApprovalPolicy::new(
+        "approval_policy_test",
+        request.tenant_id.clone(),
+        "high risk action requires approval",
+    );
+    policy.agent_id = Some(request.agent_id.clone());
+    policy.action_name = Some(request.action.name.clone());
+    policy.adapter = Some("adapter".to_string());
+    policy.side_effect_class = Some(request.action.side_effect_class.clone());
+    policy.risk_level = Some("high".to_string());
+    policy
+}
+
+fn approval_evidence_for(request: &ActionRequest) -> ApprovalEvidence {
+    ApprovalEvidence::new(
+        ApprovalId::new(),
+        request.tenant_id.clone(),
+        request.agent_id.clone(),
+        request.run_id.clone(),
+        ApprovalDecision::Granted,
+        OffsetDateTime::now_utc() + time::Duration::hours(1),
+    )
+    .with_action_name(request.action.name.clone())
+    .with_adapter("adapter")
+}
+
+fn approval_gateway(
+    request: &ActionRequest,
+    adapter: Arc<CountingAdapter>,
+) -> VerifiedActionGateway {
+    let tenant_access = Arc::new(TestTenantAccess {
+        policy: VerificationResult::allow(),
+        quota: VerificationResult::allow(),
+    });
+    let mut gateway = VerifiedActionGateway::new(tenant_access);
+    gateway.register_adapter("noop", "adapter", adapter);
+    gateway.set_approval_verifier(Arc::new(PolicyApprovalVerifier::new(vec![
+        approval_policy_for(request),
+    ])));
+    gateway
 }
 
 #[test]
@@ -381,6 +429,199 @@ fn verified_gateway_executes_when_checks_pass() {
     assert!(matches!(outcome.status, ActionStatus::Executed));
     assert_eq!(*adapter.calls.lock().expect("calls lock"), 1);
     assert!(outcome.output.is_some());
+}
+
+#[test]
+fn approval_required_action_pauses_without_adapter_execution() {
+    let request = base_request();
+    let adapter = Arc::new(CountingAdapter::default());
+    let gateway = approval_gateway(&request, adapter.clone());
+
+    let outcome = gateway.submit(request).expect("outcome");
+
+    assert!(matches!(outcome.status, ActionStatus::NeedsApproval));
+    assert!(!outcome.verification.allowed);
+    assert!(outcome
+        .verification
+        .reasons
+        .contains(&"approval_required".to_string()));
+    assert_eq!(
+        outcome.verification.artifacts["approval_status"].as_str(),
+        Some("required")
+    );
+    assert_eq!(*adapter.calls.lock().expect("calls lock"), 0);
+}
+
+#[test]
+fn valid_scoped_approval_grant_allows_execution() {
+    let mut request = base_request();
+    let adapter = Arc::new(CountingAdapter::default());
+    let gateway = approval_gateway(&request, adapter.clone());
+    request.approval_evidence = Some(approval_evidence_for(&request));
+
+    let outcome = gateway.submit(request).expect("outcome");
+
+    assert!(matches!(outcome.status, ActionStatus::Executed));
+    assert_eq!(*adapter.calls.lock().expect("calls lock"), 1);
+    assert_eq!(
+        outcome.verification.artifacts["approval"]["approval_status"].as_str(),
+        Some("granted")
+    );
+}
+
+#[test]
+fn approval_wrong_scope_is_denied_without_adapter_execution() {
+    for mut evidence in [
+        {
+            let request = base_request();
+            let mut evidence = approval_evidence_for(&request);
+            evidence.tenant_id = TenantId::new();
+            evidence
+        },
+        {
+            let request = base_request();
+            let mut evidence = approval_evidence_for(&request);
+            evidence.agent_id = AgentId::new();
+            evidence
+        },
+        {
+            let request = base_request();
+            let mut evidence = approval_evidence_for(&request);
+            evidence.action_name = Some("different".to_string());
+            evidence
+        },
+        {
+            let request = base_request();
+            let mut evidence = approval_evidence_for(&request);
+            evidence.adapter = Some("different".to_string());
+            evidence
+        },
+    ] {
+        let mut request = base_request();
+        evidence.run_id = request.run_id.clone();
+        let adapter = Arc::new(CountingAdapter::default());
+        let gateway = approval_gateway(&request, adapter.clone());
+        request.approval_evidence = Some(evidence);
+
+        let outcome = gateway.submit(request).expect("outcome");
+
+        assert!(matches!(outcome.status, ActionStatus::Denied));
+        assert!(outcome
+            .verification
+            .reasons
+            .contains(&"approval_scope_mismatch".to_string()));
+        assert_eq!(*adapter.calls.lock().expect("calls lock"), 0);
+    }
+}
+
+#[test]
+fn approval_incomplete_action_or_adapter_scope_is_denied_without_adapter_execution() {
+    for (mut evidence, missing_scope) in [
+        {
+            let request = base_request();
+            let mut evidence = approval_evidence_for(&request);
+            evidence.action_id = None;
+            evidence.action_name = None;
+            (evidence, "action")
+        },
+        {
+            let request = base_request();
+            let mut evidence = approval_evidence_for(&request);
+            evidence.adapter = None;
+            (evidence, "adapter")
+        },
+    ] {
+        let mut request = base_request();
+        evidence.tenant_id = request.tenant_id.clone();
+        evidence.agent_id = request.agent_id.clone();
+        evidence.run_id = request.run_id.clone();
+        let adapter = Arc::new(CountingAdapter::default());
+        let gateway = approval_gateway(&request, adapter.clone());
+        request.approval_evidence = Some(evidence);
+
+        let outcome = gateway.submit(request).expect("outcome");
+
+        assert!(
+            matches!(outcome.status, ActionStatus::Denied),
+            "missing {missing_scope} scope must deny"
+        );
+        assert!(outcome
+            .verification
+            .reasons
+            .contains(&"approval_scope_incomplete".to_string()));
+        assert_eq!(*adapter.calls.lock().expect("calls lock"), 0);
+    }
+}
+
+#[test]
+fn approval_denial_expiry_and_revocation_fail_closed() {
+    for (mut evidence, reason) in [
+        {
+            let request = base_request();
+            let mut evidence = approval_evidence_for(&request);
+            evidence.decision = ApprovalDecision::Denied;
+            (evidence, "approval_denied")
+        },
+        {
+            let request = base_request();
+            let mut evidence = approval_evidence_for(&request);
+            evidence.expires_at = OffsetDateTime::now_utc() - time::Duration::minutes(1);
+            (evidence, "approval_expired")
+        },
+        {
+            let request = base_request();
+            let mut evidence = approval_evidence_for(&request);
+            evidence.revoked = true;
+            (evidence, "approval_revoked")
+        },
+    ] {
+        let mut request = base_request();
+        evidence.tenant_id = request.tenant_id.clone();
+        evidence.agent_id = request.agent_id.clone();
+        evidence.run_id = request.run_id.clone();
+        evidence.action_name = Some(request.action.name.clone());
+        let adapter = Arc::new(CountingAdapter::default());
+        let gateway = approval_gateway(&request, adapter.clone());
+        request.approval_evidence = Some(evidence);
+
+        let outcome = gateway.submit(request).expect("outcome");
+
+        assert!(matches!(outcome.status, ActionStatus::Denied));
+        assert!(outcome.verification.reasons.contains(&reason.to_string()));
+        assert_eq!(*adapter.calls.lock().expect("calls lock"), 0);
+    }
+}
+
+#[test]
+fn approval_verifier_uncertainty_needs_intervention_without_adapter_execution() {
+    struct UnavailableApprovalVerifier;
+
+    impl ApprovalVerifier for UnavailableApprovalVerifier {
+        fn verify_approval(
+            &self,
+            _action: &ActionRequest,
+            _adapter: Option<&str>,
+            _now: OffsetDateTime,
+        ) -> ApprovalVerification {
+            ApprovalVerification::NeedsIntervention(VerificationResult::deny(
+                "approval_verifier_unavailable",
+            ))
+        }
+    }
+
+    let tenant_access = Arc::new(TestTenantAccess {
+        policy: VerificationResult::allow(),
+        quota: VerificationResult::allow(),
+    });
+    let mut gateway = VerifiedActionGateway::new(tenant_access);
+    let adapter = Arc::new(CountingAdapter::default());
+    gateway.register_adapter("noop", "adapter", adapter.clone());
+    gateway.set_approval_verifier(Arc::new(UnavailableApprovalVerifier));
+
+    let outcome = gateway.submit(base_request()).expect("outcome");
+
+    assert!(matches!(outcome.status, ActionStatus::NeedsIntervention));
+    assert_eq!(*adapter.calls.lock().expect("calls lock"), 0);
 }
 
 #[test]

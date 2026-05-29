@@ -1,5 +1,5 @@
 /**
- * Schema-aligned TypeScript types for Splendor 0.02-dev daemon and runtime
+ * Schema-aligned TypeScript types for Splendor daemon and runtime
  * primitives. These types intentionally contain no kernel execution logic.
  */
 
@@ -11,6 +11,7 @@ export type MessageId = string;
 export type TraceId = string;
 export type TraceEventId = TraceId;
 export type ActionId = string;
+export type ApprovalId = string;
 export type FleetId = string;
 export type NodeId = string;
 export type InstanceId = string;
@@ -87,6 +88,56 @@ export interface VerificationResult {
   allowed: boolean;
   reasons: string[];
   artifacts: JsonValue;
+}
+
+export type ApprovalDecision = "Granted" | "Denied";
+
+export interface ApprovalPolicy {
+  schema_version: string;
+  policy_id: string;
+  tenant_id: TenantId;
+  agent_id: AgentId | null;
+  action_name: string | null;
+  adapter: string | null;
+  required_permission: string | null;
+  side_effect_class: SideEffectClass | null;
+  risk_level: string | null;
+  reason: string;
+  expires_at: ISODateTime | null;
+}
+
+export interface ApprovalEvidence {
+  schema_version: string;
+  approval_id: ApprovalId;
+  tenant_id: TenantId;
+  agent_id: AgentId;
+  run_id: RunId;
+  action_id: ActionId | null;
+  action_name: string | null;
+  adapter: string | null;
+  decision: ApprovalDecision;
+  reason: string | null;
+  issued_at: ISODateTime;
+  expires_at: ISODateTime;
+  revoked: boolean;
+  trace_event_id: TraceEventId | null;
+}
+
+export interface ApprovalTraceContext {
+  approval_id: ApprovalId;
+  tenant_id: TenantId;
+  agent_id: AgentId;
+  run_id: RunId;
+  action_id: ActionId | null;
+  action_name: string;
+  adapter: string | null;
+  decision: ApprovalDecision | null;
+  reason: string | null;
+  policy_id: string | null;
+  risk_level: string | null;
+  issued_at: ISODateTime | null;
+  expires_at: ISODateTime | null;
+  revoked: boolean;
 }
 
 export interface Feedback {
@@ -205,6 +256,7 @@ export interface TraceIdentityContext {
   run_id: RunId;
   tick_id?: TickId | null;
   action_id?: ActionId | null;
+  approval_id?: ApprovalId | null;
   state_node_id?: StateNodeId | null;
   message_id?: MessageId | null;
 }
@@ -247,9 +299,15 @@ export type TraceEventKind =
   | { ConstraintsEvaluated: { constraints: Constraint[]; result: VerificationResult } }
   | { ActionVerificationStarted: { action: Action } }
   | { ActionVerificationCompleted: { action: Action; result: VerificationResult } }
+  | { ActionNeedsApproval: { action: Action; result: VerificationResult } }
   | { ActionExecuted: { action: Action; outcome: JsonValue } }
   | { ActionDenied: { action: Action; result: VerificationResult } }
   | { ActionFailed: { action: Action; error: string; result: VerificationResult } }
+  | { ApprovalRequested: { approval: ApprovalTraceContext } }
+  | { ApprovalGranted: { approval: ApprovalTraceContext } }
+  | { ApprovalDenied: { approval: ApprovalTraceContext; reason: string } }
+  | { ApprovalExpired: { approval: ApprovalTraceContext; reason: string } }
+  | { ApprovalRevoked: { approval: ApprovalTraceContext; reason: string } }
   | { OutcomeRecorded: { outcome: JsonValue; feedback: Feedback | null; reward: Reward | null } }
   | { StateCommitted: { state_hash: ContentHash; snapshot_id: SnapshotId | null } }
   | { StateHandoffExported: { handoff: StateHandoffTraceContext } }
@@ -295,7 +353,7 @@ export interface TraceEvent {
   kind: TraceEventKind;
 }
 
-export type ActionStatus = "Executed" | "Denied" | "Failed";
+export type ActionStatus = "Executed" | "Denied" | "NeedsApproval" | "NeedsIntervention" | "Failed";
 
 export interface ActionRequest {
   action_id: ActionId;
@@ -307,6 +365,7 @@ export interface ActionRequest {
   quota_usage: QuotaUsage;
   satisfied_preconditions: string[];
   requested_at: ISODateTime;
+  approval_evidence: ApprovalEvidence | null;
 }
 
 export interface ActionOutcome {
@@ -328,7 +387,7 @@ export interface StateHead {
   label: string | null;
 }
 
-export type RunStatus = "created" | "running" | "paused" | "stopped" | "failed";
+export type RunStatus = "created" | "running" | "waiting_for_approval" | "paused" | "denied" | "expired" | "stopped" | "failed";
 
 export interface RunConfig {
   trace_db: string;
@@ -511,6 +570,7 @@ export interface CreateRunRequest {
   allowed_permissions: string[];
   policy_actions: DaemonActionCandidate[];
   registered_actions: RegisteredAction[];
+  approval_policies: ApprovalPolicy[];
   allowed_percept_schemas: string[];
   allowed_percept_sources: string[];
   initial_state: JsonValue | null;
@@ -527,6 +587,7 @@ export interface LifecycleRequest {
   work_order: WorkOrderAuthorization | null;
   audit_attribution: AuditAttribution | null;
   reason: string | null;
+  approval_evidence: ApprovalEvidence | null;
 }
 
 export interface RunInspectResponse {
@@ -570,6 +631,15 @@ export interface ReplayResponse {
   mode: string;
   event_count: number;
   action_event_count: number;
+  approval_events: ApprovalReplayEvent[];
+}
+
+export interface ApprovalReplayEvent {
+  lifecycle: string;
+  approval: ApprovalTraceContext;
+  reason: string | null;
+  trace_event_id: TraceId;
+  sequence: number;
 }
 
 export interface TracePageResponse {
@@ -588,6 +658,7 @@ export interface SubmitActionRequest {
   adapter: string | null;
   quota_usage: QuotaUsage | null;
   satisfied_preconditions: string[];
+  approval_evidence: ApprovalEvidence | null;
 }
 
 export interface HealthResponse {
@@ -636,7 +707,8 @@ export const CANONICAL_SCHEMA_FIELDS = {
     "adapter",
     "quota_usage",
     "satisfied_preconditions",
-    "requested_at"
+    "requested_at",
+    "approval_evidence"
   ],
   action_outcome: ["action_id", "status", "verification", "post_verification", "output", "error", "completed_at"],
   trace_event: ["trace_event_id", "run_id", "sequence", "timestamp", "identity", "kind"],
@@ -652,12 +724,13 @@ export const CANONICAL_SCHEMA_FIELDS = {
     "allowed_permissions",
     "policy_actions",
     "registered_actions",
+    "approval_policies",
     "allowed_percept_schemas",
     "allowed_percept_sources",
     "initial_state",
     "snapshot_interval"
   ],
-  lifecycle_request: ["credential", "work_order", "audit_attribution", "reason"],
+  lifecycle_request: ["credential", "work_order", "audit_attribution", "reason", "approval_evidence"],
   run_inspect_response: [
     "run_id",
     "tenant_id",
@@ -672,7 +745,7 @@ export const CANONICAL_SCHEMA_FIELDS = {
   tick_response: ["run_id", "status", "tick_id", "state_node_id", "action_outcomes"],
   append_percept_request: ["credential", "audit_attribution", "percept"],
   trace_page_response: ["run_id", "records"],
-  replay_response: ["replay_id", "run_id", "mode", "event_count", "action_event_count"],
+  replay_response: ["replay_id", "run_id", "mode", "event_count", "action_event_count", "approval_events"],
   submit_action_request: [
     "run_id",
     "tenant_id",
@@ -683,7 +756,8 @@ export const CANONICAL_SCHEMA_FIELDS = {
     "action",
     "adapter",
     "quota_usage",
-    "satisfied_preconditions"
+    "satisfied_preconditions",
+    "approval_evidence"
   ],
   health_response: ["status", "local_only", "runtime_available"],
   capabilities_response: ["daemon_api_version", "local_only", "replay_modes", "endpoints"]
@@ -725,9 +799,15 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "ConstraintsEvaluated",
   "ActionVerificationStarted",
   "ActionVerificationCompleted",
+  "ActionNeedsApproval",
   "ActionExecuted",
   "ActionDenied",
   "ActionFailed",
+  "ApprovalRequested",
+  "ApprovalGranted",
+  "ApprovalDenied",
+  "ApprovalExpired",
+  "ApprovalRevoked",
   "OutcomeRecorded",
   "StateCommitted",
   "StateHandoffExported",
@@ -756,7 +836,7 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "LoopTickCompleted"
 ] as const;
 
-export const ACTION_STATUS_VALUES = ["Executed", "Denied", "Failed"] as const satisfies readonly ActionStatus[];
+export const ACTION_STATUS_VALUES = ["Executed", "Denied", "NeedsApproval", "NeedsIntervention", "Failed"] as const satisfies readonly ActionStatus[];
 
 export const ENDPOINT_SCOPE_VALUES = [
   "RunsCreate",

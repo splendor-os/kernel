@@ -355,7 +355,7 @@ components:
         details: true
     RunStatus:
       type: string
-      enum: [created, running, paused, stopped, failed]
+      enum: [created, running, waiting_for_approval, paused, denied, expired, stopped, failed]
     EndpointScope:
       type: string
       enum:
@@ -549,6 +549,118 @@ components:
             type: string
         artifacts:
           $ref: '#/components/schemas/JsonValue'
+    ApprovalDecision:
+      type: string
+      enum: [Granted, Denied]
+    ApprovalPolicy:
+      type: object
+      required: [schema_version, policy_id, tenant_id, agent_id, action_name, adapter, required_permission, side_effect_class, risk_level, reason, expires_at]
+      properties:
+        schema_version:
+          type: string
+        policy_id:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: [string, 'null']
+          format: uuid
+        action_name:
+          type: [string, 'null']
+        adapter:
+          type: [string, 'null']
+        required_permission:
+          type: [string, 'null']
+        side_effect_class: true
+        risk_level:
+          type: [string, 'null']
+        reason:
+          type: string
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+    ApprovalEvidence:
+      type: object
+      required: [schema_version, approval_id, tenant_id, agent_id, run_id, action_id, action_name, adapter, decision, reason, issued_at, expires_at, revoked, trace_event_id]
+      properties:
+        schema_version:
+          type: string
+        approval_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        action_id:
+          type: [string, 'null']
+          format: uuid
+        action_name:
+          type: [string, 'null']
+        adapter:
+          type: [string, 'null']
+        decision:
+          $ref: '#/components/schemas/ApprovalDecision'
+        reason:
+          type: [string, 'null']
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        revoked:
+          type: boolean
+        trace_event_id:
+          type: [string, 'null']
+          format: uuid
+    ApprovalTraceContext:
+      type: object
+      required: [approval_id, tenant_id, agent_id, run_id, action_id, action_name, adapter, decision, reason, policy_id, risk_level, issued_at, expires_at, revoked]
+      properties:
+        approval_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        action_id:
+          type: [string, 'null']
+          format: uuid
+        action_name:
+          type: string
+        adapter:
+          type: [string, 'null']
+        decision:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/ApprovalDecision'
+        reason:
+          type: [string, 'null']
+        policy_id:
+          type: [string, 'null']
+        risk_level:
+          type: [string, 'null']
+        issued_at:
+          type: [string, 'null']
+          format: date-time
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+        revoked:
+          type: boolean
     ActionOutcome:
       type: object
       required: [action_id, status, verification, post_verification, output, error, completed_at]
@@ -558,7 +670,7 @@ components:
           format: uuid
         status:
           type: string
-          enum: [Executed, Denied, Failed]
+          enum: [Executed, Denied, NeedsApproval, NeedsIntervention, Failed]
         verification:
           $ref: '#/components/schemas/VerificationResult'
         post_verification:
@@ -625,6 +737,7 @@ components:
         - allowed_permissions
         - policy_actions
         - registered_actions
+        - approval_policies
         - allowed_percept_schemas
         - allowed_percept_sources
         - initial_state
@@ -666,6 +779,10 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RegisteredAction'
+        approval_policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApprovalPolicy'
         allowed_percept_schemas:
           type: array
           items:
@@ -690,7 +807,7 @@ components:
           $ref: '#/components/schemas/RunStatus'
     LifecycleRequest:
       type: object
-      required: [credential, work_order, audit_attribution, reason]
+      required: [credential, work_order, audit_attribution, reason, approval_evidence]
       properties:
         credential:
           oneOf:
@@ -706,6 +823,10 @@ components:
             - $ref: '#/components/schemas/AuditAttribution'
         reason:
           type: [string, 'null']
+        approval_evidence:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/ApprovalEvidence'
     RunInspectResponse:
       type: object
       required: [run_id, tenant_id, agent_id, status, state_head, ticks, adapter_executions, created_at, updated_at]
@@ -820,7 +941,7 @@ components:
             - $ref: '#/components/schemas/CallerCredential'
     ReplayResponse:
       type: object
-      required: [replay_id, run_id, mode, event_count, action_event_count]
+      required: [replay_id, run_id, mode, event_count, action_event_count, approval_events]
       properties:
         replay_id:
           type: string
@@ -836,9 +957,30 @@ components:
         action_event_count:
           type: integer
           minimum: 0
+        approval_events:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApprovalReplayEvent'
+    ApprovalReplayEvent:
+      type: object
+      required: [lifecycle, approval, reason, trace_event_id, sequence]
+      properties:
+        lifecycle:
+          type: string
+          enum: [requested, granted, denied, expired, revoked]
+        approval:
+          $ref: '#/components/schemas/ApprovalTraceContext'
+        reason:
+          type: [string, 'null']
+        trace_event_id:
+          type: string
+          format: uuid
+        sequence:
+          type: integer
+          minimum: 0
     SubmitActionRequest:
       type: object
-      required: [run_id, tenant_id, agent_id, credential, audit_attribution, causal_trace_id, action, adapter, quota_usage, satisfied_preconditions]
+      required: [run_id, tenant_id, agent_id, credential, audit_attribution, causal_trace_id, action, adapter, quota_usage, satisfied_preconditions, approval_evidence]
       properties:
         run_id:
           type: string
@@ -872,6 +1014,10 @@ components:
           type: array
           items:
             type: string
+        approval_evidence:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/ApprovalEvidence'
     HealthResponse:
       type: object
       required: [status, local_only, runtime_available]

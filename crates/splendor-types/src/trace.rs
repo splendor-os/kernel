@@ -20,10 +20,10 @@
 //! ```
 
 use crate::{
-    Action, AgentId, AuditAttribution, Constraint, ContentHash, Feedback, IdentityValidationError,
-    MessageId, MessageTraceContext, RemoteMessageTraceContext, Reward, RunId, SnapshotId,
-    StateHandoffTraceContext, TaskFailure, TenantId, TickId, TraceEventId, TraceId,
-    TraceIdentityContext, VerificationResult, WorkOrderId,
+    Action, AgentId, ApprovalTraceContext, AuditAttribution, Constraint, ContentHash, Feedback,
+    IdentityValidationError, MessageId, MessageTraceContext, RemoteMessageTraceContext, Reward,
+    RunId, SnapshotId, StateHandoffTraceContext, TaskFailure, TenantId, TickId, TraceEventId,
+    TraceId, TraceIdentityContext, VerificationResult, WorkOrderId,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -96,6 +96,18 @@ fn apply_kind_identity(
         TraceEventKind::LoopTickStarted { tick_id }
         | TraceEventKind::LoopTickCompleted { tick_id, .. } => {
             identity.tick_id.get_or_insert(TickId::from(*tick_id));
+        }
+        TraceEventKind::ApprovalRequested { approval }
+        | TraceEventKind::ApprovalGranted { approval }
+        | TraceEventKind::ApprovalDenied { approval, .. }
+        | TraceEventKind::ApprovalExpired { approval, .. }
+        | TraceEventKind::ApprovalRevoked { approval, .. } => {
+            identity
+                .approval_id
+                .get_or_insert_with(|| approval.approval_id.clone());
+            if let Some(action_id) = &approval.action_id {
+                identity.action_id.get_or_insert_with(|| action_id.clone());
+            }
         }
         TraceEventKind::MessageQueued { message }
         | TraceEventKind::MessageDelivered { message }
@@ -229,6 +241,13 @@ pub enum TraceEventKind {
         /// Result of verification checks.
         result: VerificationResult,
     },
+    /// Records an action paused by the approval verifier before adapter execution.
+    ActionNeedsApproval {
+        /// Action that requires approval.
+        action: Action,
+        /// Verification result explaining why approval is required.
+        result: VerificationResult,
+    },
     /// Records a successfully executed action and its output.
     ActionExecuted {
         /// Executed action.
@@ -251,6 +270,37 @@ pub enum TraceEventKind {
         error: String,
         /// Verification or post-verification result associated with the failure.
         result: VerificationResult,
+    },
+    /// Records creation of a scoped approval request.
+    ApprovalRequested {
+        /// Approval request scope and reason.
+        approval: ApprovalTraceContext,
+    },
+    /// Records a scoped approval grant being presented to the verifier.
+    ApprovalGranted {
+        /// Approval grant scope and expiry.
+        approval: ApprovalTraceContext,
+    },
+    /// Records an approval denial or wrong-scope approval rejection.
+    ApprovalDenied {
+        /// Approval evidence scope.
+        approval: ApprovalTraceContext,
+        /// Denial or validation reason.
+        reason: String,
+    },
+    /// Records an expired approval evidence rejection.
+    ApprovalExpired {
+        /// Approval evidence scope.
+        approval: ApprovalTraceContext,
+        /// Expiry reason.
+        reason: String,
+    },
+    /// Records a revoked approval evidence rejection.
+    ApprovalRevoked {
+        /// Approval evidence scope.
+        approval: ApprovalTraceContext,
+        /// Revocation reason.
+        reason: String,
     },
     /// Captures final outcome, feedback, and reward signals.
     OutcomeRecorded {

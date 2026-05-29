@@ -121,6 +121,11 @@ uuid_id! {
 }
 
 uuid_id! {
+    /// Unique identifier for a scoped approval object.
+    ApprovalId
+}
+
+uuid_id! {
     /// Unique identifier for an agent-to-agent message.
     MessageId
 }
@@ -369,6 +374,9 @@ pub struct TraceIdentityContext {
     /// Action associated with the event, when applicable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action_id: Option<ActionId>,
+    /// Approval associated with the event, when applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<ApprovalId>,
     /// State node associated with the event, when applicable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_node_id: Option<StateNodeId>,
@@ -389,6 +397,7 @@ impl TraceIdentityContext {
             run_id,
             tick_id: None,
             action_id: None,
+            approval_id: None,
             state_node_id: None,
             message_id: None,
         }
@@ -424,6 +433,12 @@ impl TraceIdentityContext {
         self
     }
 
+    /// Returns a copy with approval identity set.
+    pub fn with_approval_id(mut self, approval_id: ApprovalId) -> Self {
+        self.approval_id = Some(approval_id);
+        self
+    }
+
     /// Returns a copy with state node identity set.
     pub fn with_state_node_id(mut self, state_node_id: StateNodeId) -> Self {
         self.state_node_id = Some(state_node_id);
@@ -445,6 +460,7 @@ impl TraceIdentityContext {
         validate_optional_uuid("tenant_id", self.tenant_id.as_ref())?;
         validate_optional_uuid("agent_id", self.agent_id.as_ref())?;
         validate_optional_uuid("action_id", self.action_id.as_ref())?;
+        validate_optional_uuid("approval_id", self.approval_id.as_ref())?;
         validate_optional_uuid("message_id", self.message_id.as_ref())?;
         if let Some(state_node_id) = &self.state_node_id {
             if state_node_id.hash().value.trim().is_empty() {
@@ -539,6 +555,7 @@ impl_uuid_identity!(
     AgentId,
     RunId,
     ActionId,
+    ApprovalId,
     MessageId,
     TraceEventId,
 );

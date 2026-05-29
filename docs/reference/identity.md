@@ -17,6 +17,7 @@ different concept.
 | `run_id` | `RunId` | UUID string | Run | Execution instance and trace stream scope. |
 | `tick_id` | `TickId` | integer | Tick within run | Monotonic counter scoped by `run_id`. |
 | `action_id` | `ActionId` | UUID string | Action | Assigned before gateway submission. |
+| `approval_id` | `ApprovalId` | UUID string | Approval | Assigned to scoped approval evidence/request objects. |
 | `state_node_id` | `StateNodeId` | `algorithm:digest` string | State graph | Deterministic state node identity. Rust state graph commits use BLAKE3; Python local SDK traces currently emit SHA-256 state identity strings in the same canonical shape. |
 | `trace_event_id` | `TraceEventId` | UUID v5 string | Trace event | Deterministic from `run_id` + sequence. |
 | `message_id` | `MessageId` | UUID string | Message | Agent-to-agent message identity. |
@@ -50,6 +51,7 @@ Every new Rust `TraceEvent` serializes with:
     "agent_id": "...",
     "tick_id": 3,
     "action_id": "...",
+    "approval_id": "...",
     "state_node_id": "blake3:...",
     "message_id": "..."
   },
@@ -59,10 +61,10 @@ Every new Rust `TraceEvent` serializes with:
 
 Only applicable optional fields are present. Local loop tick events include
 `tenant_id`, `agent_id`, `run_id`, and `tick_id`. Action events also include
-`action_id`. State commit events include `state_node_id`. Message lifecycle
-events include `message_id`. Fleet, node, and instance IDs are supported by the
-schema but are optional until later 0.03 registry/transport sprints populate
-them.
+`action_id`. Approval lifecycle events include `approval_id`. State commit events
+include `state_node_id`. Message lifecycle events include `message_id`. Fleet,
+node, and instance IDs are supported by the schema but are optional until later
+0.03 registry/transport sprints populate them.
 
 ## Gateway identity validation
 
@@ -97,6 +99,7 @@ export type AgentId = string;
 export type RunId = string;
 export type TickId = number;
 export type ActionId = string;
+export type ApprovalId = string;
 export type StateNodeId = string;
 export type TraceEventId = string;
 export type MessageId = string;
@@ -110,6 +113,7 @@ export interface TraceIdentityContext {
   run_id: RunId;
   tick_id?: TickId;
   action_id?: ActionId;
+  approval_id?: ApprovalId;
   state_node_id?: StateNodeId;
   message_id?: MessageId;
 }
@@ -130,6 +134,7 @@ export interface TraceIdentityContext {
   `trace_event_id`.
 - `ActionId` moved from `splendor-gateway` to `splendor-types`; the gateway
   re-exports it for source compatibility.
+- `ApprovalId` is added for 0.04-S2 approval request/evidence identity.
 - `StateNodeId` moved from `splendor-store` to `splendor-types`; the store
   re-exports it for source compatibility.
 - `StateNodeId` JSON identity serialization is now the canonical

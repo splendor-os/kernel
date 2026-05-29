@@ -12,9 +12,9 @@ use splendor_gateway::{
 };
 use splendor_store::{StateData, StateMetadata, TraceStore, TraceStoreError};
 use splendor_types::{
-    Action, Constraint, ContentHash, Feedback, Percept, QuotaUsage, Reward, RunId, SnapshotId,
-    TickId, TraceEvent, TraceEventId, TraceEventKind, TraceIdentityContext, VerificationResult,
-    WorkOrder,
+    Action, ApprovalTraceContext, Constraint, ContentHash, Feedback, Percept, QuotaUsage, Reward,
+    RunId, SnapshotId, TickId, TraceEvent, TraceEventId, TraceEventKind, TraceIdentityContext,
+    VerificationResult, WorkOrder,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -115,6 +115,8 @@ pub struct ActionCandidate {
     pub usage: QuotaUsage,
     /// Preconditions satisfied for this action.
     pub satisfied_preconditions: Vec<String>,
+    /// Optional approval evidence supplied for this action evaluation.
+    pub approval_evidence: Option<splendor_types::ApprovalEvidence>,
 }
 
 impl ActionCandidate {
@@ -126,6 +128,7 @@ impl ActionCandidate {
             adapter: None,
             usage: QuotaUsage::single_action(),
             satisfied_preconditions,
+            approval_evidence: None,
         }
     }
 
@@ -144,6 +147,12 @@ impl ActionCandidate {
     /// Overrides the satisfied preconditions for this action.
     pub fn with_satisfied_preconditions(mut self, preconditions: Vec<String>) -> Self {
         self.satisfied_preconditions = preconditions;
+        self
+    }
+
+    /// Attaches approval evidence for the gateway approval verifier.
+    pub fn with_approval_evidence(mut self, evidence: splendor_types::ApprovalEvidence) -> Self {
+        self.approval_evidence = Some(evidence);
         self
     }
 }
@@ -222,6 +231,8 @@ pub struct TickOutcome {
     pub duration_ms: u64,
     /// Indicates whether the tick requires intervention.
     pub needs_intervention: bool,
+    /// Indicates whether the tick paused waiting for approval.
+    pub needs_approval: bool,
 }
 
 /// Errors raised by the loop engine.
@@ -592,6 +603,7 @@ impl LoopEngine {
                     quota_usage: candidate.usage,
                     satisfied_preconditions: candidate.satisfied_preconditions.clone(),
                     requested_at: OffsetDateTime::now_utc(),
+                    approval_evidence: candidate.approval_evidence.clone(),
                 };
 
                 match self.gateway.submit(request) {
@@ -611,6 +623,7 @@ impl LoopEngine {
 
             match outcome.status {
                 ActionStatus::Executed => {
+                    self.record_approval_event_if_present(tick_id, &action_id, &outcome)?;
                     self.record_action_event(
                         tick_id,
                         &action_id,
@@ -621,11 +634,38 @@ impl LoopEngine {
                     )?;
                 }
                 ActionStatus::Denied => {
+                    self.record_approval_event_if_present(tick_id, &action_id, &outcome)?;
                     self.record_action_event(
                         tick_id,
                         &action_id,
                         TraceEventKind::ActionDenied {
                             action: action.clone(),
+                            result: outcome.verification.clone(),
+                        },
+                    )?;
+                }
+                ActionStatus::NeedsApproval => {
+                    self.record_approval_event_if_present(tick_id, &action_id, &outcome)?;
+                    self.record_action_event(
+                        tick_id,
+                        &action_id,
+                        TraceEventKind::ActionNeedsApproval {
+                            action: action.clone(),
+                            result: outcome.verification.clone(),
+                        },
+                    )?;
+                }
+                ActionStatus::NeedsIntervention => {
+                    self.record_approval_event_if_present(tick_id, &action_id, &outcome)?;
+                    self.record_action_event(
+                        tick_id,
+                        &action_id,
+                        TraceEventKind::ActionFailed {
+                            action: action.clone(),
+                            error: outcome
+                                .error
+                                .clone()
+                                .unwrap_or_else(|| "needs_intervention".to_string()),
                             result: outcome.verification.clone(),
                         },
                     )?;
@@ -674,16 +714,21 @@ impl LoopEngine {
         let (feedback, reward) = self.evaluate_outcomes(&decision, &outcomes);
         let duration_ms = start.elapsed().as_millis() as u64;
         let needs_intervention = outcomes.iter().any(|outcome| {
-            outcome
-                .post_verification
-                .as_ref()
-                .map(|result| !result.allowed)
-                .unwrap_or(false)
+            outcome.status == ActionStatus::NeedsIntervention
+                || outcome
+                    .post_verification
+                    .as_ref()
+                    .map(|result| !result.allowed)
+                    .unwrap_or(false)
         });
+        let needs_approval = outcomes
+            .iter()
+            .any(|outcome| outcome.status == ActionStatus::NeedsApproval);
         let outcome_payload = serde_json::json!({
             "tick_id": tick_id,
             "duration_ms": duration_ms,
             "needs_intervention": needs_intervention,
+            "needs_approval": needs_approval,
             "actions": outcomes
                 .iter()
                 .map(|outcome| serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null))
@@ -735,7 +780,22 @@ impl LoopEngine {
             state_commit: commit,
             duration_ms,
             needs_intervention,
+            needs_approval,
         })
+    }
+
+    fn record_approval_event_if_present(
+        &self,
+        tick_id: u64,
+        action_id: &ActionId,
+        outcome: &ActionOutcome,
+    ) -> Result<(), LoopError> {
+        let Some((status, approval)) = approval_artifact(&outcome.verification) else {
+            return Ok(());
+        };
+        let kind = approval_trace_kind(status.as_str(), approval);
+        self.record_action_event(tick_id, action_id, kind)?;
+        Ok(())
     }
 
     fn collect_percepts(&self) -> Result<Vec<Percept>, LoopError> {
@@ -806,6 +866,59 @@ fn outcome_from_gateway_error(action_id: ActionId, error: GatewayError) -> Actio
         output: None,
         error: Some(message),
         completed_at: OffsetDateTime::now_utc(),
+    }
+}
+
+fn approval_artifact(result: &VerificationResult) -> Option<(String, ApprovalTraceContext)> {
+    let artifact = result
+        .artifacts
+        .get("approval")
+        .or_else(|| result.artifacts.get("approval_context"))?;
+    let (status, approval_value) = if artifact.get("approval").is_some() {
+        (
+            artifact
+                .get("approval_status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+            artifact.get("approval")?,
+        )
+    } else {
+        (
+            result
+                .artifacts
+                .get("approval_status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+            artifact,
+        )
+    };
+    serde_json::from_value::<ApprovalTraceContext>(approval_value.clone())
+        .ok()
+        .map(|approval| (status, approval))
+}
+
+fn approval_trace_kind(status: &str, approval: ApprovalTraceContext) -> TraceEventKind {
+    match status {
+        "required" => TraceEventKind::ApprovalRequested { approval },
+        "granted" => TraceEventKind::ApprovalGranted { approval },
+        "expired" => TraceEventKind::ApprovalExpired {
+            approval,
+            reason: "approval_expired".to_string(),
+        },
+        "revoked" => TraceEventKind::ApprovalRevoked {
+            approval,
+            reason: "approval_revoked".to_string(),
+        },
+        "intervention_required" => TraceEventKind::ApprovalDenied {
+            approval,
+            reason: "approval_policy_expired".to_string(),
+        },
+        _ => TraceEventKind::ApprovalDenied {
+            approval,
+            reason: "approval_denied".to_string(),
+        },
     }
 }
 

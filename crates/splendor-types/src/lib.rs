@@ -30,6 +30,7 @@
 //! assert_eq!(action.name, "http_get");
 //! ```
 
+mod approval;
 mod capabilities;
 mod daemon_security;
 mod fleet_telemetry;
@@ -43,6 +44,10 @@ mod state_handoff;
 mod trace;
 mod work_order;
 
+pub use approval::{
+    ApprovalActionScope, ApprovalDecision, ApprovalEvidence, ApprovalPolicy, ApprovalTraceContext,
+    APPROVAL_EVIDENCE_SCHEMA_VERSION, APPROVAL_POLICY_SCHEMA_VERSION,
+};
 pub use capabilities::{
     is_valid_capability_name, CapabilityDocument, CapabilityValidationError,
     CAPABILITY_DOCUMENT_SCHEMA,
@@ -63,9 +68,9 @@ pub use fleet_telemetry::{
 };
 pub use hash::{ContentHash, HashAlgorithm};
 pub use ids::{
-    ActionId, AgentId, FleetId, IdentityValidationError, InstanceId, MessageId, NodeId, RunId,
-    RuntimeIdentityContext, SnapshotId, StateNodeId, TenantId, TickId, TraceEventId, TraceId,
-    TraceIdentityContext, WorkOrderId, WorkOrderIdError,
+    ActionId, AgentId, ApprovalId, FleetId, IdentityValidationError, InstanceId, MessageId, NodeId,
+    RunId, RuntimeIdentityContext, SnapshotId, StateNodeId, TenantId, TickId, TraceEventId,
+    TraceId, TraceIdentityContext, WorkOrderId, WorkOrderIdError,
 };
 pub use message::{
     DelegatedAuthority, Message, MessageDeliveryStatus, MessageEnvelope, MessageSchemaVersion,
