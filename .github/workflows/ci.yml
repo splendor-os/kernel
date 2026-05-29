@@ -73,3 +73,16 @@ jobs:
         run: npm test
       - name: TypeScript coverage
         run: npm run coverage
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository without default token
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${GITHUB_REF}"
+          git checkout --detach "${GITHUB_SHA}" || git checkout --detach FETCH_HEAD
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+      - name: Docker deployment image smoke test
+        run: bash scripts/container-tests.sh

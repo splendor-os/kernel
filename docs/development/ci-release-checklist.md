@@ -20,6 +20,12 @@ Additional TypeScript surface validation required for 0.02+ changes:
 npm test
 ```
 
+Container deployment validation required before publishing Docker images:
+
+```bash
+bash scripts/container-tests.sh
+```
+
 Final kernel E2E validation required before claiming 0.03-S8 completion:
 
 ```bash
@@ -64,6 +70,8 @@ That step must run `scripts/verify-0.03-kernel-e2e.sh` and archive
 - [ ] Docs/examples match implemented behavior.
 - [ ] Future milestone behavior is marked planned when mentioned.
 - [ ] Breaking changes include a changelog or migration note.
+- [ ] Docker release images build, run as non-root, and preserve the daemon's
+  local-only insecure-mode boundary.
 
 ## 0.03 kernel E2E merge gate
 
@@ -89,3 +97,5 @@ That step must run `scripts/verify-0.03-kernel-e2e.sh` and archive
 - `docs/releases/0.01-dev.md` lists release scope and command surface.
 - `docs/releases/known-limitations.md` lists local-only and future milestone
   limitations.
+- `docs/deployment/docker.md` lists Docker pull/run commands, local build smoke
+  tests, and daemon security caveats.
