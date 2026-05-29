@@ -119,7 +119,7 @@ Action submissions through `/actions` emit normal action trace events:
 ```text
 ActionVerificationStarted
 ActionVerificationCompleted
-ActionExecuted | ActionDenied | ActionFailed
+ActionExecuted | ActionDenied | ActionFailed | ActionNeedsIntervention
 OutcomeRecorded
 ```
 
@@ -152,6 +152,7 @@ Required 0.02-S5 failures include:
 | Unauthorized or missing scope/action trace link | `403` | daemon security error code |
 | Runtime unavailable | `503` | `runtime_unavailable` |
 | Gateway denial | `200` with `ActionOutcome.status = Denied` | action outcome |
+| Governance intervention required | `200` with `ActionOutcome.status = NeedsIntervention` | action outcome |
 
 Gateway denials are action outcomes, not HTTP transport failures, because the
 gateway successfully evaluated and denied the requested action.

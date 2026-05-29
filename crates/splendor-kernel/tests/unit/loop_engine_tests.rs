@@ -1063,6 +1063,8 @@ fn event_kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::ActionExecuted { .. } => "ActionExecuted",
         TraceEventKind::ActionDenied { .. } => "ActionDenied",
         TraceEventKind::ActionFailed { .. } => "ActionFailed",
+        TraceEventKind::ActionNeedsIntervention { .. } => "ActionNeedsIntervention",
+        TraceEventKind::EscalationTriggered { .. } => "EscalationTriggered",
         TraceEventKind::OutcomeRecorded { .. } => "OutcomeRecorded",
         TraceEventKind::StateCommitted { .. } => "StateCommitted",
         TraceEventKind::StateHandoffExported { .. } => "StateHandoffExported",

@@ -2854,7 +2854,7 @@ fn validate_openapi_contract(artifacts: &Path) -> TestResult<OpenApiEvidence> {
         .unwrap_or_default();
     assert_eq!(
         action_status_enum,
-        ["Executed", "Denied", "Failed"]
+        ["Executed", "Denied", "Failed", "NeedsIntervention"]
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()

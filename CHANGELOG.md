@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.04-dev — Governance workflows
+
+### Implemented primitives
+
+- Added the 0.04-S3 escalation engine with versioned escalation policy rules,
+  deterministic threshold evaluation, `NeedsIntervention` action outcomes,
+  escalation trace events, and inspect-only replay reconstruction.
+
+### Explicitly not included
+
+- No approval verifier, circuit-breaker registry, central policy distribution,
+  workflow language, ticketing integration, notification platform, or UI.
+
 ## 0.03-dev — Resident nodes + fleet execution foundation
 
 ### Implemented primitives

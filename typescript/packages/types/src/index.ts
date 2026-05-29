@@ -214,6 +214,35 @@ export interface TraceIntegrity {
   event_hash: ContentHash;
 }
 
+export type EscalationTrigger =
+  | "VerifierUncertainty"
+  | "RepeatedAdapterFailure"
+  | "ApprovalTimeout"
+  | "QuotaPressure"
+  | "PolicyExpired"
+  | "SafetyRisk";
+
+export type EscalationDecision = "NoAction" | "Deny" | "Pause" | "NeedsIntervention";
+
+export type EscalationScope = "Tenant" | "Agent" | "Run" | "Action" | "Adapter";
+
+export interface EscalationContext {
+  trigger: EscalationTrigger;
+  threshold: number;
+  observed_count: number;
+  scope: EscalationScope;
+  decision: EscalationDecision;
+  tenant_id: TenantId;
+  agent_id: AgentId;
+  run_id: RunId;
+  action_id: ActionId | null;
+  action_name: string | null;
+  adapter: string | null;
+  reason: string;
+  evidence: JsonValue;
+  decided_at: ISODateTime;
+}
+
 export type TraceEventKind =
   | "RunStarted"
   | {
@@ -250,6 +279,8 @@ export type TraceEventKind =
   | { ActionExecuted: { action: Action; outcome: JsonValue } }
   | { ActionDenied: { action: Action; result: VerificationResult } }
   | { ActionFailed: { action: Action; error: string; result: VerificationResult } }
+  | { ActionNeedsIntervention: { action: Action; result: VerificationResult } }
+  | { EscalationTriggered: { escalation: EscalationContext } }
   | { OutcomeRecorded: { outcome: JsonValue; feedback: Feedback | null; reward: Reward | null } }
   | { StateCommitted: { state_hash: ContentHash; snapshot_id: SnapshotId | null } }
   | { StateHandoffExported: { handoff: StateHandoffTraceContext } }
@@ -295,7 +326,7 @@ export interface TraceEvent {
   kind: TraceEventKind;
 }
 
-export type ActionStatus = "Executed" | "Denied" | "Failed";
+export type ActionStatus = "Executed" | "Denied" | "Failed" | "NeedsIntervention";
 
 export interface ActionRequest {
   action_id: ActionId;
@@ -728,6 +759,8 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "ActionExecuted",
   "ActionDenied",
   "ActionFailed",
+  "ActionNeedsIntervention",
+  "EscalationTriggered",
   "OutcomeRecorded",
   "StateCommitted",
   "StateHandoffExported",
@@ -756,7 +789,12 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "LoopTickCompleted"
 ] as const;
 
-export const ACTION_STATUS_VALUES = ["Executed", "Denied", "Failed"] as const satisfies readonly ActionStatus[];
+export const ACTION_STATUS_VALUES = [
+  "Executed",
+  "Denied",
+  "Failed",
+  "NeedsIntervention"
+] as const satisfies readonly ActionStatus[];
 
 export const ENDPOINT_SCOPE_VALUES = [
   "RunsCreate",

@@ -35,16 +35,18 @@ following order for each tick:
 7. `ConstraintsEvaluated`
 8. `ActionVerificationStarted`
 9. `ActionVerificationCompleted`
-10. `ActionExecuted`, `ActionDenied`, or `ActionFailed`
-11. `OutcomeRecorded`
-12. `StateCommitted`
-13. `LoopTickCompleted`
+10. Optional `EscalationTriggered` when an escalation threshold is reached
+11. `ActionExecuted`, `ActionDenied`, `ActionFailed`, or `ActionNeedsIntervention`
+12. `OutcomeRecorded`
+13. `StateCommitted`
+14. `LoopTickCompleted`
 
 These Rust enum names correspond to the canonical runtime event classes used in
 the rule documents: `run.started`, `tick.started`, `percepts.received`, `state.loaded`,
 `policy.invoked`, `policy.completed`, `actions.proposed`,
 `constraints.evaluated`, `verification.started`, `verification.completed`,
-`action.executed`, `action.denied`, or `action.failed`, `outcome.recorded`,
+`escalation.triggered` when applicable, `action.executed`, `action.denied`,
+`action.failed`, or `action.needs_intervention`, `outcome.recorded`,
 `state.committed`, and `tick.completed`.
 
 If post-verification fails after an action executes, the kernel records
@@ -105,6 +107,8 @@ mutation so caller attribution is persisted in the run trace.
 - `ActionExecuted { action: Action, outcome: serde_json::Value }`
 - `ActionDenied { action: Action, result: VerificationResult }`
 - `ActionFailed { action: Action, error: String, result: VerificationResult }`
+- `ActionNeedsIntervention { action: Action, result: VerificationResult }`
+- `EscalationTriggered { escalation: EscalationContext }`
 - `OutcomeRecorded { outcome: serde_json::Value, feedback: Option<Feedback>, reward: Option<Reward> }`
 - `StateCommitted { state_hash: ContentHash, snapshot_id: Option<SnapshotId> }`
 - `StateHandoffExported { handoff: StateHandoffTraceContext }`
@@ -251,6 +255,33 @@ All remote message events carry `RemoteMessageTraceContext`, including the local
 `MessageTraceContext`, tenant ID, source/target instance IDs, work-order ID,
 attempt number, and optional idempotency key. Replay can join source and receiver
 traces by message ID and causal parent without re-sending or re-delivering.
+
+## Escalation Events
+
+0.04-S3 adds deterministic escalation trace events:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `EscalationTriggered` | `escalation.triggered` | A configured escalation trigger reached its threshold and produced a decision. |
+| `ActionNeedsIntervention` | `action.needs_intervention` | The current action cannot proceed until operator/control-plane intervention occurs. |
+
+`EscalationTriggered` carries `EscalationContext` with:
+
+| Field | Purpose |
+| --- | --- |
+| `trigger` | Trigger category: verifier uncertainty, repeated adapter failure, approval timeout, quota pressure, policy expiry, or safety risk. |
+| `threshold` / `observed_count` | Configured threshold and observed occurrences for deterministic replay. |
+| `scope` | Scope evaluated by the policy: tenant, agent, run, action, or adapter. |
+| `decision` | `NoAction`, `Deny`, `Pause`, or `NeedsIntervention`. |
+| `tenant_id`, `agent_id`, `run_id` | Authority and run boundary. |
+| `action_id`, `action_name`, `adapter` | Action/adapter reference when applicable. |
+| `reason` | Stable reason code or summary. |
+| `evidence` | Structured verifier/runtime evidence; never includes secrets. |
+| `decided_at` | Decision timestamp. |
+
+Escalation events do not execute adapters, contact notification systems, create
+tickets, or implement circuit breakers. They are trace facts that make the local
+governance decision replayable and auditable.
 
 ## State Handoff Events
 

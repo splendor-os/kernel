@@ -558,7 +558,7 @@ components:
           format: uuid
         status:
           type: string
-          enum: [Executed, Denied, Failed]
+          enum: [Executed, Denied, Failed, NeedsIntervention]
         verification:
           $ref: '#/components/schemas/VerificationResult'
         post_verification:

@@ -20,10 +20,10 @@
 //! ```
 
 use crate::{
-    Action, AgentId, AuditAttribution, Constraint, ContentHash, Feedback, IdentityValidationError,
-    MessageId, MessageTraceContext, RemoteMessageTraceContext, Reward, RunId, SnapshotId,
-    StateHandoffTraceContext, TaskFailure, TenantId, TickId, TraceEventId, TraceId,
-    TraceIdentityContext, VerificationResult, WorkOrderId,
+    Action, AgentId, AuditAttribution, Constraint, ContentHash, EscalationContext, Feedback,
+    IdentityValidationError, MessageId, MessageTraceContext, RemoteMessageTraceContext, Reward,
+    RunId, SnapshotId, StateHandoffTraceContext, TaskFailure, TenantId, TickId, TraceEventId,
+    TraceId, TraceIdentityContext, VerificationResult, WorkOrderId,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -116,6 +116,11 @@ fn apply_kind_identity(
             identity
                 .message_id
                 .get_or_insert_with(|| remote_message.message.message_id.clone());
+        }
+        TraceEventKind::EscalationTriggered { escalation } => {
+            if let Some(action_id) = escalation.action_id.as_ref() {
+                identity.action_id.get_or_insert_with(|| action_id.clone());
+            }
         }
         _ => {}
     }
@@ -251,6 +256,18 @@ pub enum TraceEventKind {
         error: String,
         /// Verification or post-verification result associated with the failure.
         result: VerificationResult,
+    },
+    /// Records an action that requires intervention before continuing.
+    ActionNeedsIntervention {
+        /// Action that requires intervention.
+        action: Action,
+        /// Verification or escalation result explaining the intervention need.
+        result: VerificationResult,
+    },
+    /// Records a deterministic escalation decision and its evidence.
+    EscalationTriggered {
+        /// Escalation trigger, threshold, scope, references, and decision.
+        escalation: EscalationContext,
     },
     /// Captures final outcome, feedback, and reward signals.
     OutcomeRecorded {

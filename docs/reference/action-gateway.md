@@ -36,6 +36,9 @@ returns `ActionOutcome` results.
 - `Executed` — action completed successfully.
 - `Denied` — verification denied the action.
 - `Failed` — adapter execution failed.
+- `NeedsIntervention` — verifier uncertainty or an escalation rule requires
+  operator/control-plane intervention before the action can proceed. The adapter
+  must not execute for pre-execution intervention outcomes.
 
 ## ActionAdapter
 
@@ -65,6 +68,11 @@ executing adapters and evaluates postconditions after execution. It first
 validates `action_id`, `tenant_id`, `agent_id`, and `run_id`; missing or nil
 identity returns a denied `ActionOutcome` with reason `identity_invalid` and does
 not call adapters.
+
+0.04-S3 escalation handling may convert a denied verifier result into
+`NeedsIntervention` after the gateway has failed closed. This preserves the
+gateway invariant: uncertain verifier results must not silently allow adapter
+execution.
 
 ## ActionGateway
 

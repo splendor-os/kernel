@@ -1012,6 +1012,13 @@ async fn submit_action(
                 result: outcome.verification.clone(),
             },
         ),
+        ActionStatus::NeedsIntervention => record_run_event(
+            slot,
+            TraceEventKind::ActionNeedsIntervention {
+                action: request.action.clone(),
+                result: outcome.verification.clone(),
+            },
+        ),
         ActionStatus::Failed => record_run_event(
             slot,
             TraceEventKind::ActionFailed {

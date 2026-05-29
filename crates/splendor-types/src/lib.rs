@@ -32,6 +32,7 @@
 
 mod capabilities;
 mod daemon_security;
+mod escalation;
 mod fleet_telemetry;
 mod hash;
 mod ids;
@@ -54,6 +55,11 @@ pub use daemon_security::{
     DaemonSecurityError, DaemonSecurityRequest, EndpointScope, GatewayVerificationState,
     InsecureDevMode, LocalTransportBinding, RevocationStatus, WorkOrderAuthorization,
     WorkOrderSignature,
+};
+pub use escalation::{
+    EscalationContext, EscalationDecision, EscalationObservation, EscalationPolicy,
+    EscalationPolicyError, EscalationRule, EscalationScope, EscalationTrigger,
+    ESCALATION_POLICY_SCHEMA_VERSION,
 };
 pub use fleet_telemetry::{
     DenialSignal, FailureCategory, FailureSignal, FleetTelemetrySnapshot, InstanceTelemetry,

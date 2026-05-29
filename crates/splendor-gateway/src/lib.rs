@@ -106,7 +106,7 @@ pub struct ActionOutcome {
 }
 
 /// Classification of action execution outcomes.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ActionStatus {
     /// Action executed successfully.
     Executed,
@@ -114,6 +114,9 @@ pub enum ActionStatus {
     Denied,
     /// Action failed during adapter execution.
     Failed,
+    /// Action did not execute because verifier uncertainty or escalation requires
+    /// operator/control-plane intervention.
+    NeedsIntervention,
 }
 
 /// Result returned by action adapters.
