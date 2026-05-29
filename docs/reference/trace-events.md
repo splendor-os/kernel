@@ -93,6 +93,8 @@ mutation so caller attribution is persisted in the run trace.
 - `RunStopped { reason: Option<String> }`
 - `PerceptsAppended { count: usize, schemas: Vec<String> }`
 - `DaemonAudit { endpoint: String, audit: AuditAttribution }`
+- `CircuitBreakerTripped { breaker: CircuitBreakerTraceContext }`
+- `CircuitBreakerCleared { breaker: CircuitBreakerTraceContext }`
 - `LoopTickStarted { tick_id }`
 - `PerceptsReceived { percepts: Vec<Percept> }`
 - `StateLoaded { state_hash: Option<ContentHash> }`
@@ -218,6 +220,20 @@ and carries:
 These events do not authorize side effects. They only make accepted mutating
 daemon calls trace/audit attributable; action execution still requires the
 gateway/verifier path.
+
+## Circuit-breaker events
+
+0.04-S4 adds circuit-breaker state-change events:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `CircuitBreakerTripped` | `circuit_breaker.tripped` | A breaker entered blocking state. |
+| `CircuitBreakerCleared` | `circuit_breaker.cleared` | A breaker was explicitly reset/cleared. |
+
+Both variants carry `CircuitBreakerTraceContext`: `breaker_id`, `scope`,
+`state`, `reason`, `authorized_by`, and `recorded_at`. Matching action denials
+remain ordinary `ActionDenied` events with `circuit_breaker_tripped` verification
+reasons and scoped breaker artifacts.
 
 ## Work-order Events
 

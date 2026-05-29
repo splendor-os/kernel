@@ -33,6 +33,7 @@
 mod capabilities;
 mod daemon_security;
 mod fleet_telemetry;
+mod governance;
 mod hash;
 mod ids;
 mod message;
@@ -60,6 +61,11 @@ pub use fleet_telemetry::{
     NodeOnlineState, NodeTelemetry, QueueTelemetry, QuotaSignal, RunStatus, RunStatusCount,
     RunStatusCounts, RunTelemetry, RuntimeMode as TelemetryRuntimeMode, TelemetryAuthority,
     TraceSyncFailure, TraceSyncTelemetry, FLEET_TELEMETRY_SCHEMA_VERSION,
+};
+pub use governance::{
+    CircuitBreaker, CircuitBreakerId, CircuitBreakerMatch, CircuitBreakerScope,
+    CircuitBreakerState, CircuitBreakerTraceContext, CircuitBreakerValidationError,
+    CIRCUIT_BREAKER_SCHEMA_VERSION,
 };
 pub use hash::{ContentHash, HashAlgorithm};
 pub use ids::{

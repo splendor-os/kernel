@@ -1,0 +1,40 @@
+trace_db: examples/circuit-breaker-basic/trace.db
+state_db: examples/circuit-breaker-basic/state.db
+run_id: 44444444-4444-4444-4444-444444444444
+cycles: 1
+allow_unsigned_local_run: true
+
+tenants:
+  - id: 11111111-1111-1111-1111-111111111111
+    allowed_actions:
+      - write_file
+    allowed_adapters:
+      - filesystem
+
+agents:
+  - id: 22222222-2222-2222-2222-222222222222
+    tenant_id: 11111111-1111-1111-1111-111111111111
+    run_id: 44444444-4444-4444-4444-444444444444
+    snapshot_interval: 1
+    initial_state: seed
+    policy:
+      type: static
+      actions:
+        - name: write_file
+          adapter: filesystem
+          side_effect_class: filesystem
+          params:
+            path: blocked.txt
+            contents: blocked
+
+adapters:
+  filesystem:
+    base_dir: examples/circuit-breaker-basic/fs
+
+circuit_breakers:
+  - id: cb_filesystem_adapter
+    scope: adapter
+    value: filesystem
+    state: tripped
+    reason: filesystem disabled during incident
+    authorized_by: operator:alice

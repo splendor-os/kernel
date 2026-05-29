@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.04-dev — Governance workflows
+
+### Implemented primitives
+
+- Added 0.04-S4 circuit-breaker schemas, scoped gateway enforcement, local
+  `splendorctl run` config support, trip/clear trace event variants, and
+  inspect-only replay output for breaker-denied actions.
+
+### Explicitly not included
+
+- No approval workflow engine, escalation automation, policy TTL distribution,
+  kill-switch propagation, monitoring platform, or UI dashboard in this sprint.
+
 ## 0.03-dev — Resident nodes + fleet execution foundation
 
 ### Implemented primitives

@@ -1,10 +1,10 @@
 use super::*;
 use splendor_store::{SqliteStateStore, StateData, StateMetadata, StateStore};
 use splendor_types::{
-    Action, AgentId, ContentHash, Feedback, MessageId, MessageTraceContext, Percept,
-    PerceptProvenance, Reward, RunId, SideEffectClass, SnapshotId, StateHandoffTraceContext,
-    StateReferenceMode, TenantId, TraceEvent, TraceEventId, TraceEventKind, TraceId,
-    VerificationResult,
+    Action, AgentId, CircuitBreakerState, ContentHash, Feedback, MessageId, MessageTraceContext,
+    Percept, PerceptProvenance, Reward, RunId, SideEffectClass, SnapshotId,
+    StateHandoffTraceContext, StateReferenceMode, TenantId, TraceEvent, TraceEventId,
+    TraceEventKind, TraceId, VerificationResult,
 };
 use tempfile::NamedTempFile;
 use time::OffsetDateTime;
@@ -778,6 +778,97 @@ fn replay_reconstructs_local_multi_agent_harness_deterministically() {
 }
 
 #[test]
+fn replay_reports_circuit_breaker_denial_scope() {
+    let state_temp = NamedTempFile::new().expect("state db");
+    let state_store = SqliteStateStore::open(state_temp.path()).expect("state store");
+    let run_id = fixed_run_id(0x130);
+    let action = Action {
+        name: "http.fetch".to_string(),
+        params: serde_json::json!({"url": "https://example.com"}),
+        side_effect_class: SideEffectClass::Network,
+        cost_estimate: None,
+        required_permissions: vec!["http.fetch".to_string()],
+        preconditions: Vec::new(),
+        postconditions: Vec::new(),
+    };
+    let result = VerificationResult {
+        allowed: false,
+        reasons: vec!["circuit_breaker_tripped".to_string()],
+        artifacts: serde_json::json!({
+            "circuit_breaker": {
+                "breaker_id": "cb_adapter_http",
+                "scope": "adapter",
+                "scope_value": "http",
+                "state": "tripped",
+                "reason": "adapter degraded"
+            }
+        }),
+    };
+    let events = vec![
+        TraceEvent::new(
+            run_id.clone(),
+            0,
+            OffsetDateTime::UNIX_EPOCH,
+            TraceEventKind::LoopTickStarted { tick_id: 1 },
+        ),
+        TraceEvent::new(
+            run_id.clone(),
+            1,
+            OffsetDateTime::UNIX_EPOCH,
+            TraceEventKind::ActionDenied { action, result },
+        ),
+        TraceEvent::new(
+            run_id.clone(),
+            2,
+            OffsetDateTime::UNIX_EPOCH,
+            TraceEventKind::LoopTickCompleted {
+                tick_id: 1,
+                integrity: None,
+            },
+        ),
+    ];
+
+    let outputs = collect_replay_outputs(
+        &events,
+        &state_store,
+        &run_id.to_string(),
+        None,
+        None,
+        None,
+        false,
+    )
+    .expect("replay outputs");
+    let values = outputs
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("json values");
+    let tick = values
+        .iter()
+        .find(|value| value["type"] == "tick")
+        .expect("tick output");
+    let denials = tick["circuit_breaker_denials"]
+        .as_array()
+        .expect("breaker denials");
+    assert_eq!(denials.len(), 1);
+    assert_eq!(denials[0]["breaker_id"], "cb_adapter_http");
+    assert_eq!(denials[0]["scope"], "adapter");
+    assert_eq!(denials[0]["scope_value"], "http");
+
+    let graph = values
+        .iter()
+        .find(|value| value["type"] == "causal_graph")
+        .expect("causal graph output");
+    assert_eq!(
+        graph["circuit_breaker_denials"]
+            .as_array()
+            .expect("graph breaker denials")
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn replay_rejects_message_context_run_mismatch() {
     let state_temp = NamedTempFile::new().expect("state db");
     let state_store = SqliteStateStore::open(state_temp.path()).expect("state store");
@@ -1069,6 +1160,254 @@ fn run_from_config_executes_cycle() {
     let store = SqliteTraceStore::open(trace_temp.path()).expect("trace store");
     let records = TraceStore::read(&store, &run_id.to_string()).expect("records");
     assert!(!records.is_empty());
+}
+
+#[test]
+fn run_from_config_circuit_breaker_denies_adapter_action() {
+    let dir = tempfile::TempDir::new().expect("dir");
+    let trace_path = dir.path().join("trace.db");
+    let state_path = dir.path().join("state.db");
+    let config_path = dir.path().join("config.yaml");
+    let fs_base = dir.path().join("fs");
+    let tenant_uuid = Uuid::new_v4();
+    let agent_uuid = Uuid::new_v4();
+    let run_uuid = Uuid::new_v4();
+    let config = format!(
+        "trace_db: {}\nstate_db: {}\nrun_id: {}\nallow_unsigned_local_run: true\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\"]\n    allowed_adapters: [\"filesystem\"]\nagents:\n  - id: {}\n    tenant_id: {}\n    run_id: {}\n    policy:\n      type: static\n      actions:\n        - name: write_file\n          adapter: filesystem\n          side_effect_class: filesystem\n          params:\n            path: \"blocked.txt\"\n            contents: \"blocked\"\nadapters:\n  filesystem:\n    base_dir: {}\ncircuit_breakers:\n  - id: cb_filesystem_adapter\n    scope: adapter\n    value: filesystem\n    state: tripped\n    reason: filesystem disabled for incident\n    authorized_by: operator:alice\n",
+        trace_path.display(),
+        state_path.display(),
+        run_uuid,
+        tenant_uuid,
+        agent_uuid,
+        tenant_uuid,
+        run_uuid,
+        fs_base.display(),
+    );
+    std::fs::write(&config_path, config).expect("write config");
+
+    run_from_config(&config_path, Some(1), false).expect("run config");
+
+    assert!(!fs_base
+        .join(tenant_uuid.to_string())
+        .join("blocked.txt")
+        .exists());
+    let store = SqliteTraceStore::open(&trace_path).expect("trace store");
+    let records = TraceStore::read(&store, &run_uuid.to_string()).expect("records");
+    let events = decode_and_validate_trace_records(&records, &run_uuid.to_string())
+        .expect("validated trace");
+    let denied = events.iter().find_map(|event| match &event.kind {
+        TraceEventKind::ActionDenied { result, .. } => Some(result),
+        _ => None,
+    });
+    let result = denied.expect("action denied");
+    assert!(result
+        .reasons
+        .contains(&"circuit_breaker_tripped".to_string()));
+    assert_eq!(
+        result.artifacts["circuit_breaker"]["circuit_breaker"]["breaker_id"],
+        "cb_filesystem_adapter"
+    );
+    let tripped = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            TraceEventKind::CircuitBreakerTripped { breaker } => Some(breaker),
+            _ => None,
+        })
+        .expect("configured breaker trip trace");
+    assert_eq!(tripped.breaker_id.to_string(), "cb_filesystem_adapter");
+    assert_eq!(tripped.state, CircuitBreakerState::Tripped);
+    assert_eq!(tripped.authorized_by, "operator:alice");
+}
+
+#[test]
+fn run_from_config_records_circuit_breaker_cleared_event() {
+    let dir = tempfile::TempDir::new().expect("dir");
+    let trace_path = dir.path().join("trace.db");
+    let state_path = dir.path().join("state.db");
+    let config_path = dir.path().join("config.yaml");
+    let fs_base = dir.path().join("fs");
+    let tenant_uuid = Uuid::new_v4();
+    let agent_uuid = Uuid::new_v4();
+    let run_uuid = Uuid::new_v4();
+    let config = format!(
+        "trace_db: {}\nstate_db: {}\nrun_id: {}\nallow_unsigned_local_run: true\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\"]\n    allowed_adapters: [\"filesystem\"]\nagents:\n  - id: {}\n    tenant_id: {}\n    run_id: {}\n    policy:\n      type: static\n      actions:\n        - name: write_file\n          adapter: filesystem\n          side_effect_class: filesystem\n          params:\n            path: \"allowed.txt\"\n            contents: \"allowed\"\nadapters:\n  filesystem:\n    base_dir: {}\ncircuit_breakers:\n  - id: cb_filesystem_adapter_reset\n    scope: adapter\n    value: filesystem\n    state: cleared\n    reason: filesystem incident resolved\n    authorized_by: operator:bob\n",
+        trace_path.display(),
+        state_path.display(),
+        run_uuid,
+        tenant_uuid,
+        agent_uuid,
+        tenant_uuid,
+        run_uuid,
+        fs_base.display(),
+    );
+    std::fs::write(&config_path, config).expect("write config");
+
+    run_from_config(&config_path, Some(1), false).expect("run config");
+
+    assert!(fs_base
+        .join(tenant_uuid.to_string())
+        .join("allowed.txt")
+        .exists());
+    let store = SqliteTraceStore::open(&trace_path).expect("trace store");
+    let records = TraceStore::read(&store, &run_uuid.to_string()).expect("records");
+    let events = decode_and_validate_trace_records(&records, &run_uuid.to_string())
+        .expect("validated trace");
+    assert!(events
+        .iter()
+        .any(|event| matches!(&event.kind, TraceEventKind::ActionExecuted { .. })));
+    let cleared = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            TraceEventKind::CircuitBreakerCleared { breaker } => Some(breaker),
+            _ => None,
+        })
+        .expect("configured breaker clear trace");
+    assert_eq!(
+        cleared.breaker_id.to_string(),
+        "cb_filesystem_adapter_reset"
+    );
+    assert_eq!(cleared.state, CircuitBreakerState::Cleared);
+    assert_eq!(cleared.authorized_by, "operator:bob");
+}
+
+#[test]
+fn run_from_config_rejects_node_circuit_breaker_before_new_work() {
+    let dir = tempfile::TempDir::new().expect("dir");
+    let trace_path = dir.path().join("trace.db");
+    let state_path = dir.path().join("state.db");
+    let config_path = dir.path().join("config.yaml");
+    let fs_base = dir.path().join("fs");
+    let tenant_uuid = Uuid::new_v4();
+    let agent_uuid = Uuid::new_v4();
+    let run_uuid = Uuid::new_v4();
+    let node_uuid = Uuid::new_v4();
+    let config = format!(
+        "trace_db: {}\nstate_db: {}\nrun_id: {}\nallow_unsigned_local_run: true\nruntime_identity:\n  node_id: {}\ntenants:\n  - id: {}\n    allowed_actions: [\"write_file\"]\n    allowed_adapters: [\"filesystem\"]\nagents:\n  - id: {}\n    tenant_id: {}\n    run_id: {}\n    policy:\n      type: static\n      actions:\n        - name: write_file\n          adapter: filesystem\n          side_effect_class: filesystem\n          params:\n            path: \"node-blocked.txt\"\n            contents: \"blocked\"\nadapters:\n  filesystem:\n    base_dir: {}\ncircuit_breakers:\n  - id: cb_node_admission\n    scope: node\n    value: {}\n    state: tripped\n    reason: node drained for maintenance\n    authorized_by: operator:node\n",
+        trace_path.display(),
+        state_path.display(),
+        run_uuid,
+        node_uuid,
+        tenant_uuid,
+        agent_uuid,
+        tenant_uuid,
+        run_uuid,
+        fs_base.display(),
+        node_uuid,
+    );
+    std::fs::write(&config_path, config).expect("write config");
+
+    let error = run_from_config(&config_path, Some(1), false).expect_err("node breaker admission");
+
+    assert!(error.contains("Circuit breaker denied new work"));
+    assert!(error.contains("circuit_breaker_tripped"));
+    assert!(!fs_base
+        .join(tenant_uuid.to_string())
+        .join("node-blocked.txt")
+        .exists());
+}
+
+#[test]
+fn circuit_breaker_config_builds_trace_contexts_and_validates_state() {
+    let contexts = build_circuit_breaker_trace_contexts(Some(&[CircuitBreakerConfig {
+        id: "cb_default_authority".to_string(),
+        scope: "adapter".to_string(),
+        value: Some("filesystem".to_string()),
+        reason: "local incident".to_string(),
+        state: None,
+        authorized_by: None,
+    }]))
+    .expect("trace contexts");
+    assert_eq!(contexts.len(), 1);
+    assert_eq!(contexts[0].breaker_id.to_string(), "cb_default_authority");
+    assert_eq!(contexts[0].state, CircuitBreakerState::Tripped);
+    assert_eq!(contexts[0].authorized_by, "local-config:circuit-breakers");
+
+    let error = build_circuit_breaker_trace_contexts(Some(&[CircuitBreakerConfig {
+        id: "cb_bad_state".to_string(),
+        scope: "adapter".to_string(),
+        value: Some("filesystem".to_string()),
+        reason: "bad state".to_string(),
+        state: Some("half_open".to_string()),
+        authorized_by: Some("operator:carol".to_string()),
+    }]))
+    .expect_err("unsupported state");
+    assert!(error.contains("Unsupported circuit breaker state"));
+}
+
+#[test]
+fn parse_circuit_breaker_scope_covers_supported_values_and_failures() {
+    fn config(scope: &str, value: Option<String>) -> CircuitBreakerConfig {
+        CircuitBreakerConfig {
+            id: format!("cb_{scope}"),
+            scope: scope.to_string(),
+            value,
+            reason: "scope parse".to_string(),
+            state: Some("tripped".to_string()),
+            authorized_by: Some("operator:scope-test".to_string()),
+        }
+    }
+
+    let fleet_uuid = Uuid::new_v4().to_string();
+    let node_uuid = Uuid::new_v4().to_string();
+    let instance_uuid = Uuid::new_v4().to_string();
+    let tenant_uuid = Uuid::new_v4().to_string();
+    let agent_uuid = Uuid::new_v4().to_string();
+    let cases = [
+        ("global", None, "global", None),
+        ("fleet", Some(fleet_uuid.clone()), "fleet", Some(fleet_uuid)),
+        ("node", Some(node_uuid.clone()), "node", Some(node_uuid)),
+        (
+            "instance",
+            Some(instance_uuid.clone()),
+            "instance",
+            Some(instance_uuid),
+        ),
+        (
+            "tenant",
+            Some(tenant_uuid.clone()),
+            "tenant",
+            Some(tenant_uuid),
+        ),
+        ("agent", Some(agent_uuid.clone()), "agent", Some(agent_uuid)),
+        (
+            "adapter",
+            Some("filesystem".to_string()),
+            "adapter",
+            Some("filesystem".to_string()),
+        ),
+        (
+            "action",
+            Some("write_file".to_string()),
+            "action",
+            Some("write_file".to_string()),
+        ),
+        (
+            "action_class",
+            Some("network".to_string()),
+            "action_class",
+            Some("network".to_string()),
+        ),
+    ];
+
+    for (scope_name, value, expected_label, expected_value) in cases {
+        let scope = parse_circuit_breaker_scope(&config(scope_name, value)).expect("scope");
+        assert_eq!(scope.label(), expected_label);
+        assert_eq!(scope.value(), expected_value);
+    }
+
+    let custom_scope =
+        parse_circuit_breaker_scope(&config("action_class", Some("domain_specific".to_string())))
+            .expect("custom action class");
+    assert_eq!(
+        custom_scope.value(),
+        Some("custom:domain_specific".to_string())
+    );
+
+    let missing = parse_circuit_breaker_scope(&config("tenant", None)).expect_err("missing value");
+    assert!(missing.contains("requires value"));
+    let unsupported = parse_circuit_breaker_scope(&config("workspace", Some("x".to_string())))
+        .expect_err("unsupported scope");
+    assert!(unsupported.contains("Unsupported circuit breaker scope"));
 }
 
 #[test]
@@ -1555,6 +1894,8 @@ fn build_gateway_rejects_missing_adapter() {
         }],
         adapters: None,
         work_order: None,
+        runtime_identity: None,
+        circuit_breakers: None,
     };
     let registry = build_registry_with_work_order(&config, None).expect("registry");
     let adapters = std::collections::HashMap::new();
@@ -2168,6 +2509,8 @@ fn build_gateway_success() {
             http: None,
         }),
         work_order: None,
+        runtime_identity: None,
+        circuit_breakers: None,
     };
     let registry = build_registry_with_work_order(&config, None).expect("registry");
     let adapters = build_adapters(config.adapters.as_ref()).expect("adapters");

@@ -17,6 +17,9 @@ export type InstanceId = string;
 export type TickId = number;
 export type StateNodeId = string;
 export type WorkOrderId = string;
+export type CircuitBreakerId = string;
+
+export const CIRCUIT_BREAKER_SCHEMA_VERSION = "splendor.circuit_breaker.v1" as const;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -87,6 +90,38 @@ export interface VerificationResult {
   allowed: boolean;
   reasons: string[];
   artifacts: JsonValue;
+}
+
+export type CircuitBreakerScope =
+  | { scope: "global" }
+  | { scope: "fleet"; value: FleetId }
+  | { scope: "node"; value: NodeId }
+  | { scope: "instance"; value: InstanceId }
+  | { scope: "tenant"; value: TenantId }
+  | { scope: "agent"; value: AgentId }
+  | { scope: "adapter"; value: string }
+  | { scope: "action"; value: string }
+  | { scope: "action_class"; value: SideEffectClass };
+
+export type CircuitBreakerState = "tripped" | "cleared";
+
+export interface CircuitBreaker {
+  schema_version: string;
+  breaker_id: CircuitBreakerId;
+  scope: CircuitBreakerScope;
+  state: CircuitBreakerState;
+  reason: string;
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
+export interface CircuitBreakerTraceContext {
+  breaker_id: CircuitBreakerId;
+  scope: CircuitBreakerScope;
+  state: CircuitBreakerState;
+  reason: string;
+  authorized_by: string;
+  recorded_at: ISODateTime;
 }
 
 export interface Feedback {
@@ -238,6 +273,8 @@ export type TraceEventKind =
   | { RunStopped: { reason: string | null } }
   | { PerceptsAppended: { count: number; schemas: string[] } }
   | { DaemonAudit: { endpoint: string; audit: AuditAttribution } }
+  | { CircuitBreakerTripped: { breaker: CircuitBreakerTraceContext } }
+  | { CircuitBreakerCleared: { breaker: CircuitBreakerTraceContext } }
   | { LoopTickStarted: { tick_id: number } }
   | { PerceptsReceived: { percepts: Percept[] } }
   | { StateLoaded: { state_hash: ContentHash | null } }
@@ -639,6 +676,7 @@ export const CANONICAL_SCHEMA_FIELDS = {
     "requested_at"
   ],
   action_outcome: ["action_id", "status", "verification", "post_verification", "output", "error", "completed_at"],
+  circuit_breaker: ["schema_version", "breaker_id", "scope", "state", "reason", "created_at", "updated_at"],
   trace_event: ["trace_event_id", "run_id", "sequence", "timestamp", "identity", "kind"],
   state_head: ["run_id", "state_node_id", "parent_state_node_ids", "data_hash", "created_at", "label"],
   create_run_request: [
@@ -693,6 +731,7 @@ export const CANONICAL_SCHEMA_FIELDS = {
   percept: readonly (keyof Percept)[];
   action_request: readonly (keyof ActionRequest)[];
   action_outcome: readonly (keyof ActionOutcome)[];
+  circuit_breaker: readonly (keyof CircuitBreaker)[];
   trace_event: readonly (keyof TraceEvent)[];
   state_head: readonly (keyof StateHead)[];
   create_run_request: readonly (keyof CreateRunRequest)[];
@@ -716,6 +755,8 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "RunStopped",
   "PerceptsAppended",
   "DaemonAudit",
+  "CircuitBreakerTripped",
+  "CircuitBreakerCleared",
   "LoopTickStarted",
   "PerceptsReceived",
   "StateLoaded",

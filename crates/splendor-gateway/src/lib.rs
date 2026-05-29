@@ -35,7 +35,8 @@
 
 use serde::{Deserialize, Serialize};
 use splendor_types::{
-    Action, AgentId, IdentityValidationError, QuotaUsage, RunId, TenantId, VerificationResult,
+    Action, AgentId, CircuitBreaker, CircuitBreakerScope, IdentityValidationError, QuotaUsage,
+    RunId, RuntimeIdentityContext, TenantId, VerificationResult,
 };
 use std::collections::HashMap;
 use std::future::{ready, Future, Ready};
@@ -171,6 +172,82 @@ pub trait InvariantEvaluator: Send + Sync {
     ) -> VerificationResult;
 }
 
+/// Evaluates tripped circuit breakers before adapter execution.
+pub trait CircuitBreakerEvaluator: Send + Sync {
+    /// Verifies whether the action is allowed under the current breaker state.
+    fn verify_action(
+        &self,
+        action: &ActionRequest,
+        adapter: Option<&str>,
+        runtime_identity: &RuntimeIdentityContext,
+    ) -> VerificationResult;
+
+    /// Verifies whether the runtime may accept new local work.
+    fn verify_runtime_admission(
+        &self,
+        _runtime_identity: &RuntimeIdentityContext,
+    ) -> VerificationResult {
+        VerificationResult::allow()
+    }
+}
+
+/// Circuit-breaker evaluator with no configured breakers.
+#[derive(Clone, Debug, Default)]
+pub struct NoopCircuitBreakerEvaluator;
+
+impl CircuitBreakerEvaluator for NoopCircuitBreakerEvaluator {
+    fn verify_action(
+        &self,
+        _action: &ActionRequest,
+        _adapter: Option<&str>,
+        _runtime_identity: &RuntimeIdentityContext,
+    ) -> VerificationResult {
+        VerificationResult::allow()
+    }
+}
+
+/// Static local circuit-breaker evaluator used by the local config path.
+#[derive(Clone, Debug, Default)]
+pub struct StaticCircuitBreakerEvaluator {
+    breakers: Vec<CircuitBreaker>,
+}
+
+impl StaticCircuitBreakerEvaluator {
+    /// Creates an evaluator from explicit breaker control objects.
+    pub fn new(breakers: Vec<CircuitBreaker>) -> Self {
+        Self { breakers }
+    }
+
+    /// Returns configured breakers.
+    pub fn breakers(&self) -> &[CircuitBreaker] {
+        &self.breakers
+    }
+}
+
+impl CircuitBreakerEvaluator for StaticCircuitBreakerEvaluator {
+    fn verify_action(
+        &self,
+        action: &ActionRequest,
+        adapter: Option<&str>,
+        runtime_identity: &RuntimeIdentityContext,
+    ) -> VerificationResult {
+        evaluate_breakers(
+            &self.breakers,
+            runtime_identity,
+            Some(action),
+            adapter,
+            false,
+        )
+    }
+
+    fn verify_runtime_admission(
+        &self,
+        runtime_identity: &RuntimeIdentityContext,
+    ) -> VerificationResult {
+        evaluate_breakers(&self.breakers, runtime_identity, None, None, true)
+    }
+}
+
 /// Invariant evaluator that checks declared conditions against satisfied lists.
 #[derive(Clone, Debug, Default)]
 pub struct SimpleInvariantEvaluator;
@@ -212,6 +289,8 @@ pub struct VerifiedActionGateway {
     adapters: HashMap<String, AdapterRegistration>,
     tenant_access: Arc<dyn TenantAccess>,
     invariant_evaluator: Arc<dyn InvariantEvaluator>,
+    circuit_breaker_evaluator: Arc<dyn CircuitBreakerEvaluator>,
+    runtime_identity: RuntimeIdentityContext,
 }
 
 impl VerifiedActionGateway {
@@ -221,6 +300,8 @@ impl VerifiedActionGateway {
             adapters: HashMap::new(),
             tenant_access,
             invariant_evaluator: Arc::new(SimpleInvariantEvaluator),
+            circuit_breaker_evaluator: Arc::new(NoopCircuitBreakerEvaluator),
+            runtime_identity: RuntimeIdentityContext::default(),
         }
     }
 
@@ -243,6 +324,22 @@ impl VerifiedActionGateway {
     /// Overrides the invariant evaluator used by the gateway.
     pub fn set_invariant_evaluator(&mut self, evaluator: Arc<dyn InvariantEvaluator>) {
         self.invariant_evaluator = evaluator;
+    }
+
+    /// Overrides the circuit-breaker evaluator used by the gateway.
+    pub fn set_circuit_breaker_evaluator(&mut self, evaluator: Arc<dyn CircuitBreakerEvaluator>) {
+        self.circuit_breaker_evaluator = evaluator;
+    }
+
+    /// Sets runtime identity used for fleet/node/instance scoped breakers.
+    pub fn set_runtime_identity(&mut self, identity: RuntimeIdentityContext) {
+        self.runtime_identity = identity;
+    }
+
+    /// Evaluates runtime-scoped breakers before accepting new local work.
+    pub fn verify_runtime_admission(&self) -> VerificationResult {
+        self.circuit_breaker_evaluator
+            .verify_runtime_admission(&self.runtime_identity)
     }
 }
 
@@ -282,6 +379,17 @@ impl ActionGateway for VerifiedActionGateway {
             .adapter
             .as_deref()
             .unwrap_or(registration.adapter_id.as_str());
+
+        let breaker_result = self.circuit_breaker_evaluator.verify_action(
+            &action,
+            Some(adapter_id),
+            &self.runtime_identity,
+        );
+        if !breaker_result.allowed {
+            let mut verification = combine_verifications([("circuit_breaker", breaker_result)]);
+            attach_request_context(&mut verification, &action);
+            return Ok(denied_outcome(action.action_id, verification));
+        }
 
         let policy_result = self.tenant_access.verify_policy(
             &action.tenant_id,
@@ -471,6 +579,112 @@ fn combine_verifications(
             reasons,
             artifacts: serde_json::Value::Object(artifacts),
         }
+    }
+}
+
+fn evaluate_breakers(
+    breakers: &[CircuitBreaker],
+    runtime_identity: &RuntimeIdentityContext,
+    action: Option<&ActionRequest>,
+    adapter: Option<&str>,
+    runtime_admission_only: bool,
+) -> VerificationResult {
+    for breaker in breakers.iter().filter(|breaker| breaker.is_tripped()) {
+        match breaker_scope_matches(
+            &breaker.scope,
+            runtime_identity,
+            action,
+            adapter,
+            runtime_admission_only,
+        ) {
+            BreakerScopeMatch::Matches => {
+                return VerificationResult {
+                    allowed: false,
+                    reasons: vec!["circuit_breaker_tripped".to_string()],
+                    artifacts: serde_json::json!({
+                        "circuit_breaker": breaker.as_match().to_artifact(),
+                    }),
+                };
+            }
+            BreakerScopeMatch::Unknown(field) => {
+                return VerificationResult {
+                    allowed: false,
+                    reasons: vec!["circuit_breaker_scope_unknown".to_string()],
+                    artifacts: serde_json::json!({
+                        "circuit_breaker": breaker.as_match().to_artifact(),
+                        "missing_identity": field,
+                    }),
+                };
+            }
+            BreakerScopeMatch::DoesNotMatch => {}
+        }
+    }
+    VerificationResult::allow()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BreakerScopeMatch {
+    Matches,
+    DoesNotMatch,
+    Unknown(&'static str),
+}
+
+fn breaker_scope_matches(
+    scope: &CircuitBreakerScope,
+    runtime_identity: &RuntimeIdentityContext,
+    action: Option<&ActionRequest>,
+    adapter: Option<&str>,
+    runtime_admission_only: bool,
+) -> BreakerScopeMatch {
+    match scope {
+        CircuitBreakerScope::Global => BreakerScopeMatch::Matches,
+        CircuitBreakerScope::Fleet(expected) => match runtime_identity.fleet_id.as_ref() {
+            Some(actual) if actual == expected => BreakerScopeMatch::Matches,
+            Some(_) => BreakerScopeMatch::DoesNotMatch,
+            None => BreakerScopeMatch::Unknown("fleet_id"),
+        },
+        CircuitBreakerScope::Node(expected) => match runtime_identity.node_id.as_ref() {
+            Some(actual) if actual == expected => BreakerScopeMatch::Matches,
+            Some(_) => BreakerScopeMatch::DoesNotMatch,
+            None => BreakerScopeMatch::Unknown("node_id"),
+        },
+        CircuitBreakerScope::Instance(expected) => match runtime_identity.instance_id.as_ref() {
+            Some(actual) if actual == expected => BreakerScopeMatch::Matches,
+            Some(_) => BreakerScopeMatch::DoesNotMatch,
+            None => BreakerScopeMatch::Unknown("instance_id"),
+        },
+        CircuitBreakerScope::Tenant(expected) => match action {
+            Some(action) if &action.tenant_id == expected => BreakerScopeMatch::Matches,
+            Some(_) => BreakerScopeMatch::DoesNotMatch,
+            None if runtime_admission_only => BreakerScopeMatch::DoesNotMatch,
+            None => BreakerScopeMatch::Unknown("tenant_id"),
+        },
+        CircuitBreakerScope::Agent(expected) => match action {
+            Some(action) if &action.agent_id == expected => BreakerScopeMatch::Matches,
+            Some(_) => BreakerScopeMatch::DoesNotMatch,
+            None if runtime_admission_only => BreakerScopeMatch::DoesNotMatch,
+            None => BreakerScopeMatch::Unknown("agent_id"),
+        },
+        CircuitBreakerScope::Adapter(expected) => match adapter {
+            Some(actual) if actual == expected => BreakerScopeMatch::Matches,
+            Some(_) => BreakerScopeMatch::DoesNotMatch,
+            None if runtime_admission_only => BreakerScopeMatch::DoesNotMatch,
+            None => BreakerScopeMatch::Unknown("adapter"),
+        },
+        CircuitBreakerScope::Action(expected) => match action {
+            Some(action) if &action.action.name == expected => BreakerScopeMatch::Matches,
+            Some(_) => BreakerScopeMatch::DoesNotMatch,
+            None if runtime_admission_only => BreakerScopeMatch::DoesNotMatch,
+            None => BreakerScopeMatch::Unknown("action"),
+        },
+        CircuitBreakerScope::ActionClass(expected) => match action {
+            Some(action) if &action.action.side_effect_class == expected => {
+                BreakerScopeMatch::Matches
+            }
+            Some(_) => BreakerScopeMatch::DoesNotMatch,
+            None if runtime_admission_only => BreakerScopeMatch::DoesNotMatch,
+            None => BreakerScopeMatch::Unknown("action_class"),
+        },
     }
 }
 

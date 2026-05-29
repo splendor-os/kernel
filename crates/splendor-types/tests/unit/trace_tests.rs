@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
-    AgentId, AuditAttribution, ClientPrincipal, DelegatedAuthority, EndpointScope,
+    AgentId, AuditAttribution, CircuitBreaker, CircuitBreakerId, CircuitBreakerScope,
+    CircuitBreakerState, ClientPrincipal, DelegatedAuthority, EndpointScope,
     LocalDelegationTraceContext, Message, MessageEnvelope, MessageId, MessageTraceContext, Percept,
     PerceptProvenance, RemoteMessageEnvelope, RemoteMessageRetryPolicy, RemoteMessageTraceContext,
     RevocationStatus, SideEffectClass, SnapshotId, StateHandoffTraceContext, StateReferenceMode,
@@ -468,5 +469,46 @@ fn daemon_audit_trace_event_preserves_caller_attribution() {
             assert_eq!(decoded_audit, audit);
         }
         other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn circuit_breaker_trace_events_round_trip() {
+    let run_id = RunId::new();
+    let now = OffsetDateTime::now_utc();
+    let breaker = CircuitBreaker::tripped(
+        CircuitBreakerId::try_new("cb_global").expect("id"),
+        CircuitBreakerScope::Global,
+        "global hold",
+        now,
+    )
+    .expect("breaker");
+    let tripped = breaker
+        .trip_trace_context("operator:alice", now)
+        .expect("trip context");
+    let (_cleared, cleared) = breaker
+        .clear_with_authority("incident resolved", "operator:alice", now)
+        .expect("clear context");
+    let events = vec![
+        TraceEventKind::CircuitBreakerTripped { breaker: tripped },
+        TraceEventKind::CircuitBreakerCleared { breaker: cleared },
+    ];
+
+    for (sequence, kind) in events.into_iter().enumerate() {
+        let event = TraceEvent::new(run_id.clone(), sequence as u64, now, kind);
+        let payload = serde_json::to_vec(&event).expect("serialize");
+        let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+        assert_eq!(decoded, event);
+        match decoded.kind {
+            TraceEventKind::CircuitBreakerTripped { breaker }
+            | TraceEventKind::CircuitBreakerCleared { breaker } => {
+                assert_eq!(breaker.authorized_by, "operator:alice");
+                assert!(matches!(
+                    breaker.state,
+                    CircuitBreakerState::Tripped | CircuitBreakerState::Cleared
+                ));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }

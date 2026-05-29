@@ -18,8 +18,8 @@ Replay emits JSON Lines:
   head when present, failure reason when present, and trace sequence.
 - `tick`: reconstructed policy name, percepts, candidate actions, verification
   result, action statuses, message lifecycle events, local parent/child run
-  links, replay-visible isolation denials, outcome payload, feedback/reward,
-  state hash, and snapshot metadata.
+  links, replay-visible isolation denials, circuit-breaker denials, outcome
+  payload, feedback/reward, state hash, and snapshot metadata.
 - `causal_graph`: inspectable local multi-agent graph built from trace events.
   It includes message lifecycle entries with trace event IDs, message IDs,
   source/target agents, run IDs, schemas, causal parents, and rejection/expiry
@@ -67,6 +67,11 @@ Before reconstructing ticks, replay validates:
 Work-order acceptance/rejection events are replayed as trace facts only. Replay
 does not re-verify signatures, call revocation sources, refresh key material, or
 authorize a new run from historical work-order data.
+
+Circuit-breaker denials are replayed from stored `ActionDenied` verification
+artifacts only. Replay reports the breaker ID, scope, scope value, and reason in
+`circuit_breaker_denials`; it does not re-evaluate breaker state, clear breakers,
+or execute the denied action.
 
 ## Failure modes
 

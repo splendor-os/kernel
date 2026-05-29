@@ -20,10 +20,10 @@
 //! ```
 
 use crate::{
-    Action, AgentId, AuditAttribution, Constraint, ContentHash, Feedback, IdentityValidationError,
-    MessageId, MessageTraceContext, RemoteMessageTraceContext, Reward, RunId, SnapshotId,
-    StateHandoffTraceContext, TaskFailure, TenantId, TickId, TraceEventId, TraceId,
-    TraceIdentityContext, VerificationResult, WorkOrderId,
+    Action, AgentId, AuditAttribution, CircuitBreakerTraceContext, Constraint, ContentHash,
+    Feedback, IdentityValidationError, MessageId, MessageTraceContext, RemoteMessageTraceContext,
+    Reward, RunId, SnapshotId, StateHandoffTraceContext, TaskFailure, TenantId, TickId,
+    TraceEventId, TraceId, TraceIdentityContext, VerificationResult, WorkOrderId,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -179,6 +179,16 @@ pub enum TraceEventKind {
         endpoint: String,
         /// Caller attribution validated at the daemon boundary.
         audit: AuditAttribution,
+    },
+    /// Records an explicit breaker trip/change into blocking state.
+    CircuitBreakerTripped {
+        /// Breaker identity, scope, reason, and authority context.
+        breaker: CircuitBreakerTraceContext,
+    },
+    /// Records an explicit breaker clear/reset event.
+    CircuitBreakerCleared {
+        /// Breaker identity, scope, reason, and authority context.
+        breaker: CircuitBreakerTraceContext,
     },
     /// Marks the start of a loop tick.
     LoopTickStarted {
