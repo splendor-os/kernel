@@ -38,6 +38,7 @@ mod ids;
 mod message;
 mod node_registry;
 mod placement;
+mod policy_distribution;
 mod primitives;
 mod state_handoff;
 mod trace;
@@ -84,6 +85,12 @@ pub use placement::{
     PlacementDecision, PlacementDecisionStatus, PlacementExecutionMode, PlacementExplain,
     PlacementRejectionReason, PlacementRequest, PlacementTarget, PlacementTraceAudit,
     PLACEMENT_DECISION_SCHEMA,
+};
+pub use policy_distribution::{
+    validate_policy_bundle, PolicyBundle, PolicyBundleEnvelope, PolicyBundleId,
+    PolicyBundleIdError, PolicyBundleKeyring, PolicyBundleTraceContext,
+    PolicyBundleValidationContext, PolicyBundleValidationError, PolicyDegradedMode,
+    ValidatedPolicyBundle, POLICY_BUNDLE_SCHEMA_VERSION, POLICY_BUNDLE_SIGNATURE_ALGORITHM,
 };
 pub use primitives::{
     Action, Constraint, ConstraintKind, ConstraintScope, CostEstimate, Feedback, Percept,

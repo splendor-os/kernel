@@ -29,6 +29,7 @@ mod local_delegation;
 mod loop_engine;
 mod message_router;
 mod node_registry;
+mod policy_cache;
 mod remote_message_transport;
 mod runtime;
 mod scheduler;
@@ -57,6 +58,10 @@ pub use node_registry::{
     ManagementAuditError, ManagementAuditSink, NodeRecord, NodeRegistry, NodeRegistryConfig,
     NodeRegistryError, RegistryHealthStatus,
 };
+pub use policy_cache::{
+    PolicyCache, PolicyCacheConfig, PolicyCacheSnapshot, PolicyDistributionGateway,
+    PolicyDistributionStatus, PolicyRuntimeAuthority, PolicyRuntimeDecision, PolicySyncFailure,
+};
 pub use remote_message_transport::{
     send_remote_message, InMemoryRemoteMessageTransport, InMemoryRemoteTransportFault,
     RemoteMessageReceiver, RemoteMessageTransport, RemoteMessageTransportError,
@@ -72,7 +77,9 @@ pub use splendor_types::{
     ManagementAuditEventKind, Message, MessageDeliveryStatus, MessageEnvelope, MessageId,
     MessageSchemaVersion, MessageTraceContext, MessageTraceLinks, MessageValidationError,
     NodeHealth, NodeHeartbeat, NodeId, NodeKind, NodeOnlineState, NodeRegistration,
-    NodeRegistryValidationError, NodeTelemetry, Percept, PerceptProvenance, QueueTelemetry,
+    NodeRegistryValidationError, NodeTelemetry, Percept, PerceptProvenance, PolicyBundle,
+    PolicyBundleEnvelope, PolicyBundleId, PolicyBundleKeyring, PolicyBundleTraceContext,
+    PolicyBundleValidationContext, PolicyBundleValidationError, PolicyDegradedMode, QueueTelemetry,
     QuotaSignal, QuotaUsage, RegistryScope, RemoteMessageEnvelope, RemoteMessageEnvelopeVersion,
     RemoteMessageRetryPolicy, RemoteMessageTraceContext, RemoteMessageValidationError, Reward,
     RunId, RunStatus, RunStatusCount, RunStatusCounts, RunTelemetry, RuntimeIdentityContext,
@@ -81,7 +88,8 @@ pub use splendor_types::{
     StateReferenceMode, TaskFailure, TaskRequest, TaskResponse, TaskResponseStatus,
     TelemetryAuthority, TelemetryRuntimeMode, TenantId, TickId, TraceEvent, TraceEventId,
     TraceEventKind, TraceId, TraceIdentityContext, TraceSyncFailure, TraceSyncTelemetry,
-    VerificationResult, FLEET_TELEMETRY_SCHEMA_VERSION, TASK_REQUEST_SCHEMA, TASK_RESPONSE_SCHEMA,
+    VerificationResult, FLEET_TELEMETRY_SCHEMA_VERSION, POLICY_BUNDLE_SCHEMA_VERSION,
+    POLICY_BUNDLE_SIGNATURE_ALGORITHM, TASK_REQUEST_SCHEMA, TASK_RESPONSE_SCHEMA,
 };
 pub use state::{
     SnapshotPolicy, StateCommit, StateGraph, StateGraphError, StateHandoffExportRequest,

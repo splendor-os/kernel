@@ -19,6 +19,7 @@ foundation-oriented; it is not a fleet manager or production auth provider.
 | `POST` | `/runs/{run_id}/resume` | Resume a paused run and execute one tick | `splendor.runs.resume` |
 | `POST` | `/runs/{run_id}/stop` | Mark a local run stopped | `splendor.runs.stop` |
 | `POST` | `/runs/{run_id}/percepts` | Append a daemon-submitted percept queue entry | `splendor.percepts.append` |
+| `POST` | `/runs/{run_id}/policies/sync` | Sync or mark failure for the run policy bundle cache | `splendor.policies.sync` |
 | `GET` | `/runs/{run_id}/state-head` | Return latest committed state node metadata | `splendor.state.read` |
 | `GET` | `/runs/{run_id}/traces` | Read ordered trace records; requires `redaction_policy` | `splendor.traces.read` |
 | `POST` | `/runs/{run_id}/replay` | Start inspect-only replay summary | `splendor.replay.create` |
@@ -43,6 +44,10 @@ orders. The daemon checks work-order tenant, run scope where applicable, and
 agent compatibility for run creation. Caller credentials never authorize actions
 directly; `/actions` always submits to the `VerifiedActionGateway` path with
 `GatewayVerificationState::Required`.
+
+When `CreateRunRequest.policy_bundle_required` is true, the daemon also requires
+a signed policy bundle and rejects invalid, expired, revoked, malformed, or
+incompatible bundles before policy invocation or adapter execution can occur.
 
 ## Run lifecycle
 
@@ -114,6 +119,20 @@ PerceptsAppended
 after S0 security validation and before the runtime mutation, preserving caller
 identity and credential attribution in the run trace.
 
+Policy distribution events added in 0.04-S5:
+
+```text
+PolicyBundleAccepted
+PolicyBundleRejected
+PolicySyncFailed
+PolicyExpired
+PolicyRevoked
+```
+
+Policy sync emits daemon audit attribution for `splendor.policies.sync`. A sync
+failure records `PolicySyncFailed` and leaves the current cached authority
+unchanged.
+
 Action submissions through `/actions` emit normal action trace events:
 
 ```text
@@ -149,6 +168,7 @@ Required 0.02-S5 failures include:
 | --- | --- | --- |
 | Invalid run | `404` | `invalid_run` |
 | Malformed percept body | `400` | `malformed_percept` |
+| Invalid policy bundle | `400` or `403` | policy validation reason code |
 | Unauthorized or missing scope/action trace link | `403` | daemon security error code |
 | Runtime unavailable | `503` | `runtime_unavailable` |
 | Gateway denial | `200` with `ActionOutcome.status = Denied` | action outcome |

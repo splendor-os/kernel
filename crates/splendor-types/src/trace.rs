@@ -21,9 +21,9 @@
 
 use crate::{
     Action, AgentId, AuditAttribution, Constraint, ContentHash, Feedback, IdentityValidationError,
-    MessageId, MessageTraceContext, RemoteMessageTraceContext, Reward, RunId, SnapshotId,
-    StateHandoffTraceContext, TaskFailure, TenantId, TickId, TraceEventId, TraceId,
-    TraceIdentityContext, VerificationResult, WorkOrderId,
+    MessageId, MessageTraceContext, PolicyBundleId, PolicyBundleTraceContext,
+    RemoteMessageTraceContext, Reward, RunId, SnapshotId, StateHandoffTraceContext, TaskFailure,
+    TenantId, TickId, TraceEventId, TraceId, TraceIdentityContext, VerificationResult, WorkOrderId,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -149,6 +149,47 @@ pub enum TraceEventKind {
         /// Run binding when known.
         run_id: Option<RunId>,
         /// Sanitized rejection reason code.
+        reason: String,
+    },
+    /// Records accepted policy bundle authority for a run or policy sync.
+    PolicyBundleAccepted {
+        /// Trace-safe bundle metadata without signature material.
+        bundle: PolicyBundleTraceContext,
+    },
+    /// Records fail-closed policy bundle rejection before policy invocation.
+    PolicyBundleRejected {
+        /// Policy bundle identity when parseable.
+        policy_bundle_id: Option<PolicyBundleId>,
+        /// Policy bundle version when parseable.
+        version: Option<String>,
+        /// Sanitized rejection reason code.
+        reason: String,
+    },
+    /// Records central policy sync failure without changing cached authority.
+    PolicySyncFailed {
+        /// Policy bundle identity involved in the failed sync, when known.
+        policy_bundle_id: Option<PolicyBundleId>,
+        /// Policy bundle version involved in the failed sync, when known.
+        version: Option<String>,
+        /// Sanitized failure reason code.
+        reason: String,
+    },
+    /// Records policy TTL expiry affecting policy invocation or side effects.
+    PolicyExpired {
+        /// Policy bundle identity that expired.
+        policy_bundle_id: PolicyBundleId,
+        /// Expired policy bundle version.
+        version: String,
+        /// Optional action denied because of this expiry.
+        action: Option<String>,
+    },
+    /// Records policy revocation affecting policy invocation or side effects.
+    PolicyRevoked {
+        /// Policy bundle identity that was revoked.
+        policy_bundle_id: PolicyBundleId,
+        /// Revoked policy bundle version.
+        version: String,
+        /// Sanitized revocation reason.
         reason: String,
     },
     /// Records a local daemon run pause transition.

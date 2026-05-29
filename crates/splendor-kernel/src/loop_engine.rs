@@ -5,16 +5,17 @@
 //! commit state. It emits the ordered trace events required for auditability.
 
 use crate::{
-    AgentContext, KernelRuntime, KernelRuntimeConfig, StateCommit, StateGraph, StateGraphError,
+    AgentContext, KernelRuntime, KernelRuntimeConfig, PolicyRuntimeAuthority, StateCommit,
+    StateGraph, StateGraphError,
 };
 use splendor_gateway::{
     ActionGateway, ActionId, ActionOutcome, ActionRequest, ActionStatus, GatewayError,
 };
 use splendor_store::{StateData, StateMetadata, TraceStore, TraceStoreError};
 use splendor_types::{
-    Action, Constraint, ContentHash, Feedback, Percept, QuotaUsage, Reward, RunId, SnapshotId,
-    TickId, TraceEvent, TraceEventId, TraceEventKind, TraceIdentityContext, VerificationResult,
-    WorkOrder,
+    Action, Constraint, ContentHash, Feedback, Percept, PolicyBundleTraceContext, QuotaUsage,
+    Reward, RunId, SnapshotId, TickId, TraceEvent, TraceEventId, TraceEventKind,
+    TraceIdentityContext, VerificationResult, WorkOrder,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -176,6 +177,8 @@ pub struct RunTraceContext {
     pub run_id: Option<RunId>,
     /// Validated work order that authorized this run, if present.
     pub work_order: Option<WorkOrder>,
+    /// Validated policy bundle metadata governing this run, if present.
+    pub policy_bundle: Option<PolicyBundleTraceContext>,
 }
 
 impl RunTraceContext {
@@ -184,12 +187,19 @@ impl RunTraceContext {
         Self {
             run_id,
             work_order: None,
+            policy_bundle: None,
         }
     }
 
     /// Attaches validated work-order metadata.
     pub fn with_work_order(mut self, work_order: WorkOrder) -> Self {
         self.work_order = Some(work_order);
+        self
+    }
+
+    /// Attaches validated policy bundle metadata.
+    pub fn with_policy_bundle(mut self, policy_bundle: PolicyBundleTraceContext) -> Self {
+        self.policy_bundle = Some(policy_bundle);
         self
     }
 }
@@ -261,6 +271,7 @@ pub struct LoopEngine {
     constraint_engine: Box<dyn ConstraintEngine>,
     gateway: Arc<dyn ActionGateway>,
     outcome_evaluator: Box<dyn OutcomeEvaluator>,
+    policy_authority: Option<Arc<dyn PolicyRuntimeAuthority>>,
 }
 
 impl LoopEngine {
@@ -305,6 +316,7 @@ impl LoopEngine {
             constraint_engine: Box::new(AllowAllConstraintEngine),
             gateway,
             outcome_evaluator: Box::new(NoopOutcomeEvaluator),
+            policy_authority: None,
         }
     }
 
@@ -354,6 +366,19 @@ impl LoopEngine {
                 tenant_id: work_order.tenant_id.clone(),
                 agent_id: work_order.agent_id.clone(),
                 run_id: work_order.run_id.clone(),
+            })?;
+        }
+        if let Some(policy_bundle) = context.policy_bundle.as_ref() {
+            agent.config.metadata.insert(
+                "policy_bundle_id".to_string(),
+                policy_bundle.policy_bundle_id.to_string(),
+            );
+            agent.config.metadata.insert(
+                "policy_bundle_version".to_string(),
+                policy_bundle.version.clone(),
+            );
+            runtime.record_event(TraceEventKind::PolicyBundleAccepted {
+                bundle: policy_bundle.clone(),
             })?;
         }
         Ok(Self::with_runtime(
@@ -483,6 +508,12 @@ impl LoopEngine {
         self.outcome_evaluator = Box::new(evaluator);
     }
 
+    /// Sets a policy runtime authority that can fail closed before policy
+    /// invocation when required policy bundles are missing, expired, or revoked.
+    pub fn set_policy_runtime_authority(&mut self, authority: Arc<dyn PolicyRuntimeAuthority>) {
+        self.policy_authority = Some(authority);
+    }
+
     /// Records a non-tick runtime event through this loop's trace runtime.
     pub fn record_runtime_event(&self, kind: TraceEventKind) -> Result<TraceEvent, LoopError> {
         self.runtime.record_event(kind).map_err(LoopError::Trace)
@@ -509,6 +540,22 @@ impl LoopEngine {
         )?;
 
         let policy_name = self.policy.name().to_string();
+        if let Some(authority) = self.policy_authority.as_ref() {
+            let decision =
+                authority.verify_policy_invocation(&policy_name, OffsetDateTime::now_utc());
+            if let Some(trace_event) = decision.trace_event {
+                self.record_tick_event(tick_id, trace_event)?;
+            }
+            if !decision.verification.allowed {
+                return Err(LoopError::Policy(
+                    if decision.verification.reasons.is_empty() {
+                        "policy_invocation_denied".to_string()
+                    } else {
+                        decision.verification.reasons.join(", ")
+                    },
+                ));
+            }
+        }
         self.record_tick_event(
             tick_id,
             TraceEventKind::PolicyInvoked {

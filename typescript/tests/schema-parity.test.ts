@@ -70,6 +70,9 @@ test("TypeScript primitive field contracts match canonical Rust structs", () => 
   assert.deepEqual(CANONICAL_SCHEMA_FIELDS.run_inspect_response, extractStructFields(daemon, "RunInspectResponse"));
   assert.deepEqual(CANONICAL_SCHEMA_FIELDS.tick_response, extractStructFields(daemon, "TickResponse"));
   assert.deepEqual(CANONICAL_SCHEMA_FIELDS.append_percept_request, extractStructFields(daemon, "AppendPerceptRequest"));
+  assert.deepEqual(CANONICAL_SCHEMA_FIELDS.policy_sync_request, extractStructFields(daemon, "PolicySyncRequest"));
+  assert.deepEqual(CANONICAL_SCHEMA_FIELDS.policy_cache_status_response, extractStructFields(daemon, "PolicyCacheStatusResponse"));
+  assert.deepEqual(CANONICAL_SCHEMA_FIELDS.policy_sync_response, extractStructFields(daemon, "PolicySyncResponse"));
   assert.deepEqual(CANONICAL_SCHEMA_FIELDS.trace_page_response, extractStructFields(daemon, "TracePageResponse"));
   assert.deepEqual(CANONICAL_SCHEMA_FIELDS.replay_response, extractStructFields(daemon, "ReplayResponse"));
   assert.deepEqual(CANONICAL_SCHEMA_FIELDS.submit_action_request, extractStructFields(daemon, "SubmitActionRequest"));
@@ -87,6 +90,9 @@ test("OpenAPI documents S5 daemon request and response schemas", () => {
     "TickResponse",
     "AppendPerceptRequest",
     "AppendPerceptResponse",
+    "PolicySyncRequest",
+    "PolicyCacheStatusResponse",
+    "PolicySyncResponse",
     "StateHeadResponse",
     "TracePageResponse",
     "ReplayRequest",
@@ -105,6 +111,7 @@ test("OpenAPI documents S5 daemon request and response schemas", () => {
     "resumeRun",
     "stopRun",
     "appendPercept",
+    "syncPolicy",
     "replayRun",
     "submitAction"
   ]) {
