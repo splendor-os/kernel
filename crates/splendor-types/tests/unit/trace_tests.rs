@@ -1,8 +1,9 @@
 use super::*;
 use crate::{
     ActionId, AgentId, ApprovalDecision, ApprovalId, AuditAttribution, ClientPrincipal,
-    CircuitBreakerId, DelegatedAuthority, EndpointScope, EscalationId, GovernanceExtensions,
-    GovernanceIssuer, GovernanceObjectRef, GovernanceScope, GovernanceState, GovernanceTraceLink,
+    CircuitBreakerId, DelegatedAuthority, EndpointScope, EscalationContext, EscalationDecision,
+    EscalationId, EscalationScope, EscalationTrigger, GovernanceExtensions, GovernanceIssuer,
+    GovernanceObjectRef, GovernanceScope, GovernanceState, GovernanceTraceLink,
     GovernanceTransition, GovernanceTransitionError, InterventionId, KillSwitchId,
     LocalDelegationTraceContext, Message, MessageEnvelope, MessageId, MessageTraceContext, Percept,
     PerceptProvenance, RemoteMessageEnvelope, RemoteMessageRetryPolicy, RemoteMessageTraceContext,
@@ -390,6 +391,52 @@ fn state_handoff_trace_events_round_trip_with_previous_head() {
         let payload = serde_json::to_vec(&event).expect("serialize");
         let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
         assert_eq!(decoded, event);
+    }
+}
+
+#[test]
+fn escalation_trace_event_round_trips_with_action_identity() {
+    let run_id = RunId::new();
+    let action_id = ActionId::new();
+    let escalation = EscalationContext {
+        trigger: EscalationTrigger::QuotaPressure,
+        threshold: 1,
+        observed_count: 1,
+        scope: EscalationScope::Action,
+        decision: EscalationDecision::Pause,
+        tenant_id: TenantId::new(),
+        agent_id: AgentId::new(),
+        run_id: run_id.clone(),
+        action_id: Some(action_id.clone()),
+        action_name: Some("quota".to_string()),
+        adapter: Some("stub".to_string()),
+        reason: "quota pressure".to_string(),
+        evidence: serde_json::json!({"quota": "max_actions_per_tick"}),
+        decided_at: OffsetDateTime::now_utc(),
+    };
+    let event = TraceEvent::new(
+        run_id,
+        5,
+        OffsetDateTime::now_utc(),
+        TraceEventKind::EscalationTriggered {
+            escalation: escalation.clone(),
+        },
+    );
+    assert_eq!(event.identity.action_id.as_ref(), Some(&action_id));
+
+    let payload = serde_json::to_vec(&event).expect("serialize");
+    let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+    assert_eq!(decoded, event);
+    match decoded.kind {
+        TraceEventKind::EscalationTriggered {
+            escalation: decoded,
+        } => {
+            assert_eq!(decoded.trigger, EscalationTrigger::QuotaPressure);
+            assert_eq!(decoded.threshold, 1);
+            assert_eq!(decoded.scope, EscalationScope::Action);
+            assert_eq!(decoded.action_id, Some(action_id));
+        }
+        other => panic!("unexpected event: {other:?}"),
     }
 }
 

@@ -22,10 +22,14 @@ Percepts -> Policy -> Constraints -> Gateway -> Adapter -> Outcome -> State Comm
 9. If constraints allowed the tick, `VerifiedActionGateway` checks tenant policy,
    adapter allowlists, permissions, quotas, invariants, and action preconditions.
 10. Only verified actions reach registered adapters.
-11. Adapter output, denial, or failure is recorded as an action outcome.
-12. The outcome evaluator can attach feedback/reward.
-13. The state graph commits the next state node and optional snapshot.
-14. Trace records are appended in order.
+11. If an optional 0.04-S3 escalation policy is configured, explicit
+    verifier/runtime facts can produce `EscalationTriggered` and
+    `ActionNeedsIntervention` trace events before final outcome recording.
+12. Adapter output, denial, failure, or intervention need is recorded as an
+    action outcome.
+13. The outcome evaluator can attach feedback/reward.
+14. The state graph commits the next state node and optional snapshot.
+15. Trace records are appended in order.
 
 ## Identity scope
 
@@ -46,6 +50,10 @@ documented in [`identity.md`](identity.md).
 - Perceptor/policy errors return a loop error and do not execute actions.
 - Constraint denial records action denial and skips gateway submission.
 - Gateway verifier denial records action denial and skips adapter execution.
+- Escalation policies consume explicit verifier/runtime facts. Verifier
+  uncertainty and quota pressure fail closed as denial or intervention outcomes;
+  escalation does not execute adapters, contact ticket systems, or install
+  circuit breakers.
 - Adapter failure records a failed/denied outcome.
 - State commit failure prevents `StateCommitted` and `LoopTickCompleted` from
   being emitted for that tick.

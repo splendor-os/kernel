@@ -420,12 +420,13 @@ enum ReplayOutput {
         feedback: Box<Option<splendor_types::Feedback>>,
         reward: Box<Option<splendor_types::Reward>>,
         state_hash: Option<ContentHash>,
-        snapshot_id: Option<SnapshotId>,
+        snapshot_id: Box<Option<SnapshotId>>,
         snapshot_bytes_len: Option<usize>,
         snapshot_bytes: Box<Option<Vec<u8>>>,
         messages: Vec<ReplayMessageEvent>,
         parent_child_runs: Vec<ReplayParentChildRun>,
         isolation_denials: Vec<ReplayIsolationDenial>,
+        escalations: Vec<ReplayEscalation>,
     },
     CausalGraph {
         run_id: String,
@@ -488,6 +489,13 @@ struct ReplayIsolationDenial {
     ledger_reason: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct ReplayEscalation {
+    trace_event_id: TraceEventId,
+    escalation: splendor_types::EscalationContext,
+    side_effects_replayed: bool,
+}
+
 #[derive(Default)]
 struct ReplayTick {
     tick_id: u64,
@@ -506,6 +514,7 @@ struct ReplayTick {
     messages: Vec<ReplayMessageEvent>,
     parent_child_runs: Vec<ReplayParentChildRun>,
     isolation_denials: Vec<ReplayIsolationDenial>,
+    escalations: Vec<ReplayEscalation>,
 }
 
 #[derive(Default)]
@@ -660,12 +669,13 @@ fn collect_replay_outputs(
                         feedback: Box::new(tick.feedback),
                         reward: Box::new(tick.reward),
                         state_hash: tick.state_hash,
-                        snapshot_id: tick.snapshot_id,
+                        snapshot_id: Box::new(tick.snapshot_id),
                         snapshot_bytes_len: tick.snapshot_bytes_len,
                         snapshot_bytes: Box::new(tick.snapshot_bytes),
                         messages: tick.messages,
                         parent_child_runs: tick.parent_child_runs,
                         isolation_denials: tick.isolation_denials,
+                        escalations: tick.escalations,
                     });
                 }
             }
@@ -904,6 +914,27 @@ fn apply_event_to_tick(
                 status: "failed".to_string(),
                 outcome: None,
                 result: Some(result.clone()),
+            });
+        }
+        TraceEventKind::ActionNeedsIntervention { action, result } => {
+            tick.actions.push(ReplayAction {
+                action: action.clone(),
+                status: "needs_intervention".to_string(),
+                outcome: None,
+                result: Some(result.clone()),
+            });
+        }
+        TraceEventKind::EscalationTriggered { escalation } => {
+            if escalation.run_id != event.run_id {
+                return Err(format!(
+                    "Escalation trace run mismatch at sequence {}: event run '{}' but escalation run '{}'",
+                    event.sequence, event.run_id, escalation.run_id
+                ));
+            }
+            tick.escalations.push(ReplayEscalation {
+                trace_event_id: event.trace_event_id.clone(),
+                escalation: escalation.clone(),
+                side_effects_replayed: false,
             });
         }
         TraceEventKind::MessageQueued { .. }

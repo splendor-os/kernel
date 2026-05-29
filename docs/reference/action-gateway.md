@@ -42,6 +42,9 @@ returns `ActionOutcome` results.
 - `NeedsIntervention` — an approval verifier or runtime boundary could not
   complete and failed closed for operator/runtime intervention.
 - `Failed` — adapter execution failed.
+- `NeedsIntervention` — verifier uncertainty or an escalation rule requires
+  operator/control-plane intervention before the action can proceed. The adapter
+  must not execute for pre-execution intervention outcomes.
 
 ## ApprovalVerifier
 
@@ -93,6 +96,11 @@ first validates `action_id`, `tenant_id`, `agent_id`, and `run_id`; missing or n
 identity returns a denied `ActionOutcome` with reason `identity_invalid` and does
 not call adapters. Approval-required, denied, expired, revoked, wrong-scope, or
 uncertain approval decisions also stop before adapter execution.
+
+0.04-S3 escalation handling may convert a denied verifier result into
+`NeedsIntervention` after the gateway has failed closed. This preserves the
+gateway invariant: uncertain verifier results must not silently allow adapter
+execution.
 
 ## ActionGateway
 

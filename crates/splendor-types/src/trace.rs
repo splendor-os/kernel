@@ -24,7 +24,7 @@ use crate::{
     GovernanceScope, GovernanceTransition, GovernanceTransitionRejection, IdentityValidationError,
     MessageId, MessageTraceContext, RemoteMessageTraceContext, Reward, RunId, SnapshotId,
     StateHandoffTraceContext, TaskFailure, TenantId, TickId, TraceEventId, TraceId,
-    TraceIdentityContext, VerificationResult, WorkOrderId,
+    TraceIdentityContext, VerificationResult, WorkOrderId, EscalationContext,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -204,6 +204,11 @@ fn apply_kind_identity(
         }
         TraceEventKind::GovernanceTransitionRejected { rejection } => {
             apply_governance_scope_identity(&mut identity, &rejection.scope);
+        }
+        TraceEventKind::EscalationTriggered { escalation } => {
+            if let Some(action_id) = escalation.action_id.as_ref() {
+                identity.action_id.get_or_insert_with(|| action_id.clone());
+            }
         }
         _ => {}
     }
@@ -424,6 +429,18 @@ pub enum TraceEventKind {
         approval: ApprovalTraceContext,
         /// Revocation reason.
         reason: String,
+    },
+    /// Records an action that requires intervention before continuing.
+    ActionNeedsIntervention {
+        /// Action that requires intervention.
+        action: Action,
+        /// Verification or escalation result explaining the intervention need.
+        result: VerificationResult,
+    },
+    /// Records a deterministic escalation decision and its evidence.
+    EscalationTriggered {
+        /// Escalation trigger, threshold, scope, references, and decision.
+        escalation: EscalationContext,
     },
     /// Captures final outcome, feedback, and reward signals.
     OutcomeRecorded {

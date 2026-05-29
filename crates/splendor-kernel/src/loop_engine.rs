@@ -5,16 +5,18 @@
 //! commit state. It emits the ordered trace events required for auditability.
 
 use crate::{
-    AgentContext, KernelRuntime, KernelRuntimeConfig, StateCommit, StateGraph, StateGraphError,
+    apply_escalation_to_outcome, escalations_require_intervention, AgentContext,
+    EscalationEvaluator, EscalationOutcomeInput, KernelRuntime, KernelRuntimeConfig, StateCommit,
+    StateGraph, StateGraphError,
 };
 use splendor_gateway::{
     ActionGateway, ActionId, ActionOutcome, ActionRequest, ActionStatus, GatewayError,
 };
 use splendor_store::{StateData, StateMetadata, TraceStore, TraceStoreError};
 use splendor_types::{
-    Action, ApprovalTraceContext, Constraint, ContentHash, Feedback, Percept, QuotaUsage, Reward,
-    RunId, SnapshotId, TickId, TraceEvent, TraceEventId, TraceEventKind, TraceIdentityContext,
-    VerificationResult, WorkOrder,
+    Action, ApprovalTraceContext, Constraint, ContentHash, EscalationContext, EscalationPolicy,
+    Feedback, Percept, QuotaUsage, Reward, RunId, SnapshotId, TickId, TraceEvent, TraceEventId,
+    TraceEventKind, TraceIdentityContext, VerificationResult, WorkOrder,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -272,6 +274,7 @@ pub struct LoopEngine {
     constraint_engine: Box<dyn ConstraintEngine>,
     gateway: Arc<dyn ActionGateway>,
     outcome_evaluator: Box<dyn OutcomeEvaluator>,
+    escalation_evaluator: Option<EscalationEvaluator>,
 }
 
 impl LoopEngine {
@@ -316,6 +319,7 @@ impl LoopEngine {
             constraint_engine: Box::new(AllowAllConstraintEngine),
             gateway,
             outcome_evaluator: Box::new(NoopOutcomeEvaluator),
+            escalation_evaluator: None,
         }
     }
 
@@ -494,6 +498,13 @@ impl LoopEngine {
         self.outcome_evaluator = Box::new(evaluator);
     }
 
+    /// Enables deterministic 0.04-S3 escalation evaluation for this loop. The
+    /// evaluator consumes explicit verifier/runtime facts and only emits
+    /// escalation trace events when a configured threshold is reached.
+    pub fn set_escalation_policy(&mut self, policy: EscalationPolicy) {
+        self.escalation_evaluator = Some(EscalationEvaluator::new(policy));
+    }
+
     /// Records a non-tick runtime event through this loop's trace runtime.
     pub fn record_runtime_event(&self, kind: TraceEventKind) -> Result<TraceEvent, LoopError> {
         self.runtime.record_event(kind).map_err(LoopError::Trace)
@@ -558,6 +569,7 @@ impl LoopEngine {
         )?;
 
         let mut outcomes = Vec::new();
+        let mut escalations = Vec::new();
         for candidate in &decision.actions {
             let action = candidate.action.clone();
             let action_id = ActionId::new();
@@ -572,7 +584,7 @@ impl LoopEngine {
             let delegated_scope = self
                 .agent
                 .verify_delegated_action(&action, candidate.adapter.as_deref());
-            let outcome = if !constraint_evaluation.result.allowed {
+            let mut outcome = if !constraint_evaluation.result.allowed {
                 ActionOutcome {
                     action_id: action_id.clone(),
                     status: ActionStatus::Denied,
@@ -612,6 +624,13 @@ impl LoopEngine {
                 }
             };
 
+            let action_escalations = self.evaluate_escalations(
+                &action_id,
+                &action,
+                candidate.adapter.as_deref(),
+                &mut outcome,
+            );
+
             self.record_action_event(
                 tick_id,
                 &action_id,
@@ -620,6 +639,16 @@ impl LoopEngine {
                     result: outcome.verification.clone(),
                 },
             )?;
+
+            for escalation in &action_escalations {
+                self.record_action_event(
+                    tick_id,
+                    &action_id,
+                    TraceEventKind::EscalationTriggered {
+                        escalation: escalation.clone(),
+                    },
+                )?;
+            }
 
             match outcome.status {
                 ActionStatus::Executed => {
@@ -660,12 +689,8 @@ impl LoopEngine {
                     self.record_action_event(
                         tick_id,
                         &action_id,
-                        TraceEventKind::ActionFailed {
+                        TraceEventKind::ActionNeedsIntervention {
                             action: action.clone(),
-                            error: outcome
-                                .error
-                                .clone()
-                                .unwrap_or_else(|| "needs_intervention".to_string()),
                             result: outcome.verification.clone(),
                         },
                     )?;
@@ -708,19 +733,21 @@ impl LoopEngine {
                 }
             }
 
+            escalations.extend(action_escalations);
             outcomes.push(outcome);
         }
 
         let (feedback, reward) = self.evaluate_outcomes(&decision, &outcomes);
         let duration_ms = start.elapsed().as_millis() as u64;
-        let needs_intervention = outcomes.iter().any(|outcome| {
-            outcome.status == ActionStatus::NeedsIntervention
-                || outcome
-                    .post_verification
-                    .as_ref()
-                    .map(|result| !result.allowed)
-                    .unwrap_or(false)
-        });
+        let needs_intervention = escalations_require_intervention(&escalations)
+            || outcomes.iter().any(|outcome| {
+                outcome.status == ActionStatus::NeedsIntervention
+                    || outcome
+                        .post_verification
+                        .as_ref()
+                        .map(|result| !result.allowed)
+                        .unwrap_or(false)
+            });
         let needs_approval = outcomes
             .iter()
             .any(|outcome| outcome.status == ActionStatus::NeedsApproval);
@@ -729,6 +756,7 @@ impl LoopEngine {
             "duration_ms": duration_ms,
             "needs_intervention": needs_intervention,
             "needs_approval": needs_approval,
+            "escalations": escalations,
             "actions": outcomes
                 .iter()
                 .map(|outcome| serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null))
@@ -824,6 +852,32 @@ impl LoopEngine {
             }
         }
         (feedback, reward)
+    }
+
+    fn evaluate_escalations(
+        &self,
+        action_id: &ActionId,
+        action: &Action,
+        adapter: Option<&str>,
+        outcome: &mut ActionOutcome,
+    ) -> Vec<EscalationContext> {
+        let Some(evaluator) = &self.escalation_evaluator else {
+            return Vec::new();
+        };
+        let input = EscalationOutcomeInput {
+            tenant_id: &self.agent.tenant_id,
+            agent_id: &self.agent.agent_id,
+            run_id: self.runtime.run_id(),
+            action_id,
+            action,
+            adapter,
+            outcome,
+        };
+        let escalations = evaluator.evaluate_outcome(&input);
+        for escalation in &escalations {
+            apply_escalation_to_outcome(outcome, escalation);
+        }
+        escalations
     }
 
     fn resume_info(trace_store: &dyn TraceStore, run_id: &RunId) -> Result<ResumeInfo, LoopError> {

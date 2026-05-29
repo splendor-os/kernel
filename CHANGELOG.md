@@ -14,12 +14,16 @@
 - Added recursive validation for non-authoritative governance extension fields so
   metadata cannot smuggle permissions, work orders, credentials, signatures, or
   approval tokens.
+- Added the 0.04-S3 escalation engine with versioned escalation policy rules,
+  deterministic threshold evaluation, `NeedsIntervention` action outcomes,
+  escalation trace events, and inspect-only replay reconstruction.
 
 ### Explicitly not included
 
-- No approval UI, enterprise IAM integration, approval verifier, escalation
-  engine, circuit-breaker enforcement, kill-switch propagation, external control
-  plane adapter, or side-effect path outside the Action Gateway.
+- No approval UI, enterprise IAM integration, broad workflow language, ticketing
+  integration, notification platform, circuit-breaker registry/enforcement,
+  central policy distribution, kill-switch propagation, external control-plane
+  adapter, or side-effect path outside the Action Gateway.
 
 ## 0.03-dev — Resident nodes + fleet execution foundation
 

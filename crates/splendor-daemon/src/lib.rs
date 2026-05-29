@@ -1134,12 +1134,8 @@ async fn submit_action(
             slot.status = RunStatus::Failed;
             record_run_event(
                 slot,
-                TraceEventKind::ActionFailed {
+                TraceEventKind::ActionNeedsIntervention {
                     action: request.action.clone(),
-                    error: outcome
-                        .error
-                        .clone()
-                        .unwrap_or_else(|| "needs_intervention".to_string()),
                     result: outcome.verification.clone(),
                 },
             )

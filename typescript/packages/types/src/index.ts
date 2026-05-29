@@ -425,6 +425,35 @@ export interface TraceIntegrity {
   event_hash: ContentHash;
 }
 
+export type EscalationTrigger =
+  | "VerifierUncertainty"
+  | "RepeatedAdapterFailure"
+  | "ApprovalTimeout"
+  | "QuotaPressure"
+  | "PolicyExpired"
+  | "SafetyRisk";
+
+export type EscalationDecision = "NoAction" | "Deny" | "Pause" | "NeedsIntervention";
+
+export type EscalationScope = "Tenant" | "Agent" | "Run" | "Action" | "Adapter";
+
+export interface EscalationContext {
+  trigger: EscalationTrigger;
+  threshold: number;
+  observed_count: number;
+  scope: EscalationScope;
+  decision: EscalationDecision;
+  tenant_id: TenantId;
+  agent_id: AgentId;
+  run_id: RunId;
+  action_id: ActionId | null;
+  action_name: string | null;
+  adapter: string | null;
+  reason: string;
+  evidence: JsonValue;
+  decided_at: ISODateTime;
+}
+
 export type TraceEventKind =
   | "RunStarted"
   | {
@@ -462,11 +491,13 @@ export type TraceEventKind =
   | { ActionExecuted: { action: Action; outcome: JsonValue } }
   | { ActionDenied: { action: Action; result: VerificationResult } }
   | { ActionFailed: { action: Action; error: string; result: VerificationResult } }
+  | { ActionNeedsIntervention: { action: Action; result: VerificationResult } }
   | { ApprovalRequested: { approval: ApprovalTraceContext } }
   | { ApprovalGranted: { approval: ApprovalTraceContext } }
   | { ApprovalDenied: { approval: ApprovalTraceContext; reason: string } }
   | { ApprovalExpired: { approval: ApprovalTraceContext; reason: string } }
   | { ApprovalRevoked: { approval: ApprovalTraceContext; reason: string } }
+  | { EscalationTriggered: { escalation: EscalationContext } }
   | { OutcomeRecorded: { outcome: JsonValue; feedback: Feedback | null; reward: Reward | null } }
   | { StateCommitted: { state_hash: ContentHash; snapshot_id: SnapshotId | null } }
   | { StateHandoffExported: { handoff: StateHandoffTraceContext } }
@@ -501,11 +532,11 @@ export type TraceEventKind =
         source_message_id: MessageId | null;
       };
     }
-  | { ApprovalRequested: { transition: GovernanceTransition } }
-  | { ApprovalGranted: { transition: GovernanceTransition } }
-  | { ApprovalDenied: { transition: GovernanceTransition } }
-  | { ApprovalExpired: { transition: GovernanceTransition } }
-  | { ApprovalRevoked: { transition: GovernanceTransition } }
+  | { GovernanceApprovalRequested: { transition: GovernanceTransition } }
+  | { GovernanceApprovalGranted: { transition: GovernanceTransition } }
+  | { GovernanceApprovalDenied: { transition: GovernanceTransition } }
+  | { GovernanceApprovalExpired: { transition: GovernanceTransition } }
+  | { GovernanceApprovalRevoked: { transition: GovernanceTransition } }
   | { EscalationOpened: { transition: GovernanceTransition } }
   | { EscalationResolved: { transition: GovernanceTransition } }
   | { EscalationExpired: { transition: GovernanceTransition } }
@@ -985,11 +1016,13 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "ActionExecuted",
   "ActionDenied",
   "ActionFailed",
+  "ActionNeedsIntervention",
   "ApprovalRequested",
   "ApprovalGranted",
   "ApprovalDenied",
   "ApprovalExpired",
   "ApprovalRevoked",
+  "EscalationTriggered",
   "OutcomeRecorded",
   "StateCommitted",
   "StateHandoffExported",
@@ -1015,11 +1048,11 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "ChildRunCompleted",
   "ChildRunFailed",
   "ChildRunLinked",
-  "ApprovalRequested",
-  "ApprovalGranted",
-  "ApprovalDenied",
-  "ApprovalExpired",
-  "ApprovalRevoked",
+  "GovernanceApprovalRequested",
+  "GovernanceApprovalGranted",
+  "GovernanceApprovalDenied",
+  "GovernanceApprovalExpired",
+  "GovernanceApprovalRevoked",
   "EscalationOpened",
   "EscalationResolved",
   "EscalationExpired",

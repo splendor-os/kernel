@@ -67,8 +67,9 @@ propagation, or external control-plane adapter.
 ## Trace behavior
 
 - Added transition events:
-  `ApprovalRequested`, `ApprovalGranted`, `ApprovalDenied`, `ApprovalExpired`,
-  `ApprovalRevoked`, `EscalationOpened`, `EscalationResolved`,
+  `GovernanceApprovalRequested`, `GovernanceApprovalGranted`,
+  `GovernanceApprovalDenied`, `GovernanceApprovalExpired`,
+  `GovernanceApprovalRevoked`, `EscalationOpened`, `EscalationResolved`,
   `EscalationExpired`, `EscalationRevoked`, `InterventionRequested`,
   `InterventionResolved`, `InterventionCancelled`, `InterventionExpired`,
   `InterventionRevoked`, `CircuitBreakerTripped`, `CircuitBreakerCleared`,

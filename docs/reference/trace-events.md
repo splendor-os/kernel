@@ -35,16 +35,18 @@ following order for each tick:
 7. `ConstraintsEvaluated`
 8. `ActionVerificationStarted`
 9. `ActionVerificationCompleted`
-10. `ActionNeedsApproval`, `ActionExecuted`, `ActionDenied`, or `ActionFailed`
-11. `OutcomeRecorded`
-12. `StateCommitted`
-13. `LoopTickCompleted`
+10. Optional `EscalationTriggered` when an escalation threshold is reached
+11. `ActionNeedsApproval`, `ActionNeedsIntervention`, `ActionExecuted`, `ActionDenied`, or `ActionFailed`
+12. `OutcomeRecorded`
+13. `StateCommitted`
+14. `LoopTickCompleted`
 
 These Rust enum names correspond to the canonical runtime event classes used in
 the rule documents: `run.started`, `tick.started`, `percepts.received`, `state.loaded`,
 `policy.invoked`, `policy.completed`, `actions.proposed`,
 `constraints.evaluated`, `verification.started`, `verification.completed`,
-`action.needs_approval`, `action.executed`, `action.denied`, or
+`escalation.triggered` when applicable, `action.needs_approval`,
+`action.needs_intervention`, `action.executed`, `action.denied`, or
 `action.failed`, `outcome.recorded`, `state.committed`, and `tick.completed`.
 
 If post-verification fails after an action executes, the kernel records
@@ -119,11 +121,13 @@ trace and do not authorize adapter execution outside the gateway.
 - `ActionExecuted { action: Action, outcome: serde_json::Value }`
 - `ActionDenied { action: Action, result: VerificationResult }`
 - `ActionFailed { action: Action, error: String, result: VerificationResult }`
+- `ActionNeedsIntervention { action: Action, result: VerificationResult }`
 - `ApprovalRequested { approval: ApprovalTraceContext }`
 - `ApprovalGranted { approval: ApprovalTraceContext }`
 - `ApprovalDenied { approval: ApprovalTraceContext, reason: String }`
 - `ApprovalExpired { approval: ApprovalTraceContext, reason: String }`
 - `ApprovalRevoked { approval: ApprovalTraceContext, reason: String }`
+- `EscalationTriggered { escalation: EscalationContext }`
 - `OutcomeRecorded { outcome: serde_json::Value, feedback: Option<Feedback>, reward: Option<Reward> }`
 - `StateCommitted { state_hash: ContentHash, snapshot_id: Option<SnapshotId> }`
 - `StateHandoffExported { handoff: StateHandoffTraceContext }`
@@ -149,11 +153,11 @@ trace and do not authorize adapter execution outside the gateway.
 - `ChildRunCompleted { delegation: LocalDelegationTraceContext }`
 - `ChildRunFailed { delegation: LocalDelegationTraceContext, failure: TaskFailure }`
 - `ChildRunLinked { parent_run_id, child_run_id, parent_agent_id, child_agent_id, causal_parent, source_message_id }`
-- `ApprovalRequested { transition: GovernanceTransition }`
-- `ApprovalGranted { transition: GovernanceTransition }`
-- `ApprovalDenied { transition: GovernanceTransition }`
-- `ApprovalExpired { transition: GovernanceTransition }`
-- `ApprovalRevoked { transition: GovernanceTransition }`
+- `GovernanceApprovalRequested { transition: GovernanceTransition }`
+- `GovernanceApprovalGranted { transition: GovernanceTransition }`
+- `GovernanceApprovalDenied { transition: GovernanceTransition }`
+- `GovernanceApprovalExpired { transition: GovernanceTransition }`
+- `GovernanceApprovalRevoked { transition: GovernanceTransition }`
 - `EscalationOpened { transition: GovernanceTransition }`
 - `EscalationResolved { transition: GovernanceTransition }`
 - `EscalationExpired { transition: GovernanceTransition }`
@@ -180,11 +184,11 @@ trace and do not authorize adapter execution outside the gateway.
 
 | Rust variant | Canonical event class | Purpose |
 | --- | --- | --- |
-| `ApprovalRequested` | `approval.requested` | Approval request state was created. |
-| `ApprovalGranted` | `approval.granted` | Approval request transitioned to granted. |
-| `ApprovalDenied` | `approval.denied` | Approval request transitioned to denied. |
-| `ApprovalExpired` | `approval.expired` | Approval or grant expired explicitly. |
-| `ApprovalRevoked` | `approval.revoked` | Approval state was revoked explicitly. |
+| `GovernanceApprovalRequested` | `governance.approval.requested` | Approval request state was created. |
+| `GovernanceApprovalGranted` | `governance.approval.granted` | Approval request transitioned to granted. |
+| `GovernanceApprovalDenied` | `governance.approval.denied` | Approval request transitioned to denied. |
+| `GovernanceApprovalExpired` | `governance.approval.expired` | Approval or grant expired explicitly. |
+| `GovernanceApprovalRevoked` | `governance.approval.revoked` | Approval state was revoked explicitly. |
 | `EscalationOpened` | `escalation.opened` | Escalation state was opened. |
 | `EscalationResolved` | `escalation.resolved` | Escalation state was resolved. |
 | `EscalationExpired` | `escalation.expired` | Escalation state expired explicitly. |
@@ -362,6 +366,33 @@ All remote message events carry `RemoteMessageTraceContext`, including the local
 `MessageTraceContext`, tenant ID, source/target instance IDs, work-order ID,
 attempt number, and optional idempotency key. Replay can join source and receiver
 traces by message ID and causal parent without re-sending or re-delivering.
+
+## Escalation Events
+
+0.04-S3 adds deterministic escalation trace events:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `EscalationTriggered` | `escalation.triggered` | A configured escalation trigger reached its threshold and produced a decision. |
+| `ActionNeedsIntervention` | `action.needs_intervention` | The current action cannot proceed until operator/control-plane intervention occurs. |
+
+`EscalationTriggered` carries `EscalationContext` with:
+
+| Field | Purpose |
+| --- | --- |
+| `trigger` | Trigger category: verifier uncertainty, repeated adapter failure, approval timeout, quota pressure, policy expiry, or safety risk. |
+| `threshold` / `observed_count` | Configured threshold and observed occurrences for deterministic replay. |
+| `scope` | Scope evaluated by the policy: tenant, agent, run, action, or adapter. |
+| `decision` | `NoAction`, `Deny`, `Pause`, or `NeedsIntervention`. |
+| `tenant_id`, `agent_id`, `run_id` | Authority and run boundary. |
+| `action_id`, `action_name`, `adapter` | Action/adapter reference when applicable. |
+| `reason` | Stable reason code or summary. |
+| `evidence` | Structured verifier/runtime evidence; never includes secrets. |
+| `decided_at` | Decision timestamp. |
+
+Escalation events do not execute adapters, contact notification systems, create
+tickets, or implement circuit breakers. They are trace facts that make the local
+governance decision replayable and auditable.
 
 ## State Handoff Events
 

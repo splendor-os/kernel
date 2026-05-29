@@ -1,10 +1,10 @@
 use super::*;
 use splendor_store::{SqliteStateStore, StateData, StateMetadata, StateStore};
 use splendor_types::{
-    Action, AgentId, ContentHash, Feedback, MessageId, MessageTraceContext, Percept,
-    PerceptProvenance, Reward, RunId, SideEffectClass, SnapshotId, StateHandoffTraceContext,
-    StateReferenceMode, TenantId, TraceEvent, TraceEventId, TraceEventKind, TraceId,
-    VerificationResult,
+    Action, ActionId, AgentId, ContentHash, EscalationContext, EscalationDecision, EscalationScope,
+    EscalationTrigger, Feedback, MessageId, MessageTraceContext, Percept, PerceptProvenance,
+    Reward, RunId, SideEffectClass, SnapshotId, StateHandoffTraceContext, StateReferenceMode,
+    TenantId, TraceEvent, TraceEventId, TraceEventKind, TraceId, VerificationResult,
 };
 use tempfile::NamedTempFile;
 use time::OffsetDateTime;
@@ -775,6 +775,144 @@ fn replay_reconstructs_local_multi_agent_harness_deterministically() {
         + usize::from(lifecycles.contains(&"expired"))
         + isolation_denials.len();
     assert!(denial_failure_scenarios >= 3);
+}
+
+#[test]
+fn replay_reconstructs_escalation_without_side_effects() {
+    let trace_temp = NamedTempFile::new().expect("trace db");
+    let state_temp = NamedTempFile::new().expect("state db");
+    let trace_store = SqliteTraceStore::open(trace_temp.path()).expect("trace store");
+    let _state_store = SqliteStateStore::open(state_temp.path()).expect("state store");
+    let run_id = RunId::new();
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let action_id = ActionId::new();
+    let action = Action {
+        name: "quota".to_string(),
+        params: serde_json::json!({}),
+        side_effect_class: SideEffectClass::Network,
+        cost_estimate: None,
+        required_permissions: Vec::new(),
+        preconditions: Vec::new(),
+        postconditions: Vec::new(),
+    };
+    let verification = VerificationResult {
+        allowed: false,
+        reasons: vec!["max_actions_per_tick".to_string()],
+        artifacts: serde_json::json!({"quota": {"context": {"source": "quota_ledger"}}}),
+    };
+    let escalation = EscalationContext {
+        trigger: EscalationTrigger::QuotaPressure,
+        threshold: 1,
+        observed_count: 1,
+        scope: EscalationScope::Action,
+        decision: EscalationDecision::Pause,
+        tenant_id,
+        agent_id,
+        run_id: run_id.clone(),
+        action_id: Some(action_id),
+        action_name: Some("quota".to_string()),
+        adapter: Some("stub".to_string()),
+        reason: "quota pressure".to_string(),
+        evidence: serde_json::json!({"source": "test"}),
+        decided_at: OffsetDateTime::now_utc(),
+    };
+    let timestamp = OffsetDateTime::now_utc();
+    let events = vec![
+        TraceEvent::new(
+            run_id.clone(),
+            0,
+            timestamp,
+            TraceEventKind::LoopTickStarted { tick_id: 1 },
+        ),
+        TraceEvent::new(
+            run_id.clone(),
+            1,
+            timestamp,
+            TraceEventKind::ActionVerificationCompleted {
+                action: action.clone(),
+                result: verification.clone(),
+            },
+        ),
+        TraceEvent::new(
+            run_id.clone(),
+            2,
+            timestamp,
+            TraceEventKind::EscalationTriggered {
+                escalation: escalation.clone(),
+            },
+        ),
+        TraceEvent::new(
+            run_id.clone(),
+            3,
+            timestamp,
+            TraceEventKind::ActionNeedsIntervention {
+                action,
+                result: verification,
+            },
+        ),
+        TraceEvent::new(
+            run_id.clone(),
+            4,
+            timestamp,
+            TraceEventKind::OutcomeRecorded {
+                outcome: serde_json::json!({"needs_intervention": true}),
+                feedback: None,
+                reward: None,
+            },
+        ),
+        TraceEvent::new(
+            run_id.clone(),
+            5,
+            timestamp,
+            TraceEventKind::LoopTickCompleted {
+                tick_id: 1,
+                integrity: None,
+            },
+        ),
+    ];
+    for event in events {
+        TraceStore::append(
+            &trace_store,
+            &run_id.to_string(),
+            serde_json::to_value(event).unwrap(),
+        )
+        .expect("append");
+    }
+
+    let outputs = replay_outputs_from_stores(
+        &trace_temp.path().to_path_buf(),
+        &state_temp.path().to_path_buf(),
+        &run_id.to_string(),
+        None,
+        false,
+    )
+    .expect("replay");
+    let values = outputs
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("json values");
+    let tick = values
+        .iter()
+        .find(|value| value["type"] == "tick")
+        .expect("tick output");
+    assert_eq!(
+        tick["actions"][0]["status"].as_str(),
+        Some("needs_intervention")
+    );
+    assert_eq!(
+        tick["escalations"].as_array().expect("escalations").len(),
+        1
+    );
+    assert_eq!(
+        tick["escalations"][0]["side_effects_replayed"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        tick["escalations"][0]["escalation"]["trigger"].as_str(),
+        Some("QuotaPressure")
+    );
 }
 
 #[test]
