@@ -90,6 +90,10 @@
 
 ### Release hygiene
 
+- Added a multi-stage Docker deployment image and container smoke test for the
+  0.02-dev local runtime surface, including `splendorctl`, `splendor-daemon`, the
+  Python SDK, OCI labels, a non-root runtime user, and GitHub Container Registry
+  publish workflow support.
 - Updated the visible Rust CLI and Python SDK milestone labels to
   `Splendor0.02-dev` while keeping package versions on the existing development
   `0.1.0` line.

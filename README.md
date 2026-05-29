@@ -41,8 +41,40 @@ Current capabilities:
   without duplicating Rust runtime semantics.
 - Multi-agent replay causal graph reconstruction for messages, child run links,
   and isolation denials without re-executing side effects.
+- Docker deployment image for the 0.02-dev local runtime surface, including
+  `splendorctl`, `splendor-daemon`, the Python SDK, and local smoke-test
+  examples.
 - Example: `examples/single_agent_loop` with config-driven execution.
 - Unit and integration test coverage with CI gates.
+
+## Docker install
+
+Once the GitHub Container Registry package is public, install and verify the
+0.02-dev deployment image with:
+
+```bash
+docker pull ghcr.io/splendor-os/kernel:0.02-dev
+docker run --rm ghcr.io/splendor-os/kernel:0.02-dev
+```
+
+Expected shape:
+
+```text
+splendorctl 0.1.0 (Splendor0.02-dev)
+```
+
+For local builds and smoke tests from a checkout:
+
+```bash
+docker build -t splendor:0.02-dev .
+bash scripts/container-tests.sh
+```
+
+The Docker image is a local runtime deployment artifact. The included daemon
+binary remains explicit local-only insecure development mode and must not be
+published as an unauthenticated remote TCP service. See
+[`docs/deployment/docker.md`](docs/deployment/docker.md) for usage and security
+notes.
 
 ## Next steps
 
