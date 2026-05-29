@@ -31,6 +31,20 @@ fn escalation_policy_validates_schema_and_thresholds() {
 }
 
 #[test]
+fn empty_policy_and_decision_helpers_are_stable() {
+    let empty = EscalationPolicy::empty();
+    assert_eq!(empty.schema_version, ESCALATION_POLICY_SCHEMA_VERSION);
+    assert!(empty.rules.is_empty());
+    assert_eq!(EscalationPolicy::default(), empty);
+
+    assert!(EscalationDecision::Deny.denies());
+    assert!(!EscalationDecision::NoAction.denies());
+    assert!(!EscalationDecision::Deny.requires_intervention());
+    assert!(EscalationDecision::Pause.requires_intervention());
+    assert!(EscalationDecision::NeedsIntervention.requires_intervention());
+}
+
+#[test]
 fn matching_rule_requires_trigger_scope_and_threshold() {
     let policy = EscalationPolicy::with_rules(vec![EscalationRule::new(
         EscalationTrigger::RepeatedAdapterFailure,
@@ -104,4 +118,28 @@ fn escalation_context_preserves_required_trace_fields() {
     assert_eq!(context.action_id, Some(action_id));
     assert_eq!(context.action_name.as_deref(), Some("artifact.publish"));
     assert!(context.requires_intervention());
+}
+
+#[test]
+fn observation_builders_normalize_counts_and_preserve_adapter_reason() {
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let run_id = RunId::new();
+    let observation = EscalationObservation::new(
+        EscalationTrigger::SafetyRisk,
+        EscalationScope::Tenant,
+        tenant_id.clone(),
+        agent_id.clone(),
+        run_id.clone(),
+    )
+    .with_adapter("robotics")
+    .with_observed_count(0)
+    .with_reason("geofence violation");
+
+    assert_eq!(observation.tenant_id, tenant_id);
+    assert_eq!(observation.agent_id, agent_id);
+    assert_eq!(observation.run_id, run_id);
+    assert_eq!(observation.adapter.as_deref(), Some("robotics"));
+    assert_eq!(observation.observed_count, 1);
+    assert_eq!(observation.reason, "geofence violation");
 }

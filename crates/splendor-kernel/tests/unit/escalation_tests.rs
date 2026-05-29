@@ -49,6 +49,7 @@ fn verifier_uncertainty_becomes_needs_intervention_without_allowing() {
         EscalationDecision::NeedsIntervention,
     )]);
     let evaluator = EscalationEvaluator::new(policy);
+    assert_eq!(evaluator.policy().rules.len(), 1);
     let mut outcome = denied_outcome(
         "verifier_uncertain",
         serde_json::json!({"verifier": "policy_ttl", "uncertain": true}),
@@ -76,6 +77,52 @@ fn verifier_uncertainty_becomes_needs_intervention_without_allowing() {
 }
 
 #[test]
+fn unmatched_and_no_action_escalations_do_not_change_outcome_status() {
+    let policy = EscalationPolicy::with_rules(vec![EscalationRule::new(
+        EscalationTrigger::QuotaPressure,
+        EscalationScope::Action,
+        2,
+        EscalationDecision::NoAction,
+    )]);
+    let evaluator = EscalationEvaluator::new(policy);
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let run_id = RunId::new();
+    let action_id = ActionId::new();
+    let action = action(SideEffectClass::Network);
+    let mut outcome = denied_outcome(
+        "quota_pressure",
+        serde_json::json!({"quota": {"observed_count": 2}}),
+    );
+    let input = EscalationOutcomeInput {
+        tenant_id: &tenant_id,
+        agent_id: &agent_id,
+        run_id: &run_id,
+        action_id: &action_id,
+        action: &action,
+        adapter: Some("http"),
+        outcome: &outcome,
+    };
+
+    let escalations = evaluator.evaluate_outcome(&input);
+    assert_eq!(escalations.len(), 1);
+    assert!(!escalations_require_intervention(&escalations));
+    apply_escalation_to_outcome(&mut outcome, &escalations[0]);
+    assert_eq!(outcome.status, ActionStatus::Denied);
+    assert_eq!(outcome.error.as_deref(), Some("quota_pressure"));
+    assert!(outcome.verification.artifacts.get("escalation").is_some());
+
+    let unmatched = EscalationObservation::new(
+        EscalationTrigger::SafetyRisk,
+        EscalationScope::Action,
+        tenant_id,
+        agent_id,
+        run_id,
+    );
+    assert!(evaluator.evaluate(&unmatched).is_none());
+}
+
+#[test]
 fn repeated_adapter_failure_reaches_threshold_and_pauses() {
     let policy = EscalationPolicy::with_rules(vec![EscalationRule::new(
         EscalationTrigger::RepeatedAdapterFailure,
@@ -99,6 +146,58 @@ fn repeated_adapter_failure_reaches_threshold_and_pauses() {
     assert_eq!(escalation.observed_count, 3);
     assert_eq!(escalation.decision, EscalationDecision::Pause);
     assert!(escalation.requires_intervention());
+}
+
+#[test]
+fn failed_adapter_outcome_keeps_failed_status_after_escalation() {
+    let policy = EscalationPolicy::with_rules(vec![EscalationRule::new(
+        EscalationTrigger::RepeatedAdapterFailure,
+        EscalationScope::Adapter,
+        3,
+        EscalationDecision::Pause,
+    )]);
+    let evaluator = EscalationEvaluator::new(policy);
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let run_id = RunId::new();
+    let action_id = ActionId::new();
+    let action = action(SideEffectClass::Network);
+    let mut outcome = ActionOutcome {
+        action_id: action_id.clone(),
+        status: ActionStatus::Failed,
+        verification: VerificationResult {
+            allowed: true,
+            reasons: vec!["adapter_error".to_string()],
+            artifacts: serde_json::json!({"adapter": {"failure_count": 3}}),
+        },
+        post_verification: None,
+        output: None,
+        error: Some("adapter failed".to_string()),
+        completed_at: OffsetDateTime::now_utc(),
+    };
+    let input = EscalationOutcomeInput {
+        tenant_id: &tenant_id,
+        agent_id: &agent_id,
+        run_id: &run_id,
+        action_id: &action_id,
+        action: &action,
+        adapter: Some("http"),
+        outcome: &outcome,
+    };
+
+    let escalations = evaluator.evaluate_outcome(&input);
+    assert_eq!(escalations.len(), 1);
+    assert_eq!(escalations[0].observed_count, 3);
+    assert!(escalations_require_intervention(&escalations));
+    apply_escalation_to_outcome(&mut outcome, &escalations[0]);
+
+    assert_eq!(outcome.status, ActionStatus::Failed);
+    assert_eq!(outcome.error.as_deref(), Some("adapter failed"));
+    assert!(!outcome.verification.allowed);
+    assert!(outcome
+        .verification
+        .reasons
+        .contains(&"escalation:repeated_adapter_failure".to_string()));
 }
 
 #[test]
@@ -219,6 +318,53 @@ fn quota_pressure_observation_preserves_quota_evidence() {
     assert_eq!(
         quota.evidence["verification"]["reasons"][0],
         "max_actions_per_tick"
+    );
+}
+
+#[test]
+fn observations_consume_post_verification_uncertainty_and_nested_counts() {
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let run_id = RunId::new();
+    let action_id = ActionId::new();
+    let action = action(SideEffectClass::Network);
+    let outcome = ActionOutcome {
+        action_id: action_id.clone(),
+        status: ActionStatus::Denied,
+        verification: VerificationResult {
+            allowed: false,
+            reasons: Vec::new(),
+            artifacts: serde_json::json!({"nested": {"denial_count": 4}}),
+        },
+        post_verification: Some(VerificationResult {
+            allowed: false,
+            reasons: vec!["verifier_unavailable".to_string()],
+            artifacts: serde_json::Value::Null,
+        }),
+        output: None,
+        error: Some("postcondition verifier unavailable".to_string()),
+        completed_at: OffsetDateTime::now_utc(),
+    };
+    let input = EscalationOutcomeInput {
+        tenant_id: &tenant_id,
+        agent_id: &agent_id,
+        run_id: &run_id,
+        action_id: &action_id,
+        action: &action,
+        adapter: None,
+        outcome: &outcome,
+    };
+
+    let observations = observations_for_outcome(&input);
+    let uncertainty = observations
+        .iter()
+        .find(|observation| observation.trigger == EscalationTrigger::VerifierUncertainty)
+        .expect("verifier uncertainty");
+    assert_eq!(uncertainty.observed_count, 4);
+    assert!(uncertainty.adapter.is_none());
+    assert_eq!(
+        uncertainty.evidence["post_verification"]["reasons"][0],
+        "verifier_unavailable"
     );
 }
 
