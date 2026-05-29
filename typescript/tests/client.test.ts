@@ -47,6 +47,8 @@ const createRunRequest: CreateRunRequest = {
   allowed_adapters: ["daemon.local"],
   allowed_permissions: [],
   policy_actions: [],
+  policy_bundle_required: false,
+  policy_bundle: null,
   registered_actions: [],
   allowed_percept_schemas: ["splendor.percept.test.v1"],
   allowed_percept_sources: ["daemon-client-local"],

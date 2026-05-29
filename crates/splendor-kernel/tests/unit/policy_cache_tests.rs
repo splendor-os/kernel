@@ -65,6 +65,45 @@ fn request(side_effect_class: SideEffectClass) -> ActionRequest {
 }
 
 #[test]
+fn non_enforced_empty_cache_allows_policy_and_gateway_forwarding() {
+    let cache = PolicyCache::new(PolicyCacheConfig {
+        enforcement_required: false,
+    });
+
+    let decision = cache.verify_policy_invocation("legacy", OffsetDateTime::now_utc());
+    assert!(decision.verification.allowed);
+    assert_eq!(decision.trace_event, None);
+
+    let calls = Arc::new(Mutex::new(0));
+    let gateway = PolicyDistributionGateway::new(
+        Arc::new(CountingGateway {
+            calls: calls.clone(),
+        }),
+        Arc::new(cache),
+    );
+
+    let outcome = gateway
+        .submit(request(SideEffectClass::External))
+        .expect("gateway outcome");
+
+    assert_eq!(outcome.status, ActionStatus::Executed);
+    assert_eq!(*calls.lock().expect("calls lock"), 1);
+}
+
+#[test]
+fn missing_required_policy_fails_closed_before_policy_invocation() {
+    let cache = PolicyCache::new(PolicyCacheConfig {
+        enforcement_required: true,
+    });
+
+    let decision = cache.verify_policy_invocation("static", OffsetDateTime::now_utc());
+
+    assert!(!decision.verification.allowed);
+    assert_eq!(decision.verification.reasons, vec!["policy_unavailable"]);
+    assert_eq!(decision.trace_event, None);
+}
+
+#[test]
 fn missing_required_policy_fails_closed_before_inner_gateway() {
     let cache = PolicyCache::new(PolicyCacheConfig {
         enforcement_required: true,
@@ -113,6 +152,18 @@ fn expired_policy_blocks_policy_invocation_when_not_in_degraded_offline_mode() {
         decision.trace_event,
         Some(TraceEventKind::PolicyExpired { .. })
     ));
+}
+
+#[test]
+fn expired_policy_allows_policy_invocation_only_in_disconnected_degraded_mode() {
+    let now = OffsetDateTime::now_utc();
+    let cache = PolicyCache::with_bundle(bundle(now - Duration::minutes(1), true), now);
+    cache.set_disconnected(true);
+
+    let decision = cache.verify_policy_invocation("static", now);
+
+    assert!(decision.verification.allowed);
+    assert_eq!(decision.trace_event, None);
 }
 
 #[test]
@@ -173,4 +224,12 @@ fn policy_cache_sanitizes_trace_visible_reasons() {
         action.artifacts["reason"].as_str(),
         Some("policy_reason_redacted")
     );
+
+    let unspecified = PolicyCache::with_bundle(bundle(now + Duration::hours(1), true), now);
+    unspecified.revoke_current("   ");
+    let decision = unspecified.verify_policy_invocation("static", now);
+    let Some(TraceEventKind::PolicyRevoked { reason, .. }) = decision.trace_event else {
+        panic!("empty revocation should emit sanitized trace event");
+    };
+    assert_eq!(reason, "policy_reason_unspecified");
 }
