@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.04-dev — Governance workflows
+
+### Implemented primitives
+
+- Added the 0.04-S1 governance state model with typed approval, escalation,
+  intervention, circuit-breaker, and kill-switch IDs and schemas.
+- Added explicit governance scopes for global, fleet, node, instance, tenant,
+  agent, run, action, and adapter boundaries.
+- Added trace-ready governance transition and rejection records plus governance
+  `TraceEventKind` variants for lifecycle changes and invalid transition
+  rejection.
+- Added recursive validation for non-authoritative governance extension fields so
+  metadata cannot smuggle permissions, work orders, credentials, signatures, or
+  approval tokens.
+
+### Explicitly not included
+
+- No approval UI, enterprise IAM integration, approval verifier, escalation
+  engine, circuit-breaker enforcement, kill-switch propagation, external control
+  plane adapter, or side-effect path outside the Action Gateway.
+
 ## 0.03-dev — Resident nodes + fleet execution foundation
 
 ### Implemented primitives

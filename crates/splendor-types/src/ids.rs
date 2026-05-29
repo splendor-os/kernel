@@ -125,6 +125,31 @@ uuid_id! {
     MessageId
 }
 
+uuid_id! {
+    /// Unique identifier for an approval governance lifecycle object.
+    ApprovalId
+}
+
+uuid_id! {
+    /// Unique identifier for an escalation governance lifecycle object.
+    EscalationId
+}
+
+uuid_id! {
+    /// Unique identifier for an operator/runtime intervention lifecycle object.
+    InterventionId
+}
+
+uuid_id! {
+    /// Unique identifier for a scoped circuit-breaker governance object.
+    CircuitBreakerId
+}
+
+uuid_id! {
+    /// Unique identifier for a scoped kill-switch governance object.
+    KillSwitchId
+}
+
 /// Stable identifier for a signed work order.
 ///
 /// Work-order IDs are issued by external managers and may use prefixed strings
@@ -537,8 +562,13 @@ impl_uuid_identity!(
     InstanceId,
     TenantId,
     AgentId,
+    ApprovalId,
     RunId,
     ActionId,
+    CircuitBreakerId,
+    EscalationId,
+    InterventionId,
+    KillSwitchId,
     MessageId,
     TraceEventId,
 );

@@ -78,6 +78,13 @@ Local delegation events are emitted outside the tick ordering when a parent run
 creates, completes, fails, cancels, or rejects local child work. They are ordered
 by each affected run's sequence counter and carry explicit parent/child IDs.
 
+Governance events introduced in 0.04-S1 are emitted outside the tick body when
+approval, escalation, intervention, circuit-breaker, or kill-switch state changes
+or when an invalid governance transition is rejected. They are ordered by the
+same per-run sequence counter and carry explicit governance scope plus issuer and
+trace linkage. These events model state only; they do not grant approvals,
+execute adapters, trip live breakers, or propagate kill switches by themselves.
+
 0.02-S5 daemon lifecycle events are emitted outside the tick body but through the
 same run trace runtime, preserving monotonic sequence order before the next tick
 or replay inspection. Mutating daemon calls also emit `DaemonAudit` before the
@@ -130,7 +137,80 @@ mutation so caller attribution is persisted in the run trace.
 - `ChildRunCompleted { delegation: LocalDelegationTraceContext }`
 - `ChildRunFailed { delegation: LocalDelegationTraceContext, failure: TaskFailure }`
 - `ChildRunLinked { parent_run_id, child_run_id, parent_agent_id, child_agent_id, causal_parent, source_message_id }`
+- `ApprovalRequested { transition: GovernanceTransition }`
+- `ApprovalGranted { transition: GovernanceTransition }`
+- `ApprovalDenied { transition: GovernanceTransition }`
+- `ApprovalExpired { transition: GovernanceTransition }`
+- `ApprovalRevoked { transition: GovernanceTransition }`
+- `EscalationOpened { transition: GovernanceTransition }`
+- `EscalationResolved { transition: GovernanceTransition }`
+- `EscalationExpired { transition: GovernanceTransition }`
+- `EscalationRevoked { transition: GovernanceTransition }`
+- `InterventionRequested { transition: GovernanceTransition }`
+- `InterventionResolved { transition: GovernanceTransition }`
+- `InterventionCancelled { transition: GovernanceTransition }`
+- `InterventionExpired { transition: GovernanceTransition }`
+- `InterventionRevoked { transition: GovernanceTransition }`
+- `CircuitBreakerTripped { transition: GovernanceTransition }`
+- `CircuitBreakerCleared { transition: GovernanceTransition }`
+- `CircuitBreakerExpired { transition: GovernanceTransition }`
+- `CircuitBreakerRevoked { transition: GovernanceTransition }`
+- `KillSwitchActivated { transition: GovernanceTransition }`
+- `KillSwitchCleared { transition: GovernanceTransition }`
+- `KillSwitchExpired { transition: GovernanceTransition }`
+- `KillSwitchRevoked { transition: GovernanceTransition }`
+- `GovernanceTransitionRejected { rejection: GovernanceTransitionRejection }`
 - `LoopTickCompleted { tick_id, integrity: Option<TraceIntegrity> }`
+
+## Governance Events
+
+0.04-S1 adds governance event variants for explicit governance state changes:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `ApprovalRequested` | `approval.requested` | Approval request state was created. |
+| `ApprovalGranted` | `approval.granted` | Approval request transitioned to granted. |
+| `ApprovalDenied` | `approval.denied` | Approval request transitioned to denied. |
+| `ApprovalExpired` | `approval.expired` | Approval or grant expired explicitly. |
+| `ApprovalRevoked` | `approval.revoked` | Approval state was revoked explicitly. |
+| `EscalationOpened` | `escalation.opened` | Escalation state was opened. |
+| `EscalationResolved` | `escalation.resolved` | Escalation state was resolved. |
+| `EscalationExpired` | `escalation.expired` | Escalation state expired explicitly. |
+| `EscalationRevoked` | `escalation.revoked` | Escalation state was revoked explicitly. |
+| `InterventionRequested` | `intervention.requested` | Operator/runtime intervention was requested. |
+| `InterventionResolved` | `intervention.resolved` | Intervention was resolved. |
+| `InterventionCancelled` | `intervention.cancelled` | Intervention was cancelled. |
+| `InterventionExpired` | `intervention.expired` | Intervention state expired explicitly. |
+| `InterventionRevoked` | `intervention.revoked` | Intervention state was revoked explicitly. |
+| `CircuitBreakerTripped` | `circuit_breaker.tripped` | Circuit-breaker state became active/tripped. |
+| `CircuitBreakerCleared` | `circuit_breaker.cleared` | Circuit-breaker state was cleared. |
+| `CircuitBreakerExpired` | `circuit_breaker.expired` | Circuit-breaker state expired explicitly. |
+| `CircuitBreakerRevoked` | `circuit_breaker.revoked` | Circuit-breaker state was revoked explicitly. |
+| `KillSwitchActivated` | `kill_switch.activated` | Kill-switch state became active. |
+| `KillSwitchCleared` | `kill_switch.cleared` | Kill-switch state was cleared. |
+| `KillSwitchExpired` | `kill_switch.expired` | Kill-switch state expired explicitly. |
+| `KillSwitchRevoked` | `kill_switch.revoked` | Kill-switch state was revoked explicitly. |
+| `GovernanceTransitionRejected` | `governance.transition_rejected` | Invalid transition failed closed and was recorded for audit/replay. |
+
+Governance success events carry `GovernanceTransition`:
+
+| Field | Purpose |
+| --- | --- |
+| `schema_version` | `splendor.governance_state.v1`. |
+| `object` | Typed governance object identity (`approval_id`, `escalation_id`, `intervention_id`, `circuit_breaker_id`, or `kill_switch_id`). |
+| `scope` | Tenant/agent/run/action/adapter/node/instance/fleet/global scope. |
+| `from` | Previous state or omitted for creation. |
+| `to` | Target state. |
+| `occurred_at` | Transition timestamp. |
+| `reason` | Sanitized reason. |
+| `issuer` | `issuer_id` and source attribution. |
+| `trace` | Causal trace linkage. |
+| `extensions` | Optional non-authoritative metadata. |
+
+`GovernanceTransitionRejected` carries `GovernanceTransitionRejection` with the
+same object, scope, issuer, and trace linkage plus `attempted`, `from`,
+`rejected_at`, and a stable rejection reason. Rejections do not become implicit
+allows and do not execute side effects.
 
 ## Message Events
 
