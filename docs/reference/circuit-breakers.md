@@ -46,7 +46,7 @@ tenant, agent, run, action, trace, node, instance, or fleet ID.
 | `agent` | `agent_id` on the action request. |
 | `adapter` | Resolved adapter ID after adapter registration lookup. |
 | `action` | Action name. |
-| `action_class` | Action side-effect class (`read_only`, `filesystem`, `network`, `external`, or custom). |
+| `action_class` | Effective action side-effect class (`read_only`, `filesystem`, `network`, `external`, or `custom:<name>`). |
 
 Fleet, node, and instance scoped breakers require the gateway runtime identity to
 be populated. If a matching determination cannot be made because that identity is
@@ -63,11 +63,15 @@ Evaluation order for an action is:
 
 1. Validate action, tenant, agent, and run identity.
 2. Resolve the registered adapter and reject adapter mismatches.
-3. Evaluate tripped circuit breakers.
-4. Evaluate tenant policy and preconditions.
-5. Evaluate quota.
-6. Execute the adapter only if all previous checks allow.
-7. Evaluate postconditions.
+3. Normalize breaker evaluation to the effective side-effect class for known
+   adapter IDs (`filesystem` and `http`) so action-class breakers cannot be
+   bypassed by a caller-declared downgrade.
+4. Evaluate tripped circuit breakers.
+5. Reject declared/effective side-effect class mismatches for known adapters.
+6. Evaluate tenant policy and preconditions.
+7. Evaluate quota.
+8. Execute the adapter only if all previous checks allow.
+9. Evaluate postconditions.
 
 Denied breaker outcomes use:
 
@@ -112,8 +116,22 @@ circuit_breakers:
 ```
 
 `scope: global` does not require `value`. All other scopes require `value`.
-Configured `state: cleared` breakers are parsed but do not block work. Configured
-`state: tripped` breakers block matching work.
+Configured `state: cleared` breakers require explicit non-empty `authorized_by`
+and do not block work. Configured `state: tripped` breakers block matching work;
+when `authorized_by` is omitted for a tripped local config breaker, the trace
+authority defaults to `local-config:circuit-breakers` because trips only remove
+authority.
+
+For local config actions, `side_effect_class` is fail-closed:
+
+- known filesystem and HTTP adapters derive their effective classes from adapter
+  identity (`filesystem` and `network` respectively);
+- a declared class that conflicts with the adapter-derived class is rejected;
+- unknown class strings are rejected unless they use the explicit `custom:<name>`
+  form.
+
+This prevents a side-effectful action from bypassing an `action_class` breaker by
+omitting, misspelling, or downgrading its class to `read_only`.
 
 Before registering local agents, `splendorctl run` evaluates global, fleet, node,
 and instance breakers as a new-work admission check. Matching runtime-scope
@@ -177,7 +195,9 @@ the denied side effect.
 
 - Invalid or empty breaker IDs are rejected by `CircuitBreakerId::try_new`.
 - Empty reasons are rejected when building breaker objects or trace contexts.
-- Missing `authorized_by` is rejected for explicit trip/clear trace contexts.
+- Missing `authorized_by` is rejected for explicit clear/reset trace contexts.
+- Unknown or adapter-conflicting local action `side_effect_class` values are
+  rejected instead of defaulting to read-only.
 - Missing runtime `fleet_id`, `node_id`, or `instance_id` for a tripped
   runtime-scoped breaker fails closed with `circuit_breaker_scope_unknown`.
 - A breaker denial returns `ActionStatus::Denied`; adapters are not called.

@@ -86,6 +86,9 @@ state or mutate state graph heads.
 
 - Breaker evaluation occurs after adapter ID resolution and before tenant policy,
   quota, and adapter execution.
+- Action-class breaker evaluation uses the effective side-effect class for known
+  adapter IDs (`filesystem` and `http`) rather than trusting a caller-declared
+  downgrade.
 - Adapter, tenant, agent, action, and action-class breakers deny matching action
   requests.
 - In the local config reference path, tenant and agent breakers are enforced at
@@ -112,6 +115,10 @@ and causal-graph replay output.
 - Unsupported local config scopes/states fail config loading.
 - Runtime-scoped breaker uncertainty denies instead of allowing.
 - Adapter execution count remains zero for breaker-denied actions.
+- Local config action classes fail closed: unknown class strings and
+  adapter-conflicting downgrades are rejected before adapter execution.
+- Cleared local config breakers require explicit non-empty `authorized_by` rather
+  than default authority attribution.
 
 ## Test evidence
 

@@ -1248,7 +1248,8 @@ impl Policy for ConfigPolicy {
                 let candidates = actions
                     .iter()
                     .map(|action| build_action_candidate(action, None))
-                    .collect();
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(splendor_kernel::LoopError::Policy)?;
                 let next_state = next_state.as_deref().unwrap_or("").as_bytes().to_vec();
                 Ok(PolicyDecision::new(
                     candidates,
@@ -1264,7 +1265,10 @@ impl Policy for ConfigPolicy {
                 let candidates = action
                     .as_ref()
                     .as_ref()
-                    .map(|config| vec![build_action_candidate(config, Some(counter as u64))])
+                    .map(|config| build_action_candidate(config, Some(counter as u64)))
+                    .transpose()
+                    .map_err(splendor_kernel::LoopError::Policy)?
+                    .map(|candidate| vec![candidate])
                     .unwrap_or_default();
                 Ok(PolicyDecision::new(
                     candidates,
@@ -1803,11 +1807,13 @@ fn build_circuit_breaker_controls(
         let mut control =
             CircuitBreaker::tripped(id, scope, breaker.reason.clone(), OffsetDateTime::now_utc())
                 .map_err(|error| error.to_string())?;
-        let authorized_by = breaker
-            .authorized_by
-            .as_deref()
-            .unwrap_or("local-config:circuit-breakers");
         let trace_context = if state == "cleared" {
+            let authorized_by = breaker.authorized_by.as_deref().ok_or_else(|| {
+                format!(
+                    "circuit breaker '{}' in cleared state requires authorized_by",
+                    breaker.id
+                )
+            })?;
             let (cleared, trace_context) = control
                 .clear_with_authority(
                     breaker.reason.clone(),
@@ -1818,6 +1824,10 @@ fn build_circuit_breaker_controls(
             control = cleared;
             trace_context
         } else {
+            let authorized_by = breaker
+                .authorized_by
+                .as_deref()
+                .unwrap_or("local-config:circuit-breakers");
             control
                 .trip_trace_context(authorized_by, OffsetDateTime::now_utc())
                 .map_err(|error| error.to_string())?
@@ -1906,20 +1916,22 @@ fn collect_action_configs(config: &RunConfig) -> Result<Vec<ActionConfig>, Strin
             }
         }
     }
+    for action in &actions {
+        validated_side_effect_class(action)?;
+    }
     Ok(actions)
 }
 
-fn build_action_candidate(config: &ActionConfig, counter: Option<u64>) -> ActionCandidate {
+fn build_action_candidate(
+    config: &ActionConfig,
+    counter: Option<u64>,
+) -> Result<ActionCandidate, String> {
     let params = if let Some(counter) = counter {
         substitute_counter(&config.params, counter)
     } else {
         config.params.clone()
     };
-    let side_effect_class = config
-        .side_effect_class
-        .as_deref()
-        .map(parse_side_effect_class)
-        .unwrap_or(SideEffectClass::ReadOnly);
+    let side_effect_class = validated_side_effect_class(config)?;
     let action = Action {
         name: config.name.clone(),
         params,
@@ -1949,7 +1961,37 @@ fn build_action_candidate(config: &ActionConfig, counter: Option<u64>) -> Action
     if let Some(preconditions) = &config.satisfied_preconditions {
         candidate = candidate.with_satisfied_preconditions(preconditions.clone());
     }
-    candidate
+    Ok(candidate)
+}
+
+fn validated_side_effect_class(config: &ActionConfig) -> Result<SideEffectClass, String> {
+    let declared = config
+        .side_effect_class
+        .as_deref()
+        .map(parse_side_effect_class)
+        .transpose()?;
+    let adapter_derived = trusted_adapter_side_effect_class(config.adapter.as_deref());
+    if let (Some(declared), Some(derived)) = (&declared, &adapter_derived) {
+        if declared != derived {
+            return Err(format!(
+                "side_effect_class '{}' conflicts with adapter-derived class '{}' for action '{}'",
+                side_effect_class_name(declared),
+                side_effect_class_name(derived),
+                config.name
+            ));
+        }
+    }
+    Ok(adapter_derived
+        .or(declared)
+        .unwrap_or(SideEffectClass::ReadOnly))
+}
+
+fn trusted_adapter_side_effect_class(adapter: Option<&str>) -> Option<SideEffectClass> {
+    match adapter {
+        Some("filesystem") => Some(SideEffectClass::Filesystem),
+        Some("http") => Some(SideEffectClass::Network),
+        _ => None,
+    }
 }
 
 fn substitute_counter(value: &serde_json::Value, counter: u64) -> serde_json::Value {
@@ -1974,13 +2016,32 @@ fn substitute_counter(value: &serde_json::Value, counter: u64) -> serde_json::Va
     }
 }
 
-fn parse_side_effect_class(value: &str) -> SideEffectClass {
+fn parse_side_effect_class(value: &str) -> Result<SideEffectClass, String> {
     match value {
-        "filesystem" => SideEffectClass::Filesystem,
-        "network" => SideEffectClass::Network,
-        "read_only" => SideEffectClass::ReadOnly,
-        "external" => SideEffectClass::External,
-        _ => SideEffectClass::ReadOnly,
+        "filesystem" => Ok(SideEffectClass::Filesystem),
+        "network" => Ok(SideEffectClass::Network),
+        "read_only" => Ok(SideEffectClass::ReadOnly),
+        "external" => Ok(SideEffectClass::External),
+        other
+            if other
+                .strip_prefix("custom:")
+                .is_some_and(|value| !value.is_empty()) =>
+        {
+            Ok(SideEffectClass::Custom(
+                other.trim_start_matches("custom:").to_string(),
+            ))
+        }
+        other => Err(format!("Unsupported side_effect_class: {other}")),
+    }
+}
+
+fn side_effect_class_name(value: &SideEffectClass) -> String {
+    match value {
+        SideEffectClass::ReadOnly => "read_only".to_string(),
+        SideEffectClass::Filesystem => "filesystem".to_string(),
+        SideEffectClass::Network => "network".to_string(),
+        SideEffectClass::External => "external".to_string(),
+        SideEffectClass::Custom(value) => format!("custom:{value}"),
     }
 }
 

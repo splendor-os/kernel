@@ -1332,6 +1332,17 @@ fn circuit_breaker_config_builds_trace_contexts_and_validates_state() {
     }]))
     .expect_err("unsupported state");
     assert!(error.contains("Unsupported circuit breaker state"));
+
+    let error = build_circuit_breaker_trace_contexts(Some(&[CircuitBreakerConfig {
+        id: "cb_clear_without_authority".to_string(),
+        scope: "adapter".to_string(),
+        value: Some("filesystem".to_string()),
+        reason: "resolved without authority".to_string(),
+        state: Some("cleared".to_string()),
+        authorized_by: None,
+    }]))
+    .expect_err("cleared breaker requires authority");
+    assert!(error.contains("requires authorized_by"));
 }
 
 #[test]
@@ -1882,7 +1893,7 @@ fn build_gateway_rejects_missing_adapter() {
                     name: "noop".to_string(),
                     adapter: Some("filesystem".to_string()),
                     params: serde_json::json!({}),
-                    side_effect_class: Some("read_only".to_string()),
+                    side_effect_class: Some("filesystem".to_string()),
                     required_permissions: None,
                     preconditions: None,
                     postconditions: None,
@@ -2008,7 +2019,7 @@ fn build_action_candidate_applies_usage() {
         }),
         satisfied_preconditions: Some(vec!["ready".to_string()]),
     };
-    let candidate = build_action_candidate(&config, None);
+    let candidate = build_action_candidate(&config, None).expect("candidate");
     assert_eq!(candidate.adapter.as_deref(), Some("filesystem"));
     assert_eq!(
         candidate.action.side_effect_class,
@@ -2544,16 +2555,46 @@ fn build_action_candidate_defaults_side_effect_class() {
         name: "noop".to_string(),
         adapter: None,
         params: serde_json::json!({}),
-        side_effect_class: Some("unknown".to_string()),
+        side_effect_class: None,
         required_permissions: None,
         preconditions: None,
         postconditions: None,
         usage: None,
         satisfied_preconditions: None,
     };
-    let candidate = build_action_candidate(&config, None);
+    let candidate = build_action_candidate(&config, None).expect("candidate");
     assert_eq!(
         candidate.action.side_effect_class,
         SideEffectClass::ReadOnly
+    );
+}
+
+#[test]
+fn build_action_candidate_rejects_malformed_or_downgraded_side_effect_class() {
+    let mut config = ActionConfig {
+        name: "write_file".to_string(),
+        adapter: Some("filesystem".to_string()),
+        params: serde_json::json!({"path": "file", "contents": "hi"}),
+        side_effect_class: Some("read_only".to_string()),
+        required_permissions: None,
+        preconditions: None,
+        postconditions: None,
+        usage: None,
+        satisfied_preconditions: None,
+    };
+
+    let error = build_action_candidate(&config, None).expect_err("adapter downgrade rejected");
+    assert!(error.contains("conflicts with adapter-derived class"));
+
+    config.adapter = None;
+    config.side_effect_class = Some("filesytem".to_string());
+    let error = build_action_candidate(&config, None).expect_err("unknown class rejected");
+    assert!(error.contains("Unsupported side_effect_class"));
+
+    config.side_effect_class = Some("custom:domain".to_string());
+    let candidate = build_action_candidate(&config, None).expect("custom class");
+    assert_eq!(
+        candidate.action.side_effect_class,
+        SideEffectClass::Custom("domain".to_string())
     );
 }

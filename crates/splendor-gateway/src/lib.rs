@@ -36,7 +36,7 @@
 use serde::{Deserialize, Serialize};
 use splendor_types::{
     Action, AgentId, CircuitBreaker, CircuitBreakerScope, IdentityValidationError, QuotaUsage,
-    RunId, RuntimeIdentityContext, TenantId, VerificationResult,
+    RunId, RuntimeIdentityContext, SideEffectClass, TenantId, VerificationResult,
 };
 use std::collections::HashMap;
 use std::future::{ready, Future, Ready};
@@ -380,13 +380,20 @@ impl ActionGateway for VerifiedActionGateway {
             .as_deref()
             .unwrap_or(registration.adapter_id.as_str());
 
+        let breaker_action = action_request_with_effective_side_effect_class(&action, adapter_id);
         let breaker_result = self.circuit_breaker_evaluator.verify_action(
-            &action,
+            &breaker_action,
             Some(adapter_id),
             &self.runtime_identity,
         );
         if !breaker_result.allowed {
             let mut verification = combine_verifications([("circuit_breaker", breaker_result)]);
+            attach_request_context(&mut verification, &action);
+            return Ok(denied_outcome(action.action_id, verification));
+        }
+
+        if let Some(verification) = verify_declared_side_effect_class(&action, adapter_id) {
+            let mut verification = combine_verifications([("side_effect_class", verification)]);
             attach_request_context(&mut verification, &action);
             return Ok(denied_outcome(action.action_id, verification));
         }
@@ -620,6 +627,55 @@ fn evaluate_breakers(
         }
     }
     VerificationResult::allow()
+}
+
+fn action_request_with_effective_side_effect_class(
+    action: &ActionRequest,
+    adapter: &str,
+) -> ActionRequest {
+    let Some(effective_class) = trusted_adapter_side_effect_class(adapter) else {
+        return action.clone();
+    };
+    let mut normalized = action.clone();
+    normalized.action.side_effect_class = effective_class;
+    normalized
+}
+
+fn verify_declared_side_effect_class(
+    action: &ActionRequest,
+    adapter: &str,
+) -> Option<VerificationResult> {
+    let effective_class = trusted_adapter_side_effect_class(adapter)?;
+    if action.action.side_effect_class == effective_class {
+        return None;
+    }
+    Some(VerificationResult {
+        allowed: false,
+        reasons: vec!["side_effect_class_mismatch".to_string()],
+        artifacts: serde_json::json!({
+            "adapter": adapter,
+            "declared_side_effect_class": side_effect_class_label(&action.action.side_effect_class),
+            "effective_side_effect_class": side_effect_class_label(&effective_class),
+        }),
+    })
+}
+
+fn trusted_adapter_side_effect_class(adapter: &str) -> Option<SideEffectClass> {
+    match adapter {
+        "filesystem" => Some(SideEffectClass::Filesystem),
+        "http" => Some(SideEffectClass::Network),
+        _ => None,
+    }
+}
+
+fn side_effect_class_label(value: &SideEffectClass) -> String {
+    match value {
+        SideEffectClass::ReadOnly => "read_only".to_string(),
+        SideEffectClass::Filesystem => "filesystem".to_string(),
+        SideEffectClass::Network => "network".to_string(),
+        SideEffectClass::External => "external".to_string(),
+        SideEffectClass::Custom(value) => format!("custom:{value}"),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

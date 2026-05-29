@@ -480,6 +480,65 @@ fn action_class_breaker_denies_matching_side_effect_class() {
 }
 
 #[test]
+fn action_class_breaker_uses_effective_adapter_side_effect_class() {
+    let tenant_access = Arc::new(TestTenantAccess {
+        policy: VerificationResult::allow(),
+        quota: VerificationResult::allow(),
+    });
+    let mut gateway = VerifiedActionGateway::new(tenant_access);
+    let adapter = Arc::new(CountingAdapter::default());
+    gateway.register_adapter("noop", "filesystem", adapter.clone());
+    let breaker = CircuitBreaker::tripped(
+        CircuitBreakerId::try_new("cb_filesystem_effective").expect("id"),
+        CircuitBreakerScope::ActionClass(SideEffectClass::Filesystem),
+        "filesystem disabled",
+        OffsetDateTime::now_utc(),
+    )
+    .expect("breaker");
+    gateway
+        .set_circuit_breaker_evaluator(Arc::new(StaticCircuitBreakerEvaluator::new(vec![breaker])));
+
+    let mut request = base_request();
+    request.action.side_effect_class = SideEffectClass::ReadOnly;
+    request.adapter = Some("filesystem".to_string());
+    let outcome = gateway.submit(request).expect("outcome");
+
+    assert!(matches!(outcome.status, ActionStatus::Denied));
+    assert!(outcome
+        .verification
+        .reasons
+        .contains(&"circuit_breaker_tripped".to_string()));
+    assert_eq!(*adapter.calls.lock().expect("calls lock"), 0);
+}
+
+#[test]
+fn gateway_denies_adapter_side_effect_class_downgrade_without_breaker() {
+    let tenant_access = Arc::new(TestTenantAccess {
+        policy: VerificationResult::allow(),
+        quota: VerificationResult::allow(),
+    });
+    let mut gateway = VerifiedActionGateway::new(tenant_access);
+    let adapter = Arc::new(CountingAdapter::default());
+    gateway.register_adapter("noop", "http", adapter.clone());
+
+    let mut request = base_request();
+    request.action.side_effect_class = SideEffectClass::ReadOnly;
+    request.adapter = Some("http".to_string());
+    let outcome = gateway.submit(request).expect("outcome");
+
+    assert!(matches!(outcome.status, ActionStatus::Denied));
+    assert!(outcome
+        .verification
+        .reasons
+        .contains(&"side_effect_class_mismatch".to_string()));
+    assert_eq!(
+        outcome.verification.artifacts["side_effect_class"]["effective_side_effect_class"],
+        "network"
+    );
+    assert_eq!(*adapter.calls.lock().expect("calls lock"), 0);
+}
+
+#[test]
 fn node_and_instance_breakers_gate_runtime_admission() {
     let node_id = NodeId::new();
     let instance_id = InstanceId::new();
