@@ -104,3 +104,18 @@ The Docker publish workflow emits:
 
 Use an immutable `sha-<commit>` tag for reproducible automation and the milestone
 tag for human release smoke tests.
+
+## GHCR package visibility
+
+The publish workflow builds and pushes with GitHub's default `GITHUB_TOKEN`, but
+package visibility changes require package-admin authority that the default token
+does not have. For first-time public installs, a release administrator must either:
+
+- set `ghcr.io/splendor-os/kernel` to public in GitHub's package settings; or
+- configure a `GHCR_VISIBILITY_TOKEN` repository/organization secret from a
+  package admin with package read/write authority so the workflow can make the
+  package public after publishing.
+
+If that secret is not configured, the publish workflow records a notice and stays
+green after the image is pushed. Unauthenticated `docker pull` commands remain
+blocked until the GHCR package visibility is made public.

@@ -88,11 +88,22 @@ jobs:
             VCS_REF=${{ github.sha }}
             BUILD_DATE=${{ steps.build-date.outputs.created }}
 
-      - name: Make GHCR package public
+      - name: Optionally make GHCR package public
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GHCR_VISIBILITY_TOKEN }}
           PACKAGE_NAME: ${{ github.event.repository.name }}
         run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::notice title=GHCR visibility not changed::No GHCR_VISIBILITY_TOKEN secret is configured; set the package visibility manually for public unauthenticated pulls."
+            {
+              echo "### GHCR package visibility"
+              echo
+              echo "No \`GHCR_VISIBILITY_TOKEN\` secret is configured, so this workflow did not change package visibility."
+              echo "Publishing still completed, but first-time public pulls require a package admin to make the GHCR package public manually or configure that secret."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
           gh api --method PATCH \
             "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/${PACKAGE_NAME}/visibility" \
             -f visibility=public
