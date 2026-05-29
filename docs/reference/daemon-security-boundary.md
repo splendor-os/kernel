@@ -89,6 +89,7 @@ The reference `EndpointScope` values map to daemon operations:
 | `splendor.messages.send` | send a typed message across a remote instance boundary |
 | `splendor.health.read` | read daemon health |
 | `splendor.capabilities.read` | read daemon capabilities |
+| `splendor.policies.sync` | sync or mark failure for a run-scoped policy bundle cache |
 | `splendor.nodes.register` | register a node in the 0.03-S2 registry |
 | `splendor.instances.register` | register an instance under a node |
 | `splendor.nodes.heartbeat` | record node health heartbeat |

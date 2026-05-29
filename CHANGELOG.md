@@ -20,13 +20,18 @@
 - Added 0.04-S4 circuit-breaker schemas, scoped gateway enforcement, local
   `splendorctl run` config support, trip/clear trace event variants, and
   inspect-only replay output for breaker-denied actions.
+- Added 0.04-S5 central policy distribution with signed `PolicyBundle` envelopes,
+  daemon policy sync, local policy cache/degraded mode, policy TTL/revocation
+  denial, trace-safe policy metadata, and Rust/TypeScript/OpenAPI contract
+  coverage.
 
 ### Explicitly not included
 
 - No approval UI, enterprise IAM integration, broad workflow language, ticketing
   integration, notification platform, approval workflow engine, escalation
-  automation, central policy distribution, kill-switch propagation, external
-  control-plane adapter, monitoring platform, UI dashboard, or side-effect path
+  automation, kill-switch propagation, external control-plane adapter,
+  monitoring platform, UI dashboard, enterprise policy authoring product,
+  global policy consensus, production PKI/key management, or side-effect path
   outside the Action Gateway.
 
 ## 0.03-dev — Resident nodes + fleet execution foundation

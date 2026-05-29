@@ -106,6 +106,7 @@ fn endpoint_scope_labels_are_canonical() {
             EndpointScope::CapabilitiesRead,
             "splendor.capabilities.read",
         ),
+        (EndpointScope::PoliciesSync, "splendor.policies.sync"),
     ];
 
     for (scope, label) in cases {
@@ -156,6 +157,7 @@ fn endpoint_scope_strings_cover_daemon_and_registry_surface() {
             EndpointScope::CapabilitiesRead,
             "splendor.capabilities.read",
         ),
+        (EndpointScope::PoliciesSync, "splendor.policies.sync"),
         (EndpointScope::NodesRegister, "splendor.nodes.register"),
         (
             EndpointScope::InstancesRegister,

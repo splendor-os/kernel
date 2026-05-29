@@ -4,15 +4,16 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use splendor_daemon::{
     router, ApiErrorBody, AppendPerceptRequest, CreateRunRequest, CreateRunResponse,
-    DaemonActionCandidate, DaemonConfig, DaemonState, LifecycleRequest, RegisteredAction,
-    ReplayResponse, RunInspectResponse, RunStatus, StateHeadResponse, SubmitActionRequest,
-    TickResponse, TracePageResponse,
+    DaemonActionCandidate, DaemonConfig, DaemonState, LifecycleRequest, PolicySyncRequest,
+    PolicySyncResponse, RegisteredAction, ReplayResponse, RunInspectResponse, RunStatus,
+    StateHeadResponse, SubmitActionRequest, TickResponse, TracePageResponse,
 };
 use splendor_types::{
     Action, AgentId, ApprovalDecision, ApprovalEvidence, ApprovalId, ApprovalPolicy,
     AuditAttribution, ClientPrincipal, CredentialAudience, EndpointScope, Percept,
-    PerceptProvenance, QuotaUsage, RevocationStatus, RunId, SideEffectClass, TenantId, TraceEvent,
-    TraceEventKind, WorkOrderAuthorization, WorkOrderSignature,
+    PerceptProvenance, PolicyBundle, PolicyBundleEnvelope, PolicyBundleId, PolicyDegradedMode,
+    QuotaUsage, RevocationStatus, RunId, SideEffectClass, TenantId, TraceEvent, TraceEventKind,
+    WorkOrderAuthorization, WorkOrderSignature, POLICY_BUNDLE_SCHEMA_VERSION,
 };
 use time::OffsetDateTime;
 use tower::ServiceExt;
@@ -95,6 +96,45 @@ fn approval_evidence(
     .with_adapter("daemon.local")
 }
 
+fn read_only_action(name: &str) -> Action {
+    Action {
+        name: name.to_string(),
+        params: json!({"ok": true}),
+        side_effect_class: SideEffectClass::ReadOnly,
+        cost_estimate: None,
+        required_permissions: Vec::new(),
+        preconditions: Vec::new(),
+        postconditions: Vec::new(),
+    }
+}
+
+fn signed_policy_bundle(
+    tenant_id: TenantId,
+    agent_id: Option<AgentId>,
+    revocation: RevocationStatus,
+) -> PolicyBundleEnvelope {
+    let now = OffsetDateTime::now_utc();
+    let bundle = PolicyBundle {
+        schema_version: POLICY_BUNDLE_SCHEMA_VERSION.to_string(),
+        policy_bundle_id: PolicyBundleId::try_new("pol_daemon").expect("policy bundle id"),
+        version: "v1".to_string(),
+        tenant_id,
+        agent_id,
+        issued_at: now - time::Duration::minutes(1),
+        expires_at: now + time::Duration::hours(1),
+        revocation,
+        degraded_mode: PolicyDegradedMode {
+            allow_low_risk_cached: true,
+        },
+    };
+    PolicyBundleEnvelope::signed_with_shared_secret(
+        bundle,
+        "policy-local-key",
+        b"splendor-local-policy-secret",
+    )
+    .expect("signed policy bundle")
+}
+
 fn percept(schema: &str) -> Percept {
     Percept {
         schema: schema.to_string(),
@@ -123,6 +163,8 @@ fn create_request(
         allowed_adapters: vec!["daemon.local".to_string()],
         allowed_permissions: Vec::new(),
         policy_actions,
+        policy_bundle_required: false,
+        policy_bundle: None,
         registered_actions,
         approval_policies: Vec::new(),
         allowed_percept_schemas: vec!["splendor.percept.test.v1".to_string()],
@@ -424,6 +466,7 @@ async fn approval_required_run_pauses_and_valid_grant_resumes_execution() {
         Vec::new(),
     );
     create.approval_policies = vec![approval_policy(&tenant_id, &agent_id, "allowed_action")];
+
     let (status, created): (StatusCode, CreateRunResponse) = call_json(
         app.clone(),
         Method::POST,
@@ -576,6 +619,267 @@ async fn approval_required_run_pauses_and_valid_grant_resumes_execution() {
         .approval_events
         .iter()
         .any(|event| event.lifecycle == "granted"));
+}
+
+#[tokio::test]
+async fn policy_bundle_metadata_and_sync_failure_are_trace_visible() {
+    let app = router(DaemonState::local_dev());
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let mut create = create_request(
+        tenant_id.clone(),
+        agent_id.clone(),
+        vec![DaemonActionCandidate {
+            action: read_only_action("allowed_action"),
+            adapter: Some("daemon.local".to_string()),
+            quota_usage: None,
+            satisfied_preconditions: Vec::new(),
+        }],
+        Vec::new(),
+    );
+    create.policy_bundle_required = true;
+    create.policy_bundle = Some(signed_policy_bundle(
+        tenant_id.clone(),
+        Some(agent_id.clone()),
+        RevocationStatus::Active,
+    ));
+
+    let (status, created): (StatusCode, CreateRunResponse) = call_json(
+        app.clone(),
+        Method::POST,
+        "/runs",
+        serde_json::to_value(create).expect("create request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, inspected): (StatusCode, RunInspectResponse) = call_empty(
+        app.clone(),
+        Method::GET,
+        &format!("/runs/{}", created.run_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        inspected
+            .policy_bundle
+            .as_ref()
+            .expect("policy bundle")
+            .policy_bundle_id
+            .as_str(),
+        "pol_daemon"
+    );
+
+    let sync = PolicySyncRequest {
+        credential: None,
+        audit_attribution: Some(attribution()),
+        policy_bundle: None,
+        sync_error: Some("central unavailable token=raw-secret".to_string()),
+        disconnected: Some(true),
+    };
+    let (status, synced): (StatusCode, PolicySyncResponse) = call_json(
+        app.clone(),
+        Method::POST,
+        &format!("/runs/{}/policies/sync", created.run_id),
+        serde_json::to_value(sync).expect("policy sync request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!synced.accepted);
+    assert!(synced.cache_status.disconnected);
+    assert_eq!(
+        synced.cache_status.last_sync_failure.as_deref(),
+        Some("policy_reason_redacted")
+    );
+
+    let (status, traces): (StatusCode, TracePageResponse) = call_empty(
+        app,
+        Method::GET,
+        &format!("/runs/{}/traces?redaction_policy=none", created.run_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let saw_policy_bundle = traces.records.iter().any(|record| {
+        serde_json::from_value::<TraceEvent>(record.payload.clone())
+            .map(|event| matches!(event.kind, TraceEventKind::PolicyBundleAccepted { .. }))
+            .unwrap_or(false)
+    });
+    let saw_sync_failure = traces.records.iter().any(|record| {
+        serde_json::from_value::<TraceEvent>(record.payload.clone())
+            .map(|event| matches!(event.kind, TraceEventKind::PolicySyncFailed { .. }))
+            .unwrap_or(false)
+    });
+    assert!(saw_policy_bundle);
+    assert!(saw_sync_failure);
+    let serialized = serde_json::to_string(&traces.records).expect("serialized traces");
+    assert!(!serialized.contains("raw-secret"));
+    assert!(!serialized.contains("token="));
+}
+
+#[tokio::test]
+async fn invalid_policy_bundle_is_rejected_before_run_policy_invocation() {
+    let app = router(DaemonState::local_dev());
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let mut create = create_request(tenant_id.clone(), agent_id.clone(), Vec::new(), Vec::new());
+    create.policy_bundle_required = true;
+
+    let (status, error): (StatusCode, ApiErrorBody) = call_json(
+        app.clone(),
+        Method::POST,
+        "/runs",
+        serde_json::to_value(create.clone()).expect("missing bundle create request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error.code, "missing_policy_bundle");
+
+    let mut envelope = signed_policy_bundle(tenant_id, Some(agent_id), RevocationStatus::Active);
+    envelope.signature.as_mut().expect("signature").signature = "bad".to_string();
+    create.policy_bundle = Some(envelope);
+
+    let (status, error): (StatusCode, ApiErrorBody) = call_json(
+        app.clone(),
+        Method::POST,
+        "/runs",
+        serde_json::to_value(create).expect("create request"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error.code, "bad_policy_signature");
+
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let mut malformed = create_request(tenant_id.clone(), agent_id.clone(), Vec::new(), Vec::new());
+    malformed.policy_bundle_required = true;
+    let mut envelope = signed_policy_bundle(
+        tenant_id.clone(),
+        Some(agent_id.clone()),
+        RevocationStatus::Active,
+    );
+    envelope.bundle.schema_version = "splendor.policy_bundle.v0".to_string();
+    malformed.policy_bundle = Some(envelope);
+
+    let (status, error): (StatusCode, ApiErrorBody) = call_json(
+        app.clone(),
+        Method::POST,
+        "/runs",
+        serde_json::to_value(malformed).expect("malformed create request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error.code, "malformed_policy_bundle");
+
+    let mut revoked = create_request(tenant_id.clone(), agent_id.clone(), Vec::new(), Vec::new());
+    revoked.policy_bundle_required = true;
+    revoked.policy_bundle = Some(signed_policy_bundle(
+        tenant_id,
+        Some(agent_id),
+        RevocationStatus::Revoked {
+            reason: "central_revocation".to_string(),
+        },
+    ));
+
+    let (status, error): (StatusCode, ApiErrorBody) = call_json(
+        app,
+        Method::POST,
+        "/runs",
+        serde_json::to_value(revoked).expect("revoked create request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(error.code, "revoked_policy_bundle");
+}
+
+#[tokio::test]
+async fn revoked_policy_bundle_blocks_existing_side_effects() {
+    let app = router(DaemonState::local_dev());
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let mut create = create_request(tenant_id.clone(), agent_id.clone(), Vec::new(), Vec::new());
+    create.policy_bundle_required = true;
+    create.policy_bundle = Some(signed_policy_bundle(
+        tenant_id.clone(),
+        Some(agent_id.clone()),
+        RevocationStatus::Active,
+    ));
+
+    let (status, created): (StatusCode, CreateRunResponse) = call_json(
+        app.clone(),
+        Method::POST,
+        "/runs",
+        serde_json::to_value(create).expect("create request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let revoked = PolicySyncRequest {
+        credential: None,
+        audit_attribution: Some(attribution()),
+        policy_bundle: Some(signed_policy_bundle(
+            tenant_id.clone(),
+            Some(agent_id.clone()),
+            RevocationStatus::Revoked {
+                reason: "central revocation signature=raw-secret".to_string(),
+            },
+        )),
+        sync_error: None,
+        disconnected: None,
+    };
+    let (status, error): (StatusCode, ApiErrorBody) = call_json(
+        app.clone(),
+        Method::POST,
+        &format!("/runs/{}/policies/sync", created.run_id),
+        serde_json::to_value(revoked).expect("policy sync request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(error.code, "revoked_policy_bundle");
+
+    let (status, traces): (StatusCode, TracePageResponse) = call_empty(
+        app.clone(),
+        Method::GET,
+        &format!("/runs/{}/traces?redaction_policy=none", created.run_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let serialized = serde_json::to_string(&traces.records).expect("serialized traces");
+    assert!(!serialized.contains("raw-secret"));
+    assert!(!serialized.contains("signature="));
+    let causal_trace_id = traces.records.first().and_then(|record| {
+        serde_json::from_value::<TraceEvent>(record.payload.clone())
+            .ok()
+            .map(|event| event.trace_event_id)
+    });
+
+    let submit = SubmitActionRequest {
+        run_id: created.run_id.clone(),
+        tenant_id,
+        agent_id,
+        credential: None,
+        audit_attribution: Some(attribution()),
+        causal_trace_id,
+        action: action("allowed_action"),
+        adapter: Some("daemon.local".to_string()),
+        quota_usage: None,
+        satisfied_preconditions: Vec::new(),
+        approval_evidence: None,
+    };
+    let (status, outcome): (StatusCode, splendor_gateway::ActionOutcome) = call_json(
+        app,
+        Method::POST,
+        "/actions",
+        serde_json::to_value(submit).expect("submit request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(outcome.status, splendor_gateway::ActionStatus::Denied);
+    assert_eq!(outcome.verification.reasons, vec!["policy_revoked"]);
+    assert_eq!(
+        outcome.verification.artifacts["reason"].as_str(),
+        Some("policy_reason_redacted")
+    );
 }
 
 #[tokio::test]
@@ -1457,6 +1761,7 @@ async fn health_and_capabilities_remain_local_dev_only_without_credentials() {
             daemon_id: "daemon_local".to_string(),
         },
         insecure_dev_mode: None,
+        policy_bundle_keyring: splendor_types::PolicyBundleKeyring::new(),
     }));
     let (status, error): (StatusCode, ApiErrorBody) =
         call_empty(locked_app.clone(), Method::GET, "/health").await;

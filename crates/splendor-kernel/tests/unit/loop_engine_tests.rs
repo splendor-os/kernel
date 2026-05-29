@@ -6,8 +6,9 @@ use splendor_store::{
 };
 use splendor_types::{
     ActionId, ApprovalDecision, ApprovalEvidence, ApprovalId, ApprovalTraceContext, ConstraintKind,
-    ConstraintScope, DelegatedAuthority, PerceptProvenance, QuotaUsage, RevocationStatus, RunId,
-    TenantId, TraceEvent, WorkOrder, WorkOrderId, WorkOrderPlacement, WorkOrderQuotaPolicy,
+    ConstraintScope, DelegatedAuthority, PerceptProvenance, PolicyBundle, PolicyBundleId,
+    PolicyBundleTraceContext, PolicyDegradedMode, QuotaUsage, RevocationStatus, RunId, TenantId,
+    TraceEvent, WorkOrder, WorkOrderId, WorkOrderPlacement, WorkOrderQuotaPolicy,
     WORK_ORDER_SCHEMA_VERSION,
 };
 use std::collections::HashSet;
@@ -277,6 +278,26 @@ fn work_order_for(agent: &AgentContext, run_id: RunId) -> WorkOrder {
         issued_at: now - time::Duration::minutes(1),
         expires_at: now + time::Duration::hours(1),
         revocation: RevocationStatus::Active,
+    }
+}
+
+fn policy_bundle_for(
+    agent: &AgentContext,
+    expires_at: OffsetDateTime,
+    allow_low_risk_cached: bool,
+) -> PolicyBundle {
+    PolicyBundle {
+        schema_version: splendor_types::POLICY_BUNDLE_SCHEMA_VERSION.to_string(),
+        policy_bundle_id: PolicyBundleId::try_new("pol_loop").expect("policy bundle id"),
+        version: "v1".to_string(),
+        tenant_id: agent.tenant_id.clone(),
+        agent_id: Some(agent.agent_id.clone()),
+        issued_at: expires_at - time::Duration::hours(1),
+        expires_at,
+        revocation: RevocationStatus::Active,
+        degraded_mode: PolicyDegradedMode {
+            allow_low_risk_cached,
+        },
     }
 }
 
@@ -1131,11 +1152,122 @@ fn loop_engine_records_validated_work_order_metadata() {
     }
 }
 
+#[test]
+fn loop_engine_records_policy_bundle_metadata() {
+    let trace_store = Arc::new(InMemoryTraceStore::default());
+    let store = Arc::new(InMemoryStateStore::default());
+    let graph = StateGraph::new(store, SnapshotPolicy::default());
+    let run_id = RunId::new();
+    let agent = AgentContext::new(
+        splendor_types::AgentId::new(),
+        splendor_types::TenantId::new(),
+        crate::AgentRuntimeConfig::default(),
+    );
+    let policy_bundle = PolicyBundleTraceContext::from(&policy_bundle_for(
+        &agent,
+        OffsetDateTime::now_utc() + time::Duration::hours(1),
+        true,
+    ));
+    let context =
+        RunTraceContext::new(Some(run_id.clone())).with_policy_bundle(policy_bundle.clone());
+
+    let engine = LoopEngine::with_trace_store_and_work_order(
+        agent,
+        graph,
+        StateData {
+            bytes: Vec::new(),
+            content_type: None,
+        },
+        Box::new(StaticPolicy),
+        Arc::new(StubGateway),
+        trace_store.clone(),
+        context,
+    )
+    .expect("engine");
+
+    assert_eq!(
+        engine.agent.config.metadata.get("policy_bundle_id"),
+        Some(&"pol_loop".to_string())
+    );
+    assert_eq!(
+        engine.agent.config.metadata.get("policy_bundle_version"),
+        Some(&"v1".to_string())
+    );
+    let records = trace_store.read(&run_id.to_string()).expect("records");
+    assert_eq!(records.len(), 2);
+    let accepted: TraceEvent = serde_json::from_value(records[1].payload.clone()).unwrap();
+    match accepted.kind {
+        TraceEventKind::PolicyBundleAccepted { bundle } => {
+            assert_eq!(bundle.policy_bundle_id, policy_bundle.policy_bundle_id);
+            assert_eq!(bundle.version, policy_bundle.version);
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn loop_engine_rejects_policy_before_policy_invoked_when_bundle_expired() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = CapturingTraceSink {
+        events: Arc::clone(&events),
+    };
+    let runtime = KernelRuntime::new(KernelRuntimeConfig {
+        trace_sink: Arc::new(sink),
+        ..KernelRuntimeConfig::default()
+    });
+    let store = Arc::new(InMemoryStateStore::default());
+    let graph = StateGraph::new(store, SnapshotPolicy::default());
+    let initial_state = StateData {
+        bytes: vec![1],
+        content_type: None,
+    };
+    let agent = AgentContext::new(
+        splendor_types::AgentId::new(),
+        splendor_types::TenantId::new(),
+        crate::AgentRuntimeConfig::default(),
+    );
+    let cache = crate::PolicyCache::with_bundle(
+        policy_bundle_for(
+            &agent,
+            OffsetDateTime::now_utc() - time::Duration::minutes(1),
+            false,
+        ),
+        OffsetDateTime::now_utc(),
+    );
+    let mut engine = LoopEngine::with_runtime(
+        agent,
+        graph,
+        initial_state,
+        Box::new(StaticPolicy),
+        Arc::new(StubGateway),
+        runtime,
+    );
+    engine.set_policy_runtime_authority(Arc::new(cache));
+
+    let error = engine
+        .tick(1)
+        .expect_err("expired policy denies invocation");
+    assert!(matches!(error, LoopError::Policy(message) if message == "policy_expired"));
+
+    let recorded = events.lock().expect("events lock");
+    assert!(recorded
+        .iter()
+        .any(|event| matches!(event.kind, TraceEventKind::PolicyExpired { .. })));
+    assert!(!recorded
+        .iter()
+        .any(|event| matches!(event.kind, TraceEventKind::PolicyInvoked { .. })));
+}
+
 fn event_kind_label(kind: &TraceEventKind) -> &'static str {
     match kind {
         TraceEventKind::RunStarted => "RunStarted",
         TraceEventKind::WorkOrderAccepted { .. } => "WorkOrderAccepted",
         TraceEventKind::WorkOrderRejected { .. } => "WorkOrderRejected",
+        TraceEventKind::PolicyBundleAccepted { .. } => "PolicyBundleAccepted",
+        TraceEventKind::PolicyBundleRejected { .. } => "PolicyBundleRejected",
+        TraceEventKind::PolicySyncFailed { .. } => "PolicySyncFailed",
+        TraceEventKind::PolicyExpired { .. } => "PolicyExpired",
+        TraceEventKind::PolicyRevoked { .. } => "PolicyRevoked",
         TraceEventKind::RunPaused { .. } => "RunPaused",
         TraceEventKind::RunResumed { .. } => "RunResumed",
         TraceEventKind::RunStopped { .. } => "RunStopped",

@@ -23,6 +23,10 @@ Replay emits JSON Lines:
   feedback/reward, state hash, and snapshot metadata.
 - `approval_event`: approval request, grant, denial, expiry, or revocation facts
   reconstructed from `Approval*` trace events when present.
+- policy distribution facts are ordinary trace events: `PolicyBundleAccepted`,
+  `PolicyBundleRejected`, `PolicySyncFailed`, `PolicyExpired`, and
+  `PolicyRevoked` can be inspected from the validated event stream without
+  contacting central policy services.
 - `causal_graph`: inspectable local multi-agent graph built from trace events.
   It includes message lifecycle entries with trace event IDs, message IDs,
   source/target agents, run IDs, schemas, causal parents, and rejection/expiry
@@ -39,6 +43,9 @@ approval service, re-check revocation, resume a run, or present approval evidenc
 to the gateway again.
 Local message decisions are reconstructed from trace events; replay does not
 re-deliver messages or mutate router inbox/outbox state.
+Policy bundle decisions are reconstructed from trace events; replay does not
+re-verify signatures, refresh bundles, call revocation sources, reconnect to a
+central policy service, or install/clear cached policy authority.
 
 For 0.02-S4 local delegation, `splendor_kernel::replay_local_delegations(events)`
 reconstructs parent/child run edges plus task request/response message causality
@@ -85,6 +92,11 @@ Circuit-breaker denials are replayed from stored `ActionDenied` verification
 artifacts only. Replay reports the breaker ID, scope, scope value, and reason in
 `circuit_breaker_denials`; it does not re-evaluate breaker state, clear breakers,
 or execute the denied action.
+
+Policy distribution events are replayed as trace facts only. Replay can explain
+which policy bundle was accepted, rejected, expired, revoked, or left unchanged
+after sync failure, but it never uses historical policy data to authorize a new
+run or side effect.
 
 ## Failure modes
 

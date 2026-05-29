@@ -708,6 +708,8 @@ async fn run_daemon_boundary(artifacts: &Path) -> TestResult<DaemonEvidence> {
             quota_usage: Some(QuotaUsage::single_action()),
             satisfied_preconditions: Vec::new(),
         }],
+        policy_bundle_required: false,
+        policy_bundle: None,
         registered_actions: vec![RegisteredAction {
             name: "denied_action".to_string(),
             adapter: "daemon.local".to_string(),
@@ -900,6 +902,7 @@ async fn run_daemon_boundary(artifacts: &Path) -> TestResult<DaemonEvidence> {
             daemon_id: "daemon_local".to_string(),
         },
         insecure_dev_mode: None,
+        policy_bundle_keyring: splendor_types::PolicyBundleKeyring::new(),
     }));
     let locked_tenant = TenantId::parse("00000000-0000-0000-0000-000000000211")?;
     let locked_agent = AgentId::parse("00000000-0000-0000-0000-000000000212")?;
@@ -921,6 +924,8 @@ async fn run_daemon_boundary(artifacts: &Path) -> TestResult<DaemonEvidence> {
         allowed_adapters: Vec::new(),
         allowed_permissions: Vec::new(),
         policy_actions: Vec::new(),
+        policy_bundle_required: false,
+        policy_bundle: None,
         registered_actions: Vec::new(),
         approval_policies: Vec::new(),
         allowed_percept_schemas: Vec::new(),
@@ -2965,6 +2970,8 @@ fn validate_openapi_contract(artifacts: &Path) -> TestResult<OpenApiEvidence> {
             quota_usage: Some(QuotaUsage::single_action()),
             satisfied_preconditions: Vec::new(),
         }],
+        policy_bundle_required: false,
+        policy_bundle: None,
         registered_actions: vec![RegisteredAction {
             name: "fixture.allowed".to_string(),
             adapter: "fixture".to_string(),

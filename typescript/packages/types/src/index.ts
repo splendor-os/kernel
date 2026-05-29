@@ -22,6 +22,7 @@ export type EscalationId = string;
 export type InterventionId = string;
 export type CircuitBreakerId = string;
 export type KillSwitchId = string;
+export type PolicyBundleId = string;
 
 export const CIRCUIT_BREAKER_SCHEMA_VERSION = "splendor.circuit_breaker.v1" as const;
 
@@ -255,6 +256,35 @@ export interface TaskFailure {
   reason: string;
   retryable: boolean;
   trace_id: TraceId | null;
+}
+
+export interface PolicyDegradedMode {
+  allow_low_risk_cached: boolean;
+}
+
+export interface PolicyBundle {
+  schema_version: string;
+  policy_bundle_id: PolicyBundleId;
+  version: string;
+  tenant_id: TenantId;
+  agent_id: AgentId | null;
+  issued_at: ISODateTime;
+  expires_at: ISODateTime;
+  revocation: RevocationStatus;
+  degraded_mode: PolicyDegradedMode;
+}
+
+export interface PolicyBundleEnvelope extends PolicyBundle {
+  signature: WorkOrderSignature | null;
+}
+
+export interface PolicyBundleTraceContext {
+  policy_bundle_id: PolicyBundleId;
+  version: string;
+  tenant_id: TenantId;
+  agent_id: AgentId | null;
+  expires_at: ISODateTime;
+  degraded_mode: PolicyDegradedMode;
 }
 
 export type StateReferenceMode = "snapshot_import" | "read_only_reference";
@@ -506,6 +536,35 @@ export type TraceEventKind =
         reason: string;
       };
     }
+  | { PolicyBundleAccepted: { bundle: PolicyBundleTraceContext } }
+  | {
+      PolicyBundleRejected: {
+        policy_bundle_id: PolicyBundleId | null;
+        version: string | null;
+        reason: string;
+      };
+    }
+  | {
+      PolicySyncFailed: {
+        policy_bundle_id: PolicyBundleId | null;
+        version: string | null;
+        reason: string;
+      };
+    }
+  | {
+      PolicyExpired: {
+        policy_bundle_id: PolicyBundleId;
+        version: string;
+        action: string | null;
+      };
+    }
+  | {
+      PolicyRevoked: {
+        policy_bundle_id: PolicyBundleId;
+        version: string;
+        reason: string;
+      };
+    }
   | { RunPaused: { reason: string | null } }
   | { RunResumed: { reason: string | null } }
   | { RunStopped: { reason: string | null } }
@@ -751,6 +810,7 @@ export type EndpointScope =
   | "messages_send"
   | "health_read"
   | "capabilities_read"
+  | "policies_sync"
   | "nodes_register"
   | "instances_register"
   | "nodes_heartbeat"
@@ -817,6 +877,8 @@ export interface CreateRunRequest {
   allowed_adapters: string[];
   allowed_permissions: string[];
   policy_actions: DaemonActionCandidate[];
+  policy_bundle_required: boolean;
+  policy_bundle: PolicyBundleEnvelope | null;
   registered_actions: RegisteredAction[];
   approval_policies: ApprovalPolicy[];
   allowed_percept_schemas: string[];
@@ -846,8 +908,32 @@ export interface RunInspectResponse {
   state_head: string | null;
   ticks: number;
   adapter_executions: number;
+  policy_bundle: PolicyBundleTraceContext | null;
   created_at: ISODateTime;
   updated_at: ISODateTime;
+}
+
+export interface PolicySyncRequest {
+  credential: CallerCredential | null;
+  audit_attribution: AuditAttribution | null;
+  policy_bundle: PolicyBundleEnvelope | null;
+  sync_error: string | null;
+  disconnected: boolean | null;
+}
+
+export interface PolicyCacheStatusResponse {
+  enforcement_required: boolean;
+  disconnected: boolean;
+  policy_bundle: PolicyBundleTraceContext | null;
+  revoked_reason: string | null;
+  last_sync_failure: string | null;
+}
+
+export interface PolicySyncResponse {
+  run_id: RunId;
+  accepted: boolean;
+  policy_bundle: PolicyBundleTraceContext | null;
+  cache_status: PolicyCacheStatusResponse;
 }
 
 export interface TickResponse {
@@ -972,6 +1058,8 @@ export const CANONICAL_SCHEMA_FIELDS = {
     "allowed_adapters",
     "allowed_permissions",
     "policy_actions",
+    "policy_bundle_required",
+    "policy_bundle",
     "registered_actions",
     "approval_policies",
     "allowed_percept_schemas",
@@ -988,11 +1076,21 @@ export const CANONICAL_SCHEMA_FIELDS = {
     "state_head",
     "ticks",
     "adapter_executions",
+    "policy_bundle",
     "created_at",
     "updated_at"
   ],
   tick_response: ["run_id", "status", "tick_id", "state_node_id", "action_outcomes"],
   append_percept_request: ["credential", "audit_attribution", "percept"],
+  policy_sync_request: ["credential", "audit_attribution", "policy_bundle", "sync_error", "disconnected"],
+  policy_cache_status_response: [
+    "enforcement_required",
+    "disconnected",
+    "policy_bundle",
+    "revoked_reason",
+    "last_sync_failure"
+  ],
+  policy_sync_response: ["run_id", "accepted", "policy_bundle", "cache_status"],
   trace_page_response: ["run_id", "records"],
   replay_response: ["replay_id", "run_id", "mode", "event_count", "action_event_count", "approval_events"],
   submit_action_request: [
@@ -1024,6 +1122,9 @@ export const CANONICAL_SCHEMA_FIELDS = {
   run_inspect_response: readonly (keyof RunInspectResponse)[];
   tick_response: readonly (keyof TickResponse)[];
   append_percept_request: readonly (keyof AppendPerceptRequest)[];
+  policy_sync_request: readonly (keyof PolicySyncRequest)[];
+  policy_cache_status_response: readonly (keyof PolicyCacheStatusResponse)[];
+  policy_sync_response: readonly (keyof PolicySyncResponse)[];
   trace_page_response: readonly (keyof TracePageResponse)[];
   replay_response: readonly (keyof ReplayResponse)[];
   submit_action_request: readonly (keyof SubmitActionRequest)[];
@@ -1035,6 +1136,11 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "RunStarted",
   "WorkOrderAccepted",
   "WorkOrderRejected",
+  "PolicyBundleAccepted",
+  "PolicyBundleRejected",
+  "PolicySyncFailed",
+  "PolicyExpired",
+  "PolicyRevoked",
   "RunPaused",
   "RunResumed",
   "RunStopped",
@@ -1130,6 +1236,7 @@ export const ENDPOINT_SCOPE_VALUES = [
   "MessagesSend",
   "HealthRead",
   "CapabilitiesRead",
+  "PoliciesSync",
   "NodesRegister",
   "InstancesRegister",
   "NodesHeartbeat",
@@ -1151,6 +1258,7 @@ export const ENDPOINT_SCOPE_LABELS: Record<EndpointScope, string> = {
   messages_send: "splendor.messages.send",
   health_read: "splendor.health.read",
   capabilities_read: "splendor.capabilities.read",
+  policies_sync: "splendor.policies.sync",
   nodes_register: "splendor.nodes.register",
   instances_register: "splendor.instances.register",
   nodes_heartbeat: "splendor.nodes.heartbeat",

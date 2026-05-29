@@ -103,6 +103,11 @@ trace and do not authorize adapter execution outside the gateway.
 - `RunStarted`
 - `WorkOrderAccepted { work_order_id, tenant_id, agent_id, run_id }`
 - `WorkOrderRejected { work_order_id: Option<WorkOrderId>, tenant_id: Option<TenantId>, agent_id: Option<AgentId>, run_id: Option<RunId>, reason: String }`
+- `PolicyBundleAccepted { bundle: PolicyBundleTraceContext }`
+- `PolicyBundleRejected { policy_bundle_id: Option<PolicyBundleId>, version: Option<String>, reason: String }`
+- `PolicySyncFailed { policy_bundle_id: Option<PolicyBundleId>, version: Option<String>, reason: String }`
+- `PolicyExpired { policy_bundle_id: PolicyBundleId, version: String, action: Option<String> }`
+- `PolicyRevoked { policy_bundle_id: PolicyBundleId, version: String, reason: String }`
 - `RunPaused { reason: Option<String> }`
 - `RunResumed { reason: Option<String> }`
 - `RunStopped { reason: Option<String> }`
@@ -363,6 +368,25 @@ Work-order events correspond to the 0.03-S3 signed work-order lifecycle:
 `agent_id`, and optional `run_id`). `WorkOrderRejected` carries those fields when
 parseable plus a sanitized reason code. Neither event records signature material,
 verification secrets, caller tokens, or broad credentials.
+
+## Policy Distribution Events
+
+0.04-S5 policy distribution event variants correspond to these canonical event
+classes:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `PolicyBundleAccepted` | `policy.bundle.accepted` | A signed policy bundle validated and became run-local authority metadata. |
+| `PolicyBundleRejected` | `policy.bundle.rejected` | A supplied policy bundle failed validation before authority changed. |
+| `PolicySyncFailed` | `policy.sync.failed` | Central policy sync failed and cached authority was preserved. |
+| `PolicyExpired` | `policy.expired` | TTL checks denied policy invocation or action forwarding. |
+| `PolicyRevoked` | `policy.revoked` | Revocation denied policy invocation or action forwarding. |
+
+`PolicyBundleAccepted` carries `PolicyBundleTraceContext`: policy bundle ID,
+version, tenant ID, optional agent ID, expiry, and degraded-mode flags. It omits
+signature material, shared secrets, caller credentials, and policy-language
+internals. Replay inspects these events but does not refresh bundles, contact a
+policy distributor, invoke policies, or execute adapters.
 
 ### Remote Message Events
 

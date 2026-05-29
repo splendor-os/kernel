@@ -174,6 +174,31 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /runs/{run_id}/policies/sync:
+    post:
+      summary: Sync or record failure for a run policy bundle cache.
+      operationId: syncPolicy
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicySyncRequest'
+      responses:
+        '200':
+          description: Policy sync status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicySyncResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /runs/{run_id}/state-head:
     get:
       summary: Read the latest committed state node metadata.
@@ -373,6 +398,7 @@ components:
         - messages_send
         - health_read
         - capabilities_read
+        - policies_sync
         - nodes_register
         - instances_register
         - nodes_heartbeat
@@ -724,6 +750,73 @@ components:
           format: date-time
         event_hash: true
         prev_event_hash: true
+    PolicyDegradedMode:
+      type: object
+      required: [allow_low_risk_cached]
+      properties:
+        allow_low_risk_cached:
+          type: boolean
+    PolicyBundle:
+      type: object
+      required: [schema_version, policy_bundle_id, version, tenant_id, agent_id, issued_at, expires_at, revocation, degraded_mode]
+      properties:
+        schema_version:
+          type: string
+        policy_bundle_id:
+          type: string
+        version:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: [string, 'null']
+          format: uuid
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        revocation:
+          $ref: '#/components/schemas/RevocationStatus'
+        degraded_mode:
+          $ref: '#/components/schemas/PolicyDegradedMode'
+    PolicyBundleEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/PolicyBundle'
+        - type: object
+          required: [signature]
+          properties:
+            signature:
+              oneOf:
+                - type: 'null'
+                - type: object
+                  required: [key_id, signature]
+                  properties:
+                    key_id:
+                      type: string
+                    signature:
+                      type: string
+    PolicyBundleTraceContext:
+      type: object
+      required: [policy_bundle_id, version, tenant_id, agent_id, expires_at, degraded_mode]
+      properties:
+        policy_bundle_id:
+          type: string
+        version:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: [string, 'null']
+          format: uuid
+        expires_at:
+          type: string
+          format: date-time
+        degraded_mode:
+          $ref: '#/components/schemas/PolicyDegradedMode'
     CreateRunRequest:
       type: object
       required:
@@ -736,6 +829,8 @@ components:
         - allowed_adapters
         - allowed_permissions
         - policy_actions
+        - policy_bundle_required
+        - policy_bundle
         - registered_actions
         - approval_policies
         - allowed_percept_schemas
@@ -775,6 +870,12 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DaemonActionCandidate'
+        policy_bundle_required:
+          type: boolean
+        policy_bundle:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/PolicyBundleEnvelope'
         registered_actions:
           type: array
           items:
@@ -829,7 +930,7 @@ components:
             - $ref: '#/components/schemas/ApprovalEvidence'
     RunInspectResponse:
       type: object
-      required: [run_id, tenant_id, agent_id, status, state_head, ticks, adapter_executions, created_at, updated_at]
+      required: [run_id, tenant_id, agent_id, status, state_head, ticks, adapter_executions, policy_bundle, created_at, updated_at]
       properties:
         run_id:
           type: string
@@ -850,6 +951,10 @@ components:
         adapter_executions:
           type: integer
           minimum: 0
+        policy_bundle:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/PolicyBundleTraceContext'
         created_at:
           type: string
           format: date-time
@@ -900,6 +1005,57 @@ components:
         accepted:
           type: integer
           minimum: 0
+    PolicySyncRequest:
+      type: object
+      required: [credential, audit_attribution, policy_bundle, sync_error, disconnected]
+      properties:
+        credential:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/CallerCredential'
+        audit_attribution:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/AuditAttribution'
+        policy_bundle:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/PolicyBundleEnvelope'
+        sync_error:
+          type: [string, 'null']
+        disconnected:
+          type: [boolean, 'null']
+    PolicyCacheStatusResponse:
+      type: object
+      required: [enforcement_required, disconnected, policy_bundle, revoked_reason, last_sync_failure]
+      properties:
+        enforcement_required:
+          type: boolean
+        disconnected:
+          type: boolean
+        policy_bundle:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/PolicyBundleTraceContext'
+        revoked_reason:
+          type: [string, 'null']
+        last_sync_failure:
+          type: [string, 'null']
+    PolicySyncResponse:
+      type: object
+      required: [run_id, accepted, policy_bundle, cache_status]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        accepted:
+          type: boolean
+        policy_bundle:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/PolicyBundleTraceContext'
+        cache_status:
+          $ref: '#/components/schemas/PolicyCacheStatusResponse'
     StateHeadResponse:
       type: object
       required: [run_id, state_node_id, parent_state_node_ids, data_hash, created_at, label]
