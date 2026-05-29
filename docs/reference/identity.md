@@ -20,6 +20,11 @@ different concept.
 | `state_node_id` | `StateNodeId` | `algorithm:digest` string | State graph | Deterministic state node identity. Rust state graph commits use BLAKE3; Python local SDK traces currently emit SHA-256 state identity strings in the same canonical shape. |
 | `trace_event_id` | `TraceEventId` | UUID v5 string | Trace event | Deterministic from `run_id` + sequence. |
 | `message_id` | `MessageId` | UUID string | Message | Agent-to-agent message identity. |
+| `approval_id` | `ApprovalId` | UUID string | Governance approval | Lifecycle identity shared by approval request/grant/denial records. |
+| `escalation_id` | `EscalationId` | UUID string | Governance escalation | Escalation lifecycle identity. |
+| `intervention_id` | `InterventionId` | UUID string | Governance intervention | Operator/runtime intervention lifecycle identity. |
+| `circuit_breaker_id` | `CircuitBreakerId` | UUID string | Governance circuit breaker | Scoped circuit-breaker lifecycle identity. |
+| `kill_switch_id` | `KillSwitchId` | UUID string | Governance kill switch | Scoped kill-switch lifecycle identity. |
 
 The legacy Rust alias `TraceId` remains as a compatibility alias for
 `TraceEventId`; new schemas and docs use `trace_event_id`.
@@ -100,6 +105,11 @@ export type ActionId = string;
 export type StateNodeId = string;
 export type TraceEventId = string;
 export type MessageId = string;
+export type ApprovalId = string;
+export type EscalationId = string;
+export type InterventionId = string;
+export type CircuitBreakerId = string;
+export type KillSwitchId = string;
 
 export interface TraceIdentityContext {
   fleet_id?: FleetId;

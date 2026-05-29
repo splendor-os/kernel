@@ -17,6 +17,11 @@ export type InstanceId = string;
 export type TickId = number;
 export type StateNodeId = string;
 export type WorkOrderId = string;
+export type ApprovalId = string;
+export type EscalationId = string;
+export type InterventionId = string;
+export type CircuitBreakerId = string;
+export type KillSwitchId = string;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -196,6 +201,160 @@ export interface RemoteMessageTraceContext {
   idempotency_key: string | null;
 }
 
+export type GovernanceExtensions = Record<string, JsonValue>;
+
+export type GovernanceScope =
+  | { scope_type: "global" }
+  | { scope_type: "fleet"; fleet_id: FleetId }
+  | { scope_type: "node"; node_id: NodeId }
+  | { scope_type: "instance"; instance_id: InstanceId }
+  | { scope_type: "tenant"; tenant_id: TenantId }
+  | { scope_type: "agent"; tenant_id: TenantId; agent_id: AgentId }
+  | { scope_type: "run"; tenant_id: TenantId; agent_id: AgentId; run_id: RunId }
+  | { scope_type: "action"; tenant_id: TenantId; agent_id: AgentId; run_id: RunId; action_id: ActionId }
+  | { scope_type: "adapter"; tenant_id?: TenantId | null; adapter: string };
+
+export interface GovernanceIssuer {
+  issuer_id: string;
+  source: string;
+}
+
+export interface GovernanceTraceLink {
+  trace_event_id: TraceEventId;
+  run_id?: RunId | null;
+}
+
+export interface GovernanceRevocation {
+  revoked_at: ISODateTime;
+  reason: string;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+}
+
+export type ApprovalStatus = "requested" | "granted" | "denied" | "expired" | "revoked";
+export type EscalationStatus = "open" | "resolved" | "expired" | "revoked";
+export type InterventionStatus = "requested" | "resolved" | "cancelled" | "expired" | "revoked";
+export type CircuitBreakerStatus = "active" | "cleared" | "expired" | "revoked";
+export type KillSwitchStatus = "active" | "cleared" | "expired" | "revoked";
+export type GovernanceState =
+  | "requested"
+  | "granted"
+  | "denied"
+  | "open"
+  | "resolved"
+  | "active"
+  | "cleared"
+  | "cancelled"
+  | "expired"
+  | "revoked";
+
+export type GovernanceObjectKind = "approval" | "escalation" | "intervention" | "circuit_breaker" | "kill_switch";
+
+export type GovernanceObjectRef =
+  | { object_type: "approval"; approval_id: ApprovalId }
+  | { object_type: "escalation"; escalation_id: EscalationId }
+  | { object_type: "intervention"; intervention_id: InterventionId }
+  | { object_type: "circuit_breaker"; circuit_breaker_id: CircuitBreakerId }
+  | { object_type: "kill_switch"; kill_switch_id: KillSwitchId };
+
+export interface GovernanceTransition {
+  schema_version: string;
+  object: GovernanceObjectRef;
+  scope: GovernanceScope;
+  from?: GovernanceState | null;
+  to: GovernanceState;
+  occurred_at: ISODateTime;
+  reason: string;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+  extensions?: GovernanceExtensions;
+}
+
+export interface GovernanceTransitionRejection {
+  schema_version: string;
+  object: GovernanceObjectRef;
+  scope: GovernanceScope;
+  from?: GovernanceState | null;
+  attempted: GovernanceState;
+  reason: string;
+  rejected_at: ISODateTime;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+}
+
+export interface ApprovalRequest {
+  schema_version: string;
+  approval_id: ApprovalId;
+  scope: GovernanceScope;
+  status: ApprovalStatus;
+  created_at: ISODateTime;
+  expires_at: ISODateTime | null;
+  reason: string;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+  revocation?: GovernanceRevocation | null;
+  extensions?: GovernanceExtensions;
+}
+
+export interface ApprovalGrant extends ApprovalRequest {}
+export interface ApprovalDenial extends ApprovalRequest {}
+
+export interface Escalation {
+  schema_version: string;
+  escalation_id: EscalationId;
+  scope: GovernanceScope;
+  status: EscalationStatus;
+  created_at: ISODateTime;
+  expires_at: ISODateTime | null;
+  reason: string;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+  revocation?: GovernanceRevocation | null;
+  extensions?: GovernanceExtensions;
+}
+
+export interface Intervention {
+  schema_version: string;
+  intervention_id: InterventionId;
+  scope: GovernanceScope;
+  status: InterventionStatus;
+  created_at: ISODateTime;
+  expires_at: ISODateTime | null;
+  reason: string;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+  revocation?: GovernanceRevocation | null;
+  extensions?: GovernanceExtensions;
+}
+
+export interface CircuitBreaker {
+  schema_version: string;
+  circuit_breaker_id: CircuitBreakerId;
+  scope: GovernanceScope;
+  status: CircuitBreakerStatus;
+  created_at: ISODateTime;
+  expires_at: ISODateTime | null;
+  reason: string;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+  revocation?: GovernanceRevocation | null;
+  extensions?: GovernanceExtensions;
+}
+
+export interface KillSwitch {
+  schema_version: string;
+  kill_switch_id: KillSwitchId;
+  scope: GovernanceScope;
+  status: KillSwitchStatus;
+  created_at: ISODateTime;
+  expires_at: ISODateTime | null;
+  reason: string;
+  issuer: GovernanceIssuer;
+  trace: GovernanceTraceLink;
+  revocation?: GovernanceRevocation | null;
+  extensions?: GovernanceExtensions;
+}
+
 export interface TraceIdentityContext {
   fleet_id?: FleetId | null;
   node_id?: NodeId | null;
@@ -284,6 +443,29 @@ export type TraceEventKind =
         source_message_id: MessageId | null;
       };
     }
+  | { ApprovalRequested: { transition: GovernanceTransition } }
+  | { ApprovalGranted: { transition: GovernanceTransition } }
+  | { ApprovalDenied: { transition: GovernanceTransition } }
+  | { ApprovalExpired: { transition: GovernanceTransition } }
+  | { ApprovalRevoked: { transition: GovernanceTransition } }
+  | { EscalationOpened: { transition: GovernanceTransition } }
+  | { EscalationResolved: { transition: GovernanceTransition } }
+  | { EscalationExpired: { transition: GovernanceTransition } }
+  | { EscalationRevoked: { transition: GovernanceTransition } }
+  | { InterventionRequested: { transition: GovernanceTransition } }
+  | { InterventionResolved: { transition: GovernanceTransition } }
+  | { InterventionCancelled: { transition: GovernanceTransition } }
+  | { InterventionExpired: { transition: GovernanceTransition } }
+  | { InterventionRevoked: { transition: GovernanceTransition } }
+  | { CircuitBreakerTripped: { transition: GovernanceTransition } }
+  | { CircuitBreakerCleared: { transition: GovernanceTransition } }
+  | { CircuitBreakerExpired: { transition: GovernanceTransition } }
+  | { CircuitBreakerRevoked: { transition: GovernanceTransition } }
+  | { KillSwitchActivated: { transition: GovernanceTransition } }
+  | { KillSwitchCleared: { transition: GovernanceTransition } }
+  | { KillSwitchExpired: { transition: GovernanceTransition } }
+  | { KillSwitchRevoked: { transition: GovernanceTransition } }
+  | { GovernanceTransitionRejected: { rejection: GovernanceTransitionRejection } }
   | { LoopTickCompleted: { tick_id: number; integrity: TraceIntegrity | null } };
 
 export interface TraceEvent {
@@ -753,6 +935,29 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "ChildRunCompleted",
   "ChildRunFailed",
   "ChildRunLinked",
+  "ApprovalRequested",
+  "ApprovalGranted",
+  "ApprovalDenied",
+  "ApprovalExpired",
+  "ApprovalRevoked",
+  "EscalationOpened",
+  "EscalationResolved",
+  "EscalationExpired",
+  "EscalationRevoked",
+  "InterventionRequested",
+  "InterventionResolved",
+  "InterventionCancelled",
+  "InterventionExpired",
+  "InterventionRevoked",
+  "CircuitBreakerTripped",
+  "CircuitBreakerCleared",
+  "CircuitBreakerExpired",
+  "CircuitBreakerRevoked",
+  "KillSwitchActivated",
+  "KillSwitchCleared",
+  "KillSwitchExpired",
+  "KillSwitchRevoked",
+  "GovernanceTransitionRejected",
   "LoopTickCompleted"
 ] as const;
 

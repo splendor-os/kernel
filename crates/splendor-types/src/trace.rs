@@ -20,8 +20,9 @@
 //! ```
 
 use crate::{
-    Action, AgentId, AuditAttribution, Constraint, ContentHash, Feedback, IdentityValidationError,
-    MessageId, MessageTraceContext, RemoteMessageTraceContext, Reward, RunId, SnapshotId,
+    Action, AgentId, AuditAttribution, Constraint, ContentHash, Feedback, GovernanceScope,
+    GovernanceTransition, GovernanceTransitionRejection, IdentityValidationError, MessageId,
+    MessageTraceContext, RemoteMessageTraceContext, Reward, RunId, SnapshotId,
     StateHandoffTraceContext, TaskFailure, TenantId, TickId, TraceEventId, TraceId,
     TraceIdentityContext, VerificationResult, WorkOrderId,
 };
@@ -74,6 +75,7 @@ impl TraceEvent {
         kind: TraceEventKind,
     ) -> Result<Self, IdentityValidationError> {
         let identity = apply_kind_identity(identity, &kind);
+        validate_kind_identity(&identity, &kind)?;
         identity.validate()?;
         let run_id = identity.run_id.clone();
         let trace_event_id = TraceEventId::from_run_sequence(&run_id, sequence);
@@ -85,6 +87,53 @@ impl TraceEvent {
             identity,
             kind,
         })
+    }
+}
+
+fn validate_kind_identity(
+    identity: &TraceIdentityContext,
+    kind: &TraceEventKind,
+) -> Result<(), IdentityValidationError> {
+    if let Some(scope) = governance_scope_for_kind(kind) {
+        if let Some(scoped_run_id) = scope.run_id() {
+            if scoped_run_id != &identity.run_id {
+                return Err(IdentityValidationError::Mismatch {
+                    field: "governance_scope.run_id",
+                    expected: identity.run_id.to_string(),
+                    actual: scoped_run_id.to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn governance_scope_for_kind(kind: &TraceEventKind) -> Option<&GovernanceScope> {
+    match kind {
+        TraceEventKind::ApprovalRequested { transition }
+        | TraceEventKind::ApprovalGranted { transition }
+        | TraceEventKind::ApprovalDenied { transition }
+        | TraceEventKind::ApprovalExpired { transition }
+        | TraceEventKind::ApprovalRevoked { transition }
+        | TraceEventKind::EscalationOpened { transition }
+        | TraceEventKind::EscalationResolved { transition }
+        | TraceEventKind::EscalationExpired { transition }
+        | TraceEventKind::EscalationRevoked { transition }
+        | TraceEventKind::InterventionRequested { transition }
+        | TraceEventKind::InterventionResolved { transition }
+        | TraceEventKind::InterventionCancelled { transition }
+        | TraceEventKind::InterventionExpired { transition }
+        | TraceEventKind::InterventionRevoked { transition }
+        | TraceEventKind::CircuitBreakerTripped { transition }
+        | TraceEventKind::CircuitBreakerCleared { transition }
+        | TraceEventKind::CircuitBreakerExpired { transition }
+        | TraceEventKind::CircuitBreakerRevoked { transition }
+        | TraceEventKind::KillSwitchActivated { transition }
+        | TraceEventKind::KillSwitchCleared { transition }
+        | TraceEventKind::KillSwitchExpired { transition }
+        | TraceEventKind::KillSwitchRevoked { transition } => Some(&transition.scope),
+        TraceEventKind::GovernanceTransitionRejected { rejection } => Some(&rejection.scope),
+        _ => None,
     }
 }
 
@@ -117,9 +166,83 @@ fn apply_kind_identity(
                 .message_id
                 .get_or_insert_with(|| remote_message.message.message_id.clone());
         }
+        TraceEventKind::ApprovalRequested { transition }
+        | TraceEventKind::ApprovalGranted { transition }
+        | TraceEventKind::ApprovalDenied { transition }
+        | TraceEventKind::ApprovalExpired { transition }
+        | TraceEventKind::ApprovalRevoked { transition }
+        | TraceEventKind::EscalationOpened { transition }
+        | TraceEventKind::EscalationResolved { transition }
+        | TraceEventKind::EscalationExpired { transition }
+        | TraceEventKind::EscalationRevoked { transition }
+        | TraceEventKind::InterventionRequested { transition }
+        | TraceEventKind::InterventionResolved { transition }
+        | TraceEventKind::InterventionCancelled { transition }
+        | TraceEventKind::InterventionExpired { transition }
+        | TraceEventKind::InterventionRevoked { transition }
+        | TraceEventKind::CircuitBreakerTripped { transition }
+        | TraceEventKind::CircuitBreakerCleared { transition }
+        | TraceEventKind::CircuitBreakerExpired { transition }
+        | TraceEventKind::CircuitBreakerRevoked { transition }
+        | TraceEventKind::KillSwitchActivated { transition }
+        | TraceEventKind::KillSwitchCleared { transition }
+        | TraceEventKind::KillSwitchExpired { transition }
+        | TraceEventKind::KillSwitchRevoked { transition } => {
+            apply_governance_scope_identity(&mut identity, &transition.scope);
+        }
+        TraceEventKind::GovernanceTransitionRejected { rejection } => {
+            apply_governance_scope_identity(&mut identity, &rejection.scope);
+        }
         _ => {}
     }
     identity
+}
+
+fn apply_governance_scope_identity(identity: &mut TraceIdentityContext, scope: &GovernanceScope) {
+    match scope {
+        GovernanceScope::Global => {}
+        GovernanceScope::Fleet { fleet_id } => {
+            identity.fleet_id.get_or_insert_with(|| fleet_id.clone());
+        }
+        GovernanceScope::Node { node_id } => {
+            identity.node_id.get_or_insert_with(|| node_id.clone());
+        }
+        GovernanceScope::Instance { instance_id } => {
+            identity
+                .instance_id
+                .get_or_insert_with(|| instance_id.clone());
+        }
+        GovernanceScope::Tenant { tenant_id } => {
+            identity.tenant_id.get_or_insert_with(|| tenant_id.clone());
+        }
+        GovernanceScope::Agent {
+            tenant_id,
+            agent_id,
+        }
+        | GovernanceScope::Run {
+            tenant_id,
+            agent_id,
+            ..
+        } => {
+            identity.tenant_id.get_or_insert_with(|| tenant_id.clone());
+            identity.agent_id.get_or_insert_with(|| agent_id.clone());
+        }
+        GovernanceScope::Action {
+            tenant_id,
+            agent_id,
+            action_id,
+            ..
+        } => {
+            identity.tenant_id.get_or_insert_with(|| tenant_id.clone());
+            identity.agent_id.get_or_insert_with(|| agent_id.clone());
+            identity.action_id.get_or_insert_with(|| action_id.clone());
+        }
+        GovernanceScope::Adapter { tenant_id, .. } => {
+            if let Some(tenant_id) = tenant_id {
+                identity.tenant_id.get_or_insert_with(|| tenant_id.clone());
+            }
+        }
+    }
 }
 
 /// Ordered event taxonomy for a kernel tick.
@@ -415,6 +538,121 @@ pub enum TraceEventKind {
         causal_parent: Option<TraceId>,
         /// Optional message that carried the local delegation request.
         source_message_id: Option<MessageId>,
+    },
+    /// Records creation of an approval request governance state.
+    ApprovalRequested {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records an approval grant governance state.
+    ApprovalGranted {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records an approval denial governance state.
+    ApprovalDenied {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records explicit approval expiry.
+    ApprovalExpired {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records explicit approval revocation.
+    ApprovalRevoked {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records creation of an open escalation governance state.
+    EscalationOpened {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records escalation resolution.
+    EscalationResolved {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records explicit escalation expiry.
+    EscalationExpired {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records explicit escalation revocation.
+    EscalationRevoked {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records an intervention request governance state.
+    InterventionRequested {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records intervention resolution.
+    InterventionResolved {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records intervention cancellation.
+    InterventionCancelled {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records explicit intervention expiry.
+    InterventionExpired {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records explicit intervention revocation.
+    InterventionRevoked {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records a circuit breaker being tripped/activated in state.
+    CircuitBreakerTripped {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records a circuit breaker being cleared in state.
+    CircuitBreakerCleared {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records explicit circuit-breaker expiry.
+    CircuitBreakerExpired {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records explicit circuit-breaker revocation.
+    CircuitBreakerRevoked {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records a kill switch being activated in state.
+    KillSwitchActivated {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records a kill switch being cleared in state.
+    KillSwitchCleared {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records explicit kill-switch expiry.
+    KillSwitchExpired {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records explicit kill-switch revocation.
+    KillSwitchRevoked {
+        /// Trace-ready governance transition context.
+        transition: GovernanceTransition,
+    },
+    /// Records fail-closed rejection of an invalid governance state transition.
+    GovernanceTransitionRejected {
+        /// Rejection context with object identity, scope, attempted state, and reason.
+        rejection: GovernanceTransitionRejection,
     },
     /// Marks the end of a loop tick.
     LoopTickCompleted {

@@ -33,6 +33,7 @@
 mod capabilities;
 mod daemon_security;
 mod fleet_telemetry;
+mod governance;
 mod hash;
 mod ids;
 mod message;
@@ -61,9 +62,18 @@ pub use fleet_telemetry::{
     RunStatusCounts, RunTelemetry, RuntimeMode as TelemetryRuntimeMode, TelemetryAuthority,
     TraceSyncFailure, TraceSyncTelemetry, FLEET_TELEMETRY_SCHEMA_VERSION,
 };
+pub use governance::{
+    ApprovalDenial, ApprovalGrant, ApprovalRequest, ApprovalStatus, CircuitBreaker,
+    CircuitBreakerStatus, Escalation, EscalationStatus, GovernanceExtensions, GovernanceIssuer,
+    GovernanceObjectKind, GovernanceObjectRef, GovernanceRevocation, GovernanceScope,
+    GovernanceState, GovernanceTraceLink, GovernanceTransition, GovernanceTransitionError,
+    GovernanceTransitionRejection, GovernanceValidationError, Intervention, InterventionStatus,
+    KillSwitch, KillSwitchStatus, GOVERNANCE_STATE_SCHEMA_VERSION,
+};
 pub use hash::{ContentHash, HashAlgorithm};
 pub use ids::{
-    ActionId, AgentId, FleetId, IdentityValidationError, InstanceId, MessageId, NodeId, RunId,
+    ActionId, AgentId, ApprovalId, CircuitBreakerId, EscalationId, FleetId,
+    IdentityValidationError, InstanceId, InterventionId, KillSwitchId, MessageId, NodeId, RunId,
     RuntimeIdentityContext, SnapshotId, StateNodeId, TenantId, TickId, TraceEventId, TraceId,
     TraceIdentityContext, WorkOrderId, WorkOrderIdError,
 };
