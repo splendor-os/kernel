@@ -213,6 +213,7 @@ orders to re-execute actions.
 - No PKI or fleet mTLS rollout.
 - No node bootstrap protocol.
 - No remote fleet auth.
-- No governance approval workflow.
+- No governance approval workflow is implemented by this S0 security-boundary
+  validator; approval enforcement is documented separately for 0.04-S2.
 - No broad runtime permission engine.
 - No TypeScript runtime enforcement that duplicates Rust runtime semantics.

@@ -5,9 +5,10 @@ use splendor_store::{
     StateNodeId, StateSnapshot, StateStore, StateStoreError,
 };
 use splendor_types::{
-    ConstraintKind, ConstraintScope, DelegatedAuthority, PerceptProvenance, QuotaUsage,
-    RevocationStatus, RunId, TraceEvent, WorkOrder, WorkOrderId, WorkOrderPlacement,
-    WorkOrderQuotaPolicy, WORK_ORDER_SCHEMA_VERSION,
+    ActionId, ApprovalDecision, ApprovalEvidence, ApprovalId, ApprovalTraceContext, ConstraintKind,
+    ConstraintScope, DelegatedAuthority, PerceptProvenance, QuotaUsage, RevocationStatus, RunId,
+    TenantId, TraceEvent, WorkOrder, WorkOrderId, WorkOrderPlacement, WorkOrderQuotaPolicy,
+    WORK_ORDER_SCHEMA_VERSION,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -940,13 +941,102 @@ fn action_candidate_builder_methods() {
         actions: 2,
         ..QuotaUsage::default()
     };
+    let run_id = RunId::new();
+    let evidence = ApprovalEvidence::new(
+        ApprovalId::new(),
+        TenantId::new(),
+        splendor_types::AgentId::new(),
+        run_id,
+        ApprovalDecision::Granted,
+        OffsetDateTime::now_utc() + time::Duration::minutes(5),
+    )
+    .with_action_name("build")
+    .with_adapter("adapter");
     let candidate = ActionCandidate::new(action)
         .with_adapter("adapter".to_string())
         .with_usage(usage)
-        .with_satisfied_preconditions(vec!["ready".to_string()]);
+        .with_satisfied_preconditions(vec!["ready".to_string()])
+        .with_approval_evidence(evidence.clone());
     assert_eq!(candidate.adapter.as_deref(), Some("adapter"));
     assert_eq!(candidate.usage.actions, 2);
     assert_eq!(candidate.satisfied_preconditions, vec!["ready".to_string()]);
+    assert_eq!(candidate.approval_evidence.as_ref(), Some(&evidence));
+}
+
+#[test]
+fn approval_artifact_and_trace_kind_cover_lifecycle_variants() {
+    let run_id = RunId::new();
+    let approval = ApprovalTraceContext {
+        approval_id: ApprovalId::new(),
+        tenant_id: TenantId::new(),
+        agent_id: splendor_types::AgentId::new(),
+        run_id: run_id.clone(),
+        action_id: Some(ActionId::new()),
+        action_name: "artifact.publish".to_string(),
+        adapter: Some("artifact-store".to_string()),
+        decision: Some(ApprovalDecision::Granted),
+        reason: Some("operator decision".to_string()),
+        policy_id: Some("publish_policy".to_string()),
+        risk_level: Some("external".to_string()),
+        issued_at: Some(OffsetDateTime::now_utc()),
+        expires_at: Some(OffsetDateTime::now_utc() + time::Duration::minutes(10)),
+        revoked: false,
+    };
+
+    let direct = VerificationResult {
+        allowed: false,
+        reasons: vec!["approval_required".to_string()],
+        artifacts: serde_json::json!({
+            "approval_status": "required",
+            "approval_context": approval,
+        }),
+    };
+    let (status, parsed) = approval_artifact(&direct).expect("direct approval artifact");
+    assert_eq!(status, "required");
+    assert_eq!(parsed.action_name, "artifact.publish");
+
+    let nested = VerificationResult {
+        allowed: true,
+        reasons: Vec::new(),
+        artifacts: serde_json::json!({
+            "approval": {
+                "approval_status": "granted",
+                "approval": parsed,
+            }
+        }),
+    };
+    let (status, approval) = approval_artifact(&nested).expect("nested approval artifact");
+    assert_eq!(status, "granted");
+
+    for (status, expected) in [
+        ("required", "requested"),
+        ("granted", "granted"),
+        ("expired", "expired"),
+        ("revoked", "revoked"),
+        ("intervention_required", "policy_expired"),
+        ("denied", "denied"),
+    ] {
+        let kind = approval_trace_kind(status, approval.clone());
+        match (expected, kind) {
+            ("requested", TraceEventKind::ApprovalRequested { .. }) => {}
+            ("granted", TraceEventKind::ApprovalGranted { .. }) => {}
+            ("expired", TraceEventKind::ApprovalExpired { reason, .. }) => {
+                assert_eq!(reason, "approval_expired")
+            }
+            ("revoked", TraceEventKind::ApprovalRevoked { reason, .. }) => {
+                assert_eq!(reason, "approval_revoked")
+            }
+            ("policy_expired", TraceEventKind::ApprovalDenied { reason, .. }) => {
+                assert_eq!(reason, "approval_policy_expired")
+            }
+            ("denied", TraceEventKind::ApprovalDenied { reason, .. }) => {
+                assert_eq!(reason, "approval_denied")
+            }
+            (expected, other) => panic!("expected {expected}, got {other:?}"),
+        }
+    }
+
+    assert!(approval_artifact(&VerificationResult::allow()).is_none());
 }
 
 #[test]
@@ -1060,9 +1150,15 @@ fn event_kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::ConstraintsEvaluated { .. } => "ConstraintsEvaluated",
         TraceEventKind::ActionVerificationStarted { .. } => "ActionVerificationStarted",
         TraceEventKind::ActionVerificationCompleted { .. } => "ActionVerificationCompleted",
+        TraceEventKind::ActionNeedsApproval { .. } => "ActionNeedsApproval",
         TraceEventKind::ActionExecuted { .. } => "ActionExecuted",
         TraceEventKind::ActionDenied { .. } => "ActionDenied",
         TraceEventKind::ActionFailed { .. } => "ActionFailed",
+        TraceEventKind::ApprovalRequested { .. } => "ApprovalRequested",
+        TraceEventKind::ApprovalGranted { .. } => "ApprovalGranted",
+        TraceEventKind::ApprovalDenied { .. } => "ApprovalDenied",
+        TraceEventKind::ApprovalExpired { .. } => "ApprovalExpired",
+        TraceEventKind::ApprovalRevoked { .. } => "ApprovalRevoked",
         TraceEventKind::OutcomeRecorded { .. } => "OutcomeRecorded",
         TraceEventKind::StateCommitted { .. } => "StateCommitted",
         TraceEventKind::StateHandoffExported { .. } => "StateHandoffExported",

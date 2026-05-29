@@ -13,7 +13,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use splendor_gateway::{
     ActionAdapter, ActionGateway, ActionId, ActionOutcome, ActionRequest, ActionStatus,
-    AdapterError, AdapterResult, VerifiedActionGateway,
+    AdapterError, AdapterResult, PolicyApprovalVerifier, VerifiedActionGateway,
 };
 use splendor_kernel::{
     Action, ActionCandidate, AgentContext, AgentRuntimeConfig, LoopEngine, LoopError, Percept,
@@ -26,10 +26,10 @@ use splendor_store::{
     TraceStore, TraceStoreError,
 };
 use splendor_types::{
-    AuditAttribution, CallerCredential, CredentialAudience, DaemonEndpoint, DaemonSecurityDecision,
-    DaemonSecurityError, DaemonSecurityRequest, GatewayVerificationState, InsecureDevMode,
-    LocalTransportBinding, PerceptProvenance, TenantId, TraceEvent, TraceId,
-    WorkOrderAuthorization,
+    ApprovalEvidence, ApprovalPolicy, ApprovalTraceContext, AuditAttribution, CallerCredential,
+    CredentialAudience, DaemonEndpoint, DaemonSecurityDecision, DaemonSecurityError,
+    DaemonSecurityRequest, GatewayVerificationState, InsecureDevMode, LocalTransportBinding,
+    PerceptProvenance, TenantId, TraceEvent, TraceId, WorkOrderAuthorization,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -163,7 +163,10 @@ pub fn router(state: DaemonState) -> Router {
 pub enum RunStatus {
     Created,
     Running,
+    WaitingForApproval,
     Paused,
+    Denied,
+    Expired,
     Stopped,
     Failed,
 }
@@ -182,9 +185,35 @@ struct RunSlot {
     allowed_percept_sources: Vec<String>,
     state_head: Option<StateNodeId>,
     adapter_executions: Arc<AtomicU64>,
+    approval_evidence: ApprovalEvidenceSlot,
+    pending_approval: Option<ApprovalTraceContext>,
     tick_count: u64,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
+}
+
+#[derive(Clone, Default)]
+struct ApprovalEvidenceSlot {
+    inner: Arc<Mutex<Option<ApprovalEvidence>>>,
+}
+
+impl ApprovalEvidenceSlot {
+    fn set(&self, evidence: ApprovalEvidence) -> Result<(), LoopError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| LoopError::Policy("approval evidence slot poisoned".to_string()))?;
+        *guard = Some(evidence);
+        Ok(())
+    }
+
+    fn take(&self) -> Result<Option<ApprovalEvidence>, LoopError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| LoopError::Policy("approval evidence slot poisoned".to_string()))?;
+        Ok(guard.take())
+    }
 }
 
 #[derive(Clone, Default)]
@@ -223,6 +252,7 @@ impl Perceptor for QueuedPerceptor {
 
 struct StaticDaemonPolicy {
     actions: Vec<ActionCandidate>,
+    approval_evidence: ApprovalEvidenceSlot,
 }
 
 impl Policy for StaticDaemonPolicy {
@@ -238,8 +268,18 @@ impl Policy for StaticDaemonPolicy {
         });
         let bytes =
             serde_json::to_vec(&payload).map_err(|error| LoopError::Policy(error.to_string()))?;
+        let approval_evidence = self.approval_evidence.take()?;
+        let actions = self
+            .actions
+            .clone()
+            .into_iter()
+            .map(|candidate| match approval_evidence.clone() {
+                Some(evidence) => candidate.with_approval_evidence(evidence),
+                None => candidate,
+            })
+            .collect();
         Ok(PolicyDecision::new(
-            self.actions.clone(),
+            actions,
             StateData {
                 bytes,
                 content_type: Some("application/json".to_string()),
@@ -308,6 +348,8 @@ pub struct CreateRunRequest {
     #[serde(default)]
     pub registered_actions: Vec<RegisteredAction>,
     #[serde(default)]
+    pub approval_policies: Vec<ApprovalPolicy>,
+    #[serde(default)]
     pub allowed_percept_schemas: Vec<String>,
     #[serde(default)]
     pub allowed_percept_sources: Vec<String>,
@@ -362,6 +404,8 @@ pub struct LifecycleRequest {
     pub work_order: Option<WorkOrderAuthorization>,
     pub audit_attribution: Option<AuditAttribution>,
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_evidence: Option<ApprovalEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -443,6 +487,17 @@ pub struct ReplayResponse {
     pub mode: String,
     pub event_count: usize,
     pub action_event_count: usize,
+    pub approval_events: Vec<ApprovalReplayEvent>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ApprovalReplayEvent {
+    pub lifecycle: String,
+    pub approval: ApprovalTraceContext,
+    pub reason: Option<String>,
+    pub trace_event_id: TraceId,
+    pub sequence: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -459,6 +514,8 @@ pub struct SubmitActionRequest {
     pub quota_usage: Option<splendor_types::QuotaUsage>,
     #[serde(default)]
     pub satisfied_preconditions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_evidence: Option<ApprovalEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -530,6 +587,16 @@ impl From<SchedulerError> for ApiError {
     }
 }
 
+impl From<LoopError> for ApiError {
+    fn from(error: LoopError) -> Self {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "loop_error",
+            error.to_string(),
+        )
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.status, Json(self.body)).into_response()
@@ -575,6 +642,11 @@ async fn create_run(
 
     let adapter_executions = Arc::new(AtomicU64::new(0));
     let mut gateway = VerifiedActionGateway::new(Arc::new(tenant_registry.clone()));
+    if !request.approval_policies.is_empty() {
+        gateway.set_approval_verifier(Arc::new(PolicyApprovalVerifier::new(
+            request.approval_policies.clone(),
+        )));
+    }
     let registrations = registrations_for_request(&request);
     for registration in registrations {
         gateway.register_adapter(
@@ -600,8 +672,10 @@ async fn create_run(
         .into_iter()
         .map(DaemonActionCandidate::into_candidate)
         .collect();
+    let approval_evidence = ApprovalEvidenceSlot::default();
     let policy = Box::new(StaticDaemonPolicy {
         actions: policy_actions,
+        approval_evidence: approval_evidence.clone(),
     });
     let agent = AgentContext::new(
         request.agent_id.clone(),
@@ -645,6 +719,8 @@ async fn create_run(
         allowed_percept_sources: request.allowed_percept_sources,
         state_head: None,
         adapter_executions,
+        approval_evidence,
+        pending_approval: None,
         tick_count: 0,
         created_at: OffsetDateTime::now_utc(),
         updated_at: OffsetDateTime::now_utc(),
@@ -920,18 +996,28 @@ async fn replay_run(
                         event.kind,
                         TraceEventKind::ActionExecuted { .. }
                             | TraceEventKind::ActionDenied { .. }
+                            | TraceEventKind::ActionNeedsApproval { .. }
                             | TraceEventKind::ActionFailed { .. }
                     )
                 })
                 .unwrap_or(false)
         })
         .count();
+    let approval_events = records
+        .iter()
+        .filter_map(|record| {
+            serde_json::from_value::<TraceEvent>(record.payload.clone())
+                .ok()
+                .and_then(approval_replay_event)
+        })
+        .collect();
     Ok(Json(ReplayResponse {
         replay_id: format!("replay-{run_id}"),
         run_id,
         mode: "inspect_only".to_string(),
         event_count: records.len(),
         action_event_count,
+        approval_events,
     }))
 }
 
@@ -982,6 +1068,7 @@ async fn submit_action(
             .unwrap_or_else(splendor_types::QuotaUsage::single_action),
         satisfied_preconditions: request.satisfied_preconditions,
         requested_at: OffsetDateTime::now_utc(),
+        approval_evidence: request.approval_evidence,
     };
     let outcome = slot.gateway.submit(action_request).map_err(|error| {
         ApiError::new(
@@ -998,20 +1085,65 @@ async fn submit_action(
         },
     )?;
     match outcome.status {
-        ActionStatus::Executed => record_run_event(
-            slot,
-            TraceEventKind::ActionExecuted {
-                action: request.action.clone(),
-                outcome: outcome.output.clone().unwrap_or(serde_json::Value::Null),
-            },
-        ),
-        ActionStatus::Denied => record_run_event(
-            slot,
-            TraceEventKind::ActionDenied {
-                action: request.action.clone(),
-                result: outcome.verification.clone(),
-            },
-        ),
+        ActionStatus::Executed => {
+            record_approval_event_if_present(slot, &outcome)?;
+            record_run_event(
+                slot,
+                TraceEventKind::ActionExecuted {
+                    action: request.action.clone(),
+                    outcome: outcome.output.clone().unwrap_or(serde_json::Value::Null),
+                },
+            )
+        }
+        ActionStatus::Denied => {
+            record_approval_event_if_present(slot, &outcome)?;
+            update_status_for_approval_denial(slot, &outcome);
+            record_run_event(
+                slot,
+                TraceEventKind::ActionDenied {
+                    action: request.action.clone(),
+                    result: outcome.verification.clone(),
+                },
+            )
+        }
+        ActionStatus::NeedsApproval => {
+            if let Some(approval) =
+                approval_artifact(&outcome.verification).map(|(_, approval)| approval)
+            {
+                slot.pending_approval = Some(approval);
+            }
+            record_approval_event_if_present(slot, &outcome)?;
+            record_run_event(
+                slot,
+                TraceEventKind::ActionNeedsApproval {
+                    action: request.action.clone(),
+                    result: outcome.verification.clone(),
+                },
+            )?;
+            record_run_event(
+                slot,
+                TraceEventKind::RunPaused {
+                    reason: Some("waiting_for_approval".to_string()),
+                },
+            )?;
+            slot.status = RunStatus::WaitingForApproval;
+            Ok(())
+        }
+        ActionStatus::NeedsIntervention => {
+            record_approval_event_if_present(slot, &outcome)?;
+            slot.status = RunStatus::Failed;
+            record_run_event(
+                slot,
+                TraceEventKind::ActionFailed {
+                    action: request.action.clone(),
+                    error: outcome
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "needs_intervention".to_string()),
+                    result: outcome.verification.clone(),
+                },
+            )
+        }
         ActionStatus::Failed => record_run_event(
             slot,
             TraceEventKind::ActionFailed {
@@ -1129,18 +1261,36 @@ async fn run_lifecycle_tick(
             "resume work order agent does not match the run agent",
         ));
     }
-    if matches!(kind, LifecycleKind::Resume) && slot.status != RunStatus::Paused {
+    if matches!(kind, LifecycleKind::Resume)
+        && !matches!(
+            slot.status,
+            RunStatus::Paused | RunStatus::WaitingForApproval
+        )
+    {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "invalid_run_state",
-            "run must be paused before resume",
+            "run must be paused or waiting for approval before resume",
         ));
     }
-    if matches!(slot.status, RunStatus::Stopped | RunStatus::Failed) {
+    if matches!(kind, LifecycleKind::Resume)
+        && slot.status == RunStatus::WaitingForApproval
+        && request.approval_evidence.is_none()
+    {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "approval_required",
+            "resume from waiting_for_approval requires approval evidence",
+        ));
+    }
+    if matches!(
+        slot.status,
+        RunStatus::Stopped | RunStatus::Failed | RunStatus::Denied | RunStatus::Expired
+    ) {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "invalid_run_state",
-            "stopped or failed runs cannot be started",
+            "terminal runs cannot be started",
         ));
     }
     let endpoint = match kind {
@@ -1156,6 +1306,11 @@ async fn run_lifecycle_tick(
             },
         )?;
     }
+    if let Some(evidence) = request.approval_evidence {
+        slot.approval_evidence
+            .set(evidence)
+            .map_err(ApiError::from)?;
+    }
     let step = match slot.scheduler.run_once() {
         Ok(step) => step,
         Err(error) => {
@@ -1166,7 +1321,31 @@ async fn run_lifecycle_tick(
     };
     slot.state_head = Some(step.outcome.state_commit.node_id.clone());
     slot.tick_count = slot.tick_count.saturating_add(1);
-    slot.status = success_status;
+    if let Some(outcome) = step
+        .outcome
+        .action_outcomes
+        .iter()
+        .find(|outcome| outcome.status == ActionStatus::NeedsApproval)
+    {
+        slot.pending_approval =
+            approval_artifact(&outcome.verification).map(|(_, approval)| approval);
+        record_run_event(
+            slot,
+            TraceEventKind::RunPaused {
+                reason: Some("waiting_for_approval".to_string()),
+            },
+        )?;
+        slot.status = RunStatus::WaitingForApproval;
+    } else if let Some(outcome) = step.outcome.action_outcomes.iter().find(|outcome| {
+        outcome.status == ActionStatus::Denied && approval_artifact(&outcome.verification).is_some()
+    }) {
+        update_status_for_approval_denial(slot, outcome);
+    } else if step.outcome.needs_intervention {
+        slot.status = RunStatus::Failed;
+    } else {
+        slot.pending_approval = None;
+        slot.status = success_status;
+    }
     slot.updated_at = OffsetDateTime::now_utc();
     Ok(Json(TickResponse {
         run_id,
@@ -1249,6 +1428,100 @@ fn record_run_event(slot: &RunSlot, kind: TraceEventKind) -> Result<(), ApiError
                 error.to_string(),
             )
         })
+}
+
+fn record_approval_event_if_present(
+    slot: &RunSlot,
+    outcome: &ActionOutcome,
+) -> Result<(), ApiError> {
+    let Some((status, approval)) = approval_artifact(&outcome.verification) else {
+        return Ok(());
+    };
+    record_run_event(slot, approval_trace_kind(status.as_str(), approval))
+}
+
+fn update_status_for_approval_denial(slot: &mut RunSlot, outcome: &ActionOutcome) {
+    let Some((status, _approval)) = approval_artifact(&outcome.verification) else {
+        return;
+    };
+    slot.status = match status.as_str() {
+        "expired" => RunStatus::Expired,
+        "denied" | "revoked" => RunStatus::Denied,
+        _ => slot.status.clone(),
+    };
+}
+
+fn approval_artifact(
+    result: &splendor_types::VerificationResult,
+) -> Option<(String, ApprovalTraceContext)> {
+    let artifact = result
+        .artifacts
+        .get("approval")
+        .or_else(|| result.artifacts.get("approval_context"))?;
+    let (status, approval_value) = if artifact.get("approval").is_some() {
+        (
+            artifact
+                .get("approval_status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+            artifact.get("approval")?,
+        )
+    } else {
+        (
+            result
+                .artifacts
+                .get("approval_status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+            artifact,
+        )
+    };
+    serde_json::from_value::<ApprovalTraceContext>(approval_value.clone())
+        .ok()
+        .map(|approval| (status, approval))
+}
+
+fn approval_trace_kind(status: &str, approval: ApprovalTraceContext) -> TraceEventKind {
+    match status {
+        "required" => TraceEventKind::ApprovalRequested { approval },
+        "granted" => TraceEventKind::ApprovalGranted { approval },
+        "expired" => TraceEventKind::ApprovalExpired {
+            approval,
+            reason: "approval_expired".to_string(),
+        },
+        "revoked" => TraceEventKind::ApprovalRevoked {
+            approval,
+            reason: "approval_revoked".to_string(),
+        },
+        "intervention_required" => TraceEventKind::ApprovalDenied {
+            approval,
+            reason: "approval_policy_expired".to_string(),
+        },
+        _ => TraceEventKind::ApprovalDenied {
+            approval,
+            reason: "approval_denied".to_string(),
+        },
+    }
+}
+
+fn approval_replay_event(event: TraceEvent) -> Option<ApprovalReplayEvent> {
+    let (lifecycle, approval, reason) = match event.kind {
+        TraceEventKind::ApprovalRequested { approval } => ("requested", approval, None),
+        TraceEventKind::ApprovalGranted { approval } => ("granted", approval, None),
+        TraceEventKind::ApprovalDenied { approval, reason } => ("denied", approval, Some(reason)),
+        TraceEventKind::ApprovalExpired { approval, reason } => ("expired", approval, Some(reason)),
+        TraceEventKind::ApprovalRevoked { approval, reason } => ("revoked", approval, Some(reason)),
+        _ => return None,
+    };
+    Some(ApprovalReplayEvent {
+        lifecycle: lifecycle.to_string(),
+        approval,
+        reason,
+        trace_event_id: event.trace_event_id,
+        sequence: event.sequence,
+    })
 }
 
 fn record_daemon_audit(
@@ -1465,6 +1738,63 @@ mod tests {
     }
 
     #[test]
+    fn approval_trace_and_replay_helpers_cover_all_lifecycles() {
+        let run_id = RunId::new();
+        let approval = ApprovalTraceContext {
+            approval_id: splendor_types::ApprovalId::new(),
+            tenant_id: TenantId::new(),
+            agent_id: splendor_types::AgentId::new(),
+            run_id: run_id.clone(),
+            action_id: Some(ActionId::new()),
+            action_name: "artifact.publish".to_string(),
+            adapter: Some("artifact-store".to_string()),
+            decision: Some(splendor_types::ApprovalDecision::Granted),
+            reason: Some("operator decision".to_string()),
+            policy_id: Some("publish_policy".to_string()),
+            risk_level: Some("external".to_string()),
+            issued_at: Some(OffsetDateTime::now_utc()),
+            expires_at: Some(OffsetDateTime::now_utc() + time::Duration::minutes(10)),
+            revoked: false,
+        };
+
+        for (sequence, (status, replay_lifecycle, expected_reason)) in [
+            ("required", "requested", None),
+            ("granted", "granted", None),
+            ("expired", "expired", Some("approval_expired")),
+            ("revoked", "revoked", Some("approval_revoked")),
+            (
+                "intervention_required",
+                "denied",
+                Some("approval_policy_expired"),
+            ),
+            ("denied", "denied", Some("approval_denied")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let kind = approval_trace_kind(status, approval.clone());
+            let event = TraceEvent::new(
+                run_id.clone(),
+                sequence as u64,
+                OffsetDateTime::now_utc(),
+                kind,
+            );
+            let replay = approval_replay_event(event).expect("approval replay event");
+            assert_eq!(replay.lifecycle, replay_lifecycle);
+            assert_eq!(replay.reason.as_deref(), expected_reason);
+            assert_eq!(replay.sequence, sequence as u64);
+        }
+
+        let non_approval = TraceEvent::new(
+            run_id,
+            99,
+            OffsetDateTime::now_utc(),
+            TraceEventKind::RunStarted,
+        );
+        assert!(approval_replay_event(non_approval).is_none());
+    }
+
+    #[test]
     fn registration_defaults_and_trace_recording_fail_closed_paths_are_stable() {
         let tenant_id = TenantId::new();
         let agent_id = splendor_types::AgentId::new();
@@ -1504,6 +1834,7 @@ mod tests {
                 satisfied_preconditions: Vec::new(),
             }],
             registered_actions: Vec::new(),
+            approval_policies: Vec::new(),
             allowed_percept_schemas: Vec::new(),
             allowed_percept_sources: Vec::new(),
             initial_state: None,
@@ -1532,6 +1863,8 @@ mod tests {
             allowed_percept_sources: Vec::new(),
             state_head: None,
             adapter_executions: Arc::new(AtomicU64::new(0)),
+            approval_evidence: ApprovalEvidenceSlot::default(),
+            pending_approval: None,
             tick_count: 0,
             created_at: OffsetDateTime::now_utc(),
             updated_at: OffsetDateTime::now_utc(),

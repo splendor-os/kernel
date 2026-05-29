@@ -29,13 +29,16 @@
 //!     quota_usage: splendor_types::QuotaUsage::single_action(),
 //!     satisfied_preconditions: vec![],
 //!     requested_at: OffsetDateTime::now_utc(),
+//!     approval_evidence: None,
 //! };
 //! assert!(ActionGateway::submit(&gateway, request).is_err());
 //! ```
 
 use serde::{Deserialize, Serialize};
 use splendor_types::{
-    Action, AgentId, IdentityValidationError, QuotaUsage, RunId, TenantId, VerificationResult,
+    Action, AgentId, ApprovalActionScope, ApprovalDecision, ApprovalEvidence, ApprovalId,
+    ApprovalPolicy, ApprovalTraceContext, IdentityValidationError, QuotaUsage, RunId, TenantId,
+    VerificationResult,
 };
 use std::collections::HashMap;
 use std::future::{ready, Future, Ready};
@@ -65,6 +68,9 @@ pub struct ActionRequest {
     pub satisfied_preconditions: Vec<String>,
     /// Timestamp when the action was requested.
     pub requested_at: OffsetDateTime,
+    /// Optional approval grant/denial evidence presented for this action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_evidence: Option<ApprovalEvidence>,
 }
 
 impl ActionRequest {
@@ -112,6 +118,10 @@ pub enum ActionStatus {
     Executed,
     /// Action was denied by verification.
     Denied,
+    /// Action is paused until scoped approval evidence is presented.
+    NeedsApproval,
+    /// Action requires operator/runtime intervention before it can proceed.
+    NeedsIntervention,
     /// Action failed during adapter execution.
     Failed,
 }
@@ -171,6 +181,175 @@ pub trait InvariantEvaluator: Send + Sync {
     ) -> VerificationResult;
 }
 
+/// Result returned by an approval verifier.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ApprovalVerification {
+    /// No approval policy applies to this action.
+    NotRequired,
+    /// Scoped approval evidence is valid; execution may continue.
+    Granted(VerificationResult),
+    /// Approval is required but no valid evidence was supplied yet.
+    Required(VerificationResult),
+    /// Approval evidence denied, expired, was revoked, or had the wrong scope.
+    Denied(VerificationResult),
+    /// The approval verifier could not complete and failed closed.
+    NeedsIntervention(VerificationResult),
+}
+
+/// Verifies scoped approval evidence before adapter execution.
+pub trait ApprovalVerifier: Send + Sync {
+    /// Validates whether an action requires approval and whether supplied evidence is valid.
+    fn verify_approval(
+        &self,
+        action: &ActionRequest,
+        adapter: Option<&str>,
+        now: OffsetDateTime,
+    ) -> ApprovalVerification;
+}
+
+/// Approval verifier that requires no approval policies.
+#[derive(Clone, Debug, Default)]
+pub struct NoApprovalVerifier;
+
+impl ApprovalVerifier for NoApprovalVerifier {
+    fn verify_approval(
+        &self,
+        _action: &ActionRequest,
+        _adapter: Option<&str>,
+        _now: OffsetDateTime,
+    ) -> ApprovalVerification {
+        ApprovalVerification::NotRequired
+    }
+}
+
+/// Static approval verifier backed by local approval policies.
+#[derive(Clone, Debug, Default)]
+pub struct PolicyApprovalVerifier {
+    policies: Vec<ApprovalPolicy>,
+}
+
+impl PolicyApprovalVerifier {
+    /// Creates a static approval verifier from local policies.
+    pub fn new(policies: Vec<ApprovalPolicy>) -> Self {
+        Self { policies }
+    }
+}
+
+impl ApprovalVerifier for PolicyApprovalVerifier {
+    fn verify_approval(
+        &self,
+        action: &ActionRequest,
+        adapter: Option<&str>,
+        now: OffsetDateTime,
+    ) -> ApprovalVerification {
+        let scope = approval_scope(action, adapter);
+        let Some(policy) = self
+            .policies
+            .iter()
+            .find(|policy| policy.matches_action(&scope, now))
+        else {
+            return ApprovalVerification::NotRequired;
+        };
+
+        if policy.is_expired(now) {
+            return ApprovalVerification::NeedsIntervention(approval_result(
+                false,
+                "approval_policy_expired",
+                "intervention_required",
+                ApprovalTraceContext::requested(policy, &scope, ApprovalId::new()),
+                Some(policy.policy_id.clone()),
+            ));
+        }
+
+        let Some(evidence) = action.approval_evidence.as_ref() else {
+            return ApprovalVerification::Required(approval_result(
+                false,
+                "approval_required",
+                "required",
+                ApprovalTraceContext::requested(policy, &scope, ApprovalId::new()),
+                Some(policy.policy_id.clone()),
+            ));
+        };
+
+        let context = ApprovalTraceContext::from_evidence(evidence, &scope);
+        if (evidence.action_id.is_none() && evidence.action_name.is_none())
+            || (adapter.is_some() && evidence.adapter.is_none())
+        {
+            return ApprovalVerification::Denied(approval_result(
+                false,
+                "approval_scope_incomplete",
+                "denied",
+                context,
+                Some(policy.policy_id.clone()),
+            ));
+        }
+        if evidence.tenant_id != action.tenant_id
+            || evidence.agent_id != action.agent_id
+            || evidence.run_id != action.run_id
+            || evidence
+                .action_id
+                .as_ref()
+                .map(|action_id| action_id != &action.action_id)
+                .unwrap_or(false)
+            || evidence
+                .action_name
+                .as_ref()
+                .map(|name| name != &action.action.name)
+                .unwrap_or(false)
+            || evidence
+                .adapter
+                .as_ref()
+                .map(|expected| Some(expected.as_str()) != adapter)
+                .unwrap_or(false)
+        {
+            return ApprovalVerification::Denied(approval_result(
+                false,
+                "approval_scope_mismatch",
+                "denied",
+                context,
+                Some(policy.policy_id.clone()),
+            ));
+        }
+
+        if evidence.revoked {
+            return ApprovalVerification::Denied(approval_result(
+                false,
+                "approval_revoked",
+                "revoked",
+                context,
+                Some(policy.policy_id.clone()),
+            ));
+        }
+
+        if evidence.expires_at < now {
+            return ApprovalVerification::Denied(approval_result(
+                false,
+                "approval_expired",
+                "expired",
+                context,
+                Some(policy.policy_id.clone()),
+            ));
+        }
+
+        match evidence.decision {
+            ApprovalDecision::Granted => ApprovalVerification::Granted(approval_result(
+                true,
+                "approval_granted",
+                "granted",
+                context,
+                Some(policy.policy_id.clone()),
+            )),
+            ApprovalDecision::Denied => ApprovalVerification::Denied(approval_result(
+                false,
+                "approval_denied",
+                "denied",
+                context,
+                Some(policy.policy_id.clone()),
+            )),
+        }
+    }
+}
+
 /// Invariant evaluator that checks declared conditions against satisfied lists.
 #[derive(Clone, Debug, Default)]
 pub struct SimpleInvariantEvaluator;
@@ -212,6 +391,7 @@ pub struct VerifiedActionGateway {
     adapters: HashMap<String, AdapterRegistration>,
     tenant_access: Arc<dyn TenantAccess>,
     invariant_evaluator: Arc<dyn InvariantEvaluator>,
+    approval_verifier: Arc<dyn ApprovalVerifier>,
 }
 
 impl VerifiedActionGateway {
@@ -221,6 +401,7 @@ impl VerifiedActionGateway {
             adapters: HashMap::new(),
             tenant_access,
             invariant_evaluator: Arc::new(SimpleInvariantEvaluator),
+            approval_verifier: Arc::new(NoApprovalVerifier),
         }
     }
 
@@ -243,6 +424,11 @@ impl VerifiedActionGateway {
     /// Overrides the invariant evaluator used by the gateway.
     pub fn set_invariant_evaluator(&mut self, evaluator: Arc<dyn InvariantEvaluator>) {
         self.invariant_evaluator = evaluator;
+    }
+
+    /// Overrides the approval verifier used by the gateway.
+    pub fn set_approval_verifier(&mut self, verifier: Arc<dyn ApprovalVerifier>) {
+        self.approval_verifier = verifier;
     }
 }
 
@@ -300,6 +486,28 @@ impl ActionGateway for VerifiedActionGateway {
             return Ok(denied_outcome(action.action_id, verification));
         }
 
+        let approval_verification = self.approval_verifier.verify_approval(
+            &action,
+            Some(adapter_id),
+            OffsetDateTime::now_utc(),
+        );
+        let approval_grant = match approval_verification {
+            ApprovalVerification::NotRequired => None,
+            ApprovalVerification::Granted(result) => Some(result),
+            ApprovalVerification::Required(mut result) => {
+                attach_request_context(&mut result, &action);
+                return Ok(needs_approval_outcome(action.action_id, result));
+            }
+            ApprovalVerification::Denied(mut result) => {
+                attach_request_context(&mut result, &action);
+                return Ok(denied_outcome(action.action_id, result));
+            }
+            ApprovalVerification::NeedsIntervention(mut result) => {
+                attach_request_context(&mut result, &action);
+                return Ok(needs_intervention_outcome(action.action_id, result));
+            }
+        };
+
         let quota_result = self.tenant_access.verify_quota(
             &action.tenant_id,
             &action.agent_id,
@@ -309,6 +517,9 @@ impl ActionGateway for VerifiedActionGateway {
         if !verification.allowed {
             attach_request_context(&mut verification, &action);
             return Ok(denied_outcome(action.action_id, verification));
+        }
+        if let Some(approval_grant) = approval_grant {
+            attach_allowed_artifact(&mut verification, "approval", approval_grant.artifacts);
         }
 
         let adapter_result = match registration.adapter.execute(&action) {
@@ -491,6 +702,91 @@ fn denied_outcome(action_id: ActionId, verification: VerificationResult) -> Acti
     }
 }
 
+fn needs_approval_outcome(action_id: ActionId, verification: VerificationResult) -> ActionOutcome {
+    ActionOutcome {
+        action_id,
+        status: ActionStatus::NeedsApproval,
+        verification,
+        post_verification: None,
+        output: None,
+        error: Some("approval_required".to_string()),
+        completed_at: OffsetDateTime::now_utc(),
+    }
+}
+
+fn needs_intervention_outcome(
+    action_id: ActionId,
+    verification: VerificationResult,
+) -> ActionOutcome {
+    ActionOutcome {
+        action_id,
+        status: ActionStatus::NeedsIntervention,
+        verification,
+        post_verification: None,
+        output: None,
+        error: Some("needs_intervention".to_string()),
+        completed_at: OffsetDateTime::now_utc(),
+    }
+}
+
+fn approval_scope<'a>(
+    action: &'a ActionRequest,
+    adapter: Option<&'a str>,
+) -> ApprovalActionScope<'a> {
+    ApprovalActionScope {
+        tenant_id: &action.tenant_id,
+        agent_id: &action.agent_id,
+        run_id: &action.run_id,
+        action_id: &action.action_id,
+        action: &action.action,
+        adapter,
+    }
+}
+
+fn approval_result(
+    allowed: bool,
+    reason: &str,
+    status: &str,
+    approval: ApprovalTraceContext,
+    policy_id: Option<String>,
+) -> VerificationResult {
+    VerificationResult {
+        allowed,
+        reasons: if allowed {
+            Vec::new()
+        } else {
+            vec![reason.to_string()]
+        },
+        artifacts: serde_json::json!({
+            "verifier": "approval_verifier",
+            "approval_status": status,
+            "approval": approval,
+            "policy_id": policy_id,
+        }),
+    }
+}
+
+fn attach_allowed_artifact(
+    result: &mut VerificationResult,
+    label: &str,
+    artifact: serde_json::Value,
+) {
+    if artifact.is_null() {
+        return;
+    }
+    let mut artifacts = match std::mem::take(&mut result.artifacts) {
+        serde_json::Value::Object(map) => map,
+        serde_json::Value::Null => serde_json::Map::new(),
+        other => {
+            let mut map = serde_json::Map::new();
+            map.insert("detail".to_string(), other);
+            map
+        }
+    };
+    artifacts.insert(label.to_string(), artifact);
+    result.artifacts = serde_json::Value::Object(artifacts);
+}
+
 fn attach_request_context(result: &mut VerificationResult, action: &ActionRequest) {
     let sources = result
         .artifacts
@@ -518,7 +814,10 @@ fn request_context(action: &ActionRequest, sources: Vec<String>) -> serde_json::
         "source": "gateway_verifier_chain",
         "tenant_id": action.tenant_id.to_string(),
         "agent_id": action.agent_id.to_string(),
+        "run_id": action.run_id.to_string(),
+        "action_id": action.action_id.to_string(),
         "action": action.action.name,
+        "adapter": action.adapter,
         "sources": sources,
     })
 }

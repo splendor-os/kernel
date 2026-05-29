@@ -20,9 +20,9 @@
 //! ```
 
 use crate::{
-    Action, AgentId, AuditAttribution, Constraint, ContentHash, Feedback, GovernanceScope,
-    GovernanceTransition, GovernanceTransitionRejection, IdentityValidationError, MessageId,
-    MessageTraceContext, RemoteMessageTraceContext, Reward, RunId, SnapshotId,
+    Action, AgentId, ApprovalTraceContext, AuditAttribution, Constraint, ContentHash, Feedback,
+    GovernanceScope, GovernanceTransition, GovernanceTransitionRejection, IdentityValidationError,
+    MessageId, MessageTraceContext, RemoteMessageTraceContext, Reward, RunId, SnapshotId,
     StateHandoffTraceContext, TaskFailure, TenantId, TickId, TraceEventId, TraceId,
     TraceIdentityContext, VerificationResult, WorkOrderId,
 };
@@ -110,11 +110,11 @@ fn validate_kind_identity(
 
 fn governance_scope_for_kind(kind: &TraceEventKind) -> Option<&GovernanceScope> {
     match kind {
-        TraceEventKind::ApprovalRequested { transition }
-        | TraceEventKind::ApprovalGranted { transition }
-        | TraceEventKind::ApprovalDenied { transition }
-        | TraceEventKind::ApprovalExpired { transition }
-        | TraceEventKind::ApprovalRevoked { transition }
+        TraceEventKind::GovernanceApprovalRequested { transition }
+        | TraceEventKind::GovernanceApprovalGranted { transition }
+        | TraceEventKind::GovernanceApprovalDenied { transition }
+        | TraceEventKind::GovernanceApprovalExpired { transition }
+        | TraceEventKind::GovernanceApprovalRevoked { transition }
         | TraceEventKind::EscalationOpened { transition }
         | TraceEventKind::EscalationResolved { transition }
         | TraceEventKind::EscalationExpired { transition }
@@ -146,6 +146,18 @@ fn apply_kind_identity(
         | TraceEventKind::LoopTickCompleted { tick_id, .. } => {
             identity.tick_id.get_or_insert(TickId::from(*tick_id));
         }
+        TraceEventKind::ApprovalRequested { approval }
+        | TraceEventKind::ApprovalGranted { approval }
+        | TraceEventKind::ApprovalDenied { approval, .. }
+        | TraceEventKind::ApprovalExpired { approval, .. }
+        | TraceEventKind::ApprovalRevoked { approval, .. } => {
+            identity
+                .approval_id
+                .get_or_insert_with(|| approval.approval_id.clone());
+            if let Some(action_id) = &approval.action_id {
+                identity.action_id.get_or_insert_with(|| action_id.clone());
+            }
+        }
         TraceEventKind::MessageQueued { message }
         | TraceEventKind::MessageDelivered { message }
         | TraceEventKind::MessageRejected { message, .. }
@@ -166,11 +178,11 @@ fn apply_kind_identity(
                 .message_id
                 .get_or_insert_with(|| remote_message.message.message_id.clone());
         }
-        TraceEventKind::ApprovalRequested { transition }
-        | TraceEventKind::ApprovalGranted { transition }
-        | TraceEventKind::ApprovalDenied { transition }
-        | TraceEventKind::ApprovalExpired { transition }
-        | TraceEventKind::ApprovalRevoked { transition }
+        TraceEventKind::GovernanceApprovalRequested { transition }
+        | TraceEventKind::GovernanceApprovalGranted { transition }
+        | TraceEventKind::GovernanceApprovalDenied { transition }
+        | TraceEventKind::GovernanceApprovalExpired { transition }
+        | TraceEventKind::GovernanceApprovalRevoked { transition }
         | TraceEventKind::EscalationOpened { transition }
         | TraceEventKind::EscalationResolved { transition }
         | TraceEventKind::EscalationExpired { transition }
@@ -352,6 +364,13 @@ pub enum TraceEventKind {
         /// Result of verification checks.
         result: VerificationResult,
     },
+    /// Records an action paused by the approval verifier before adapter execution.
+    ActionNeedsApproval {
+        /// Action that requires approval.
+        action: Action,
+        /// Verification result explaining why approval is required.
+        result: VerificationResult,
+    },
     /// Records a successfully executed action and its output.
     ActionExecuted {
         /// Executed action.
@@ -374,6 +393,37 @@ pub enum TraceEventKind {
         error: String,
         /// Verification or post-verification result associated with the failure.
         result: VerificationResult,
+    },
+    /// Records creation of a scoped approval request.
+    ApprovalRequested {
+        /// Approval request scope and reason.
+        approval: ApprovalTraceContext,
+    },
+    /// Records a scoped approval grant being presented to the verifier.
+    ApprovalGranted {
+        /// Approval grant scope and expiry.
+        approval: ApprovalTraceContext,
+    },
+    /// Records an approval denial or wrong-scope approval rejection.
+    ApprovalDenied {
+        /// Approval evidence scope.
+        approval: ApprovalTraceContext,
+        /// Denial or validation reason.
+        reason: String,
+    },
+    /// Records an expired approval evidence rejection.
+    ApprovalExpired {
+        /// Approval evidence scope.
+        approval: ApprovalTraceContext,
+        /// Expiry reason.
+        reason: String,
+    },
+    /// Records a revoked approval evidence rejection.
+    ApprovalRevoked {
+        /// Approval evidence scope.
+        approval: ApprovalTraceContext,
+        /// Revocation reason.
+        reason: String,
     },
     /// Captures final outcome, feedback, and reward signals.
     OutcomeRecorded {
@@ -540,27 +590,27 @@ pub enum TraceEventKind {
         source_message_id: Option<MessageId>,
     },
     /// Records creation of an approval request governance state.
-    ApprovalRequested {
+    GovernanceApprovalRequested {
         /// Trace-ready governance transition context.
         transition: GovernanceTransition,
     },
     /// Records an approval grant governance state.
-    ApprovalGranted {
+    GovernanceApprovalGranted {
         /// Trace-ready governance transition context.
         transition: GovernanceTransition,
     },
     /// Records an approval denial governance state.
-    ApprovalDenied {
+    GovernanceApprovalDenied {
         /// Trace-ready governance transition context.
         transition: GovernanceTransition,
     },
     /// Records explicit approval expiry.
-    ApprovalExpired {
+    GovernanceApprovalExpired {
         /// Trace-ready governance transition context.
         transition: GovernanceTransition,
     },
     /// Records explicit approval revocation.
-    ApprovalRevoked {
+    GovernanceApprovalRevoked {
         /// Trace-ready governance transition context.
         transition: GovernanceTransition,
     },

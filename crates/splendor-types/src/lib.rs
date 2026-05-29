@@ -30,6 +30,7 @@
 //! assert_eq!(action.name, "http_get");
 //! ```
 
+mod approval;
 mod capabilities;
 mod daemon_security;
 mod fleet_telemetry;
@@ -44,6 +45,10 @@ mod state_handoff;
 mod trace;
 mod work_order;
 
+pub use approval::{
+    ApprovalActionScope, ApprovalDecision, ApprovalEvidence, ApprovalPolicy, ApprovalTraceContext,
+    APPROVAL_EVIDENCE_SCHEMA_VERSION, APPROVAL_POLICY_SCHEMA_VERSION,
+};
 pub use capabilities::{
     is_valid_capability_name, CapabilityDocument, CapabilityValidationError,
     CAPABILITY_DOCUMENT_SCHEMA,

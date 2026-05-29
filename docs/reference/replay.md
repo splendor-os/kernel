@@ -18,8 +18,10 @@ Replay emits JSON Lines:
   head when present, failure reason when present, and trace sequence.
 - `tick`: reconstructed policy name, percepts, candidate actions, verification
   result, action statuses, message lifecycle events, local parent/child run
-  links, replay-visible isolation denials, outcome payload, feedback/reward,
-  state hash, and snapshot metadata.
+  links, approval lifecycle facts, replay-visible isolation denials, outcome
+  payload, feedback/reward, state hash, and snapshot metadata.
+- `approval_event`: approval request, grant, denial, expiry, or revocation facts
+  reconstructed from `Approval*` trace events when present.
 - `causal_graph`: inspectable local multi-agent graph built from trace events.
   It includes message lifecycle entries with trace event IDs, message IDs,
   source/target agents, run IDs, schemas, causal parents, and rejection/expiry
@@ -31,6 +33,9 @@ Replay emits JSON Lines:
 Replay does not invoke perceptors, policies, gateways, verifiers, or adapters.
 Filesystem, HTTP, network, database, webhook, shell, and external-service side
 effects are never repeated by default.
+Approval decisions are reconstructed from trace events; replay does not call an
+approval service, re-check revocation, resume a run, or present approval evidence
+to the gateway again.
 Local message decisions are reconstructed from trace events; replay does not
 re-deliver messages or mutate router inbox/outbox state.
 
@@ -63,6 +68,8 @@ Before reconstructing ticks, replay validates:
   they are exposed in the causal graph.
 - embedded message contexts and parent/child run links remain scoped to the
   enclosing trace event run.
+- approval event contexts remain scoped to the enclosing run, and approval event
+  sequences are reported without re-running verifier logic.
 
 Work-order acceptance/rejection events are replayed as trace facts only. Replay
 does not re-verify signatures, call revocation sources, refresh key material, or

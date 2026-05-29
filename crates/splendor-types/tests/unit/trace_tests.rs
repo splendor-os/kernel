@@ -1,8 +1,8 @@
 use super::*;
 use crate::{
-    ActionId, AgentId, ApprovalId, AuditAttribution, CircuitBreakerId, ClientPrincipal,
-    DelegatedAuthority, EndpointScope, EscalationId, GovernanceExtensions, GovernanceIssuer,
-    GovernanceObjectRef, GovernanceScope, GovernanceState, GovernanceTraceLink,
+    ActionId, AgentId, ApprovalDecision, ApprovalId, AuditAttribution, ClientPrincipal,
+    CircuitBreakerId, DelegatedAuthority, EndpointScope, EscalationId, GovernanceExtensions,
+    GovernanceIssuer, GovernanceObjectRef, GovernanceScope, GovernanceState, GovernanceTraceLink,
     GovernanceTransition, GovernanceTransitionError, InterventionId, KillSwitchId,
     LocalDelegationTraceContext, Message, MessageEnvelope, MessageId, MessageTraceContext, Percept,
     PerceptProvenance, RemoteMessageEnvelope, RemoteMessageRetryPolicy, RemoteMessageTraceContext,
@@ -75,6 +75,60 @@ fn trace_event_round_trip() {
     let payload = serde_json::to_vec(&percept_event).expect("serialize");
     let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
     assert_eq!(decoded, percept_event);
+}
+
+#[test]
+fn approval_trace_events_round_trip_and_set_identity() {
+    let run_id = RunId::new();
+    let approval = ApprovalTraceContext {
+        approval_id: ApprovalId::new(),
+        tenant_id: TenantId::new(),
+        agent_id: AgentId::new(),
+        run_id: run_id.clone(),
+        action_id: Some(ActionId::new()),
+        action_name: "artifact.publish".to_string(),
+        adapter: Some("artifact-store".to_string()),
+        decision: Some(ApprovalDecision::Granted),
+        reason: Some("operator grant".to_string()),
+        policy_id: Some("publish_policy".to_string()),
+        risk_level: Some("external".to_string()),
+        issued_at: Some(OffsetDateTime::now_utc()),
+        expires_at: Some(OffsetDateTime::now_utc() + time::Duration::minutes(10)),
+        revoked: false,
+    };
+    let events = vec![
+        TraceEventKind::ApprovalRequested {
+            approval: approval.clone(),
+        },
+        TraceEventKind::ApprovalGranted {
+            approval: approval.clone(),
+        },
+        TraceEventKind::ApprovalDenied {
+            approval: approval.clone(),
+            reason: "wrong_scope".to_string(),
+        },
+        TraceEventKind::ApprovalExpired {
+            approval: approval.clone(),
+            reason: "expired".to_string(),
+        },
+        TraceEventKind::ApprovalRevoked {
+            approval,
+            reason: "revoked".to_string(),
+        },
+    ];
+
+    for (sequence, kind) in events.into_iter().enumerate() {
+        let event = TraceEvent::new(
+            run_id.clone(),
+            sequence as u64,
+            OffsetDateTime::now_utc(),
+            kind,
+        );
+        assert!(event.identity.approval_id.is_some());
+        let payload = serde_json::to_vec(&event).expect("serialize");
+        let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+        assert_eq!(decoded, event);
+    }
 }
 
 #[test]
@@ -529,7 +583,7 @@ fn governance_trace_events_round_trip_and_apply_scope_identity() {
     };
 
     let events = vec![
-        TraceEventKind::ApprovalRequested {
+        TraceEventKind::GovernanceApprovalRequested {
             transition: transition(
                 GovernanceObjectRef::Approval {
                     approval_id: ApprovalId::new(),
@@ -539,7 +593,7 @@ fn governance_trace_events_round_trip_and_apply_scope_identity() {
                 21,
             ),
         },
-        TraceEventKind::ApprovalGranted {
+        TraceEventKind::GovernanceApprovalGranted {
             transition: transition(
                 GovernanceObjectRef::Approval {
                     approval_id: ApprovalId::new(),
@@ -549,7 +603,7 @@ fn governance_trace_events_round_trip_and_apply_scope_identity() {
                 22,
             ),
         },
-        TraceEventKind::ApprovalDenied {
+        TraceEventKind::GovernanceApprovalDenied {
             transition: transition(
                 GovernanceObjectRef::Approval {
                     approval_id: ApprovalId::new(),
@@ -559,7 +613,7 @@ fn governance_trace_events_round_trip_and_apply_scope_identity() {
                 23,
             ),
         },
-        TraceEventKind::ApprovalExpired {
+        TraceEventKind::GovernanceApprovalExpired {
             transition: transition(
                 GovernanceObjectRef::Approval {
                     approval_id: ApprovalId::new(),
@@ -569,7 +623,7 @@ fn governance_trace_events_round_trip_and_apply_scope_identity() {
                 24,
             ),
         },
-        TraceEventKind::ApprovalRevoked {
+        TraceEventKind::GovernanceApprovalRevoked {
             transition: transition(
                 GovernanceObjectRef::Approval {
                     approval_id: ApprovalId::new(),
