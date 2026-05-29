@@ -18,11 +18,12 @@ export type InstanceId = string;
 export type TickId = number;
 export type StateNodeId = string;
 export type WorkOrderId = string;
-export type ApprovalId = string;
 export type EscalationId = string;
 export type InterventionId = string;
 export type CircuitBreakerId = string;
 export type KillSwitchId = string;
+
+export const CIRCUIT_BREAKER_SCHEMA_VERSION = "splendor.circuit_breaker.v1" as const;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -143,6 +144,38 @@ export interface ApprovalTraceContext {
   issued_at: ISODateTime | null;
   expires_at: ISODateTime | null;
   revoked: boolean;
+}
+
+export type CircuitBreakerScope =
+  | { scope: "global" }
+  | { scope: "fleet"; value: FleetId }
+  | { scope: "node"; value: NodeId }
+  | { scope: "instance"; value: InstanceId }
+  | { scope: "tenant"; value: TenantId }
+  | { scope: "agent"; value: AgentId }
+  | { scope: "adapter"; value: string }
+  | { scope: "action"; value: string }
+  | { scope: "action_class"; value: SideEffectClass };
+
+export type CircuitBreakerState = "tripped" | "cleared";
+
+export interface CircuitBreaker {
+  schema_version: string;
+  breaker_id: CircuitBreakerId;
+  scope: CircuitBreakerScope;
+  state: CircuitBreakerState;
+  reason: string;
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
+export interface CircuitBreakerTraceContext {
+  breaker_id: CircuitBreakerId;
+  scope: CircuitBreakerScope;
+  state: CircuitBreakerState;
+  reason: string;
+  authorized_by: string;
+  recorded_at: ISODateTime;
 }
 
 export interface Feedback {
@@ -378,7 +411,7 @@ export interface Intervention {
   extensions?: GovernanceExtensions;
 }
 
-export interface CircuitBreaker {
+export interface GovernanceCircuitBreaker {
   schema_version: string;
   circuit_breaker_id: CircuitBreakerId;
   scope: GovernanceScope;
@@ -478,6 +511,8 @@ export type TraceEventKind =
   | { RunStopped: { reason: string | null } }
   | { PerceptsAppended: { count: number; schemas: string[] } }
   | { DaemonAudit: { endpoint: string; audit: AuditAttribution } }
+  | { CircuitBreakerTripped: { breaker: CircuitBreakerTraceContext } }
+  | { CircuitBreakerCleared: { breaker: CircuitBreakerTraceContext } }
   | { LoopTickStarted: { tick_id: number } }
   | { PerceptsReceived: { percepts: Percept[] } }
   | { StateLoaded: { state_hash: ContentHash | null } }
@@ -491,12 +526,12 @@ export type TraceEventKind =
   | { ActionExecuted: { action: Action; outcome: JsonValue } }
   | { ActionDenied: { action: Action; result: VerificationResult } }
   | { ActionFailed: { action: Action; error: string; result: VerificationResult } }
-  | { ActionNeedsIntervention: { action: Action; result: VerificationResult } }
   | { ApprovalRequested: { approval: ApprovalTraceContext } }
   | { ApprovalGranted: { approval: ApprovalTraceContext } }
   | { ApprovalDenied: { approval: ApprovalTraceContext; reason: string } }
   | { ApprovalExpired: { approval: ApprovalTraceContext; reason: string } }
   | { ApprovalRevoked: { approval: ApprovalTraceContext; reason: string } }
+  | { ActionNeedsIntervention: { action: Action; result: VerificationResult } }
   | { EscalationTriggered: { escalation: EscalationContext } }
   | { OutcomeRecorded: { outcome: JsonValue; feedback: Feedback | null; reward: Reward | null } }
   | { StateCommitted: { state_hash: ContentHash; snapshot_id: SnapshotId | null } }
@@ -546,10 +581,10 @@ export type TraceEventKind =
   | { InterventionCancelled: { transition: GovernanceTransition } }
   | { InterventionExpired: { transition: GovernanceTransition } }
   | { InterventionRevoked: { transition: GovernanceTransition } }
-  | { CircuitBreakerTripped: { transition: GovernanceTransition } }
-  | { CircuitBreakerCleared: { transition: GovernanceTransition } }
-  | { CircuitBreakerExpired: { transition: GovernanceTransition } }
-  | { CircuitBreakerRevoked: { transition: GovernanceTransition } }
+  | { GovernanceCircuitBreakerTripped: { transition: GovernanceTransition } }
+  | { GovernanceCircuitBreakerCleared: { transition: GovernanceTransition } }
+  | { GovernanceCircuitBreakerExpired: { transition: GovernanceTransition } }
+  | { GovernanceCircuitBreakerRevoked: { transition: GovernanceTransition } }
   | { KillSwitchActivated: { transition: GovernanceTransition } }
   | { KillSwitchCleared: { transition: GovernanceTransition } }
   | { KillSwitchExpired: { transition: GovernanceTransition } }
@@ -924,6 +959,7 @@ export const CANONICAL_SCHEMA_FIELDS = {
     "approval_evidence"
   ],
   action_outcome: ["action_id", "status", "verification", "post_verification", "output", "error", "completed_at"],
+  circuit_breaker: ["schema_version", "breaker_id", "scope", "state", "reason", "created_at", "updated_at"],
   trace_event: ["trace_event_id", "run_id", "sequence", "timestamp", "identity", "kind"],
   state_head: ["run_id", "state_node_id", "parent_state_node_ids", "data_hash", "created_at", "label"],
   create_run_request: [
@@ -980,6 +1016,7 @@ export const CANONICAL_SCHEMA_FIELDS = {
   percept: readonly (keyof Percept)[];
   action_request: readonly (keyof ActionRequest)[];
   action_outcome: readonly (keyof ActionOutcome)[];
+  circuit_breaker: readonly (keyof CircuitBreaker)[];
   trace_event: readonly (keyof TraceEvent)[];
   state_head: readonly (keyof StateHead)[];
   create_run_request: readonly (keyof CreateRunRequest)[];
@@ -1003,6 +1040,8 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "RunStopped",
   "PerceptsAppended",
   "DaemonAudit",
+  "CircuitBreakerTripped",
+  "CircuitBreakerCleared",
   "LoopTickStarted",
   "PerceptsReceived",
   "StateLoaded",
@@ -1016,12 +1055,12 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "ActionExecuted",
   "ActionDenied",
   "ActionFailed",
-  "ActionNeedsIntervention",
   "ApprovalRequested",
   "ApprovalGranted",
   "ApprovalDenied",
   "ApprovalExpired",
   "ApprovalRevoked",
+  "ActionNeedsIntervention",
   "EscalationTriggered",
   "OutcomeRecorded",
   "StateCommitted",
@@ -1062,10 +1101,10 @@ export const TRACE_EVENT_KIND_VARIANTS = [
   "InterventionCancelled",
   "InterventionExpired",
   "InterventionRevoked",
-  "CircuitBreakerTripped",
-  "CircuitBreakerCleared",
-  "CircuitBreakerExpired",
-  "CircuitBreakerRevoked",
+  "GovernanceCircuitBreakerTripped",
+  "GovernanceCircuitBreakerCleared",
+  "GovernanceCircuitBreakerExpired",
+  "GovernanceCircuitBreakerRevoked",
   "KillSwitchActivated",
   "KillSwitchCleared",
   "KillSwitchExpired",

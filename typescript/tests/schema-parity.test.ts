@@ -55,6 +55,7 @@ function extractOpenApiStringEnum(source: string, schema: string): string[] {
 test("TypeScript primitive field contracts match canonical Rust structs", () => {
   const message = readRepoFile("crates/splendor-types/src/message.rs");
   const primitives = readRepoFile("crates/splendor-types/src/primitives.rs");
+  const governance = readRepoFile("crates/splendor-types/src/governance.rs");
   const trace = readRepoFile("crates/splendor-types/src/trace.rs");
   const gateway = readRepoFile("crates/splendor-gateway/src/lib.rs");
   const daemon = readRepoFile("crates/splendor-daemon/src/lib.rs");
@@ -64,6 +65,7 @@ test("TypeScript primitive field contracts match canonical Rust structs", () => 
   assert.deepEqual(CANONICAL_SCHEMA_FIELDS.trace_event, extractStructFields(trace, "TraceEvent"));
   assert.deepEqual(CANONICAL_SCHEMA_FIELDS.action_request, extractStructFields(gateway, "ActionRequest"));
   assert.deepEqual(CANONICAL_SCHEMA_FIELDS.action_outcome, extractStructFields(gateway, "ActionOutcome"));
+  assert.deepEqual(CANONICAL_SCHEMA_FIELDS.circuit_breaker, extractStructFields(governance, "CircuitBreaker"));
   assert.deepEqual(CANONICAL_SCHEMA_FIELDS.state_head, extractStructFields(daemon, "StateHeadResponse"));
   assert.deepEqual(CANONICAL_SCHEMA_FIELDS.create_run_request, extractStructFields(daemon, "CreateRunRequest"));
   assert.deepEqual(CANONICAL_SCHEMA_FIELDS.lifecycle_request, extractStructFields(daemon, "LifecycleRequest"));

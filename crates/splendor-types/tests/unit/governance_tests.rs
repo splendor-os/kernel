@@ -95,7 +95,7 @@ fn governance_objects_validate_required_fields_and_round_trip() {
         trace_link(&run_id, 6),
     )
     .expect("intervention");
-    let breaker = CircuitBreaker::active(
+    let breaker = GovernanceCircuitBreaker::active(
         CircuitBreakerId::new(),
         scope.clone(),
         now,
@@ -297,7 +297,7 @@ fn invalid_transition_is_rejected_and_traceable() {
 fn expiry_and_revocation_are_explicit() {
     let now = OffsetDateTime::now_utc();
     let run_id = RunId::new();
-    let mut breaker = CircuitBreaker::active(
+    let mut breaker = GovernanceCircuitBreaker::active(
         CircuitBreakerId::new(),
         GovernanceScope::Tenant {
             tenant_id: TenantId::new(),
@@ -321,7 +321,7 @@ fn expiry_and_revocation_are_explicit() {
     );
     breaker.validate().expect("revoked breaker is explicit");
 
-    let invalid_expiry = CircuitBreaker::active(
+    let invalid_expiry = GovernanceCircuitBreaker::active(
         CircuitBreakerId::new(),
         GovernanceScope::Global,
         now,

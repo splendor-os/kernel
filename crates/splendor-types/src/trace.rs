@@ -20,11 +20,11 @@
 //! ```
 
 use crate::{
-    Action, AgentId, ApprovalTraceContext, AuditAttribution, Constraint, ContentHash, Feedback,
-    GovernanceScope, GovernanceTransition, GovernanceTransitionRejection, IdentityValidationError,
-    MessageId, MessageTraceContext, RemoteMessageTraceContext, Reward, RunId, SnapshotId,
-    StateHandoffTraceContext, TaskFailure, TenantId, TickId, TraceEventId, TraceId,
-    TraceIdentityContext, VerificationResult, WorkOrderId, EscalationContext,
+    Action, AgentId, ApprovalTraceContext, AuditAttribution, CircuitBreakerTraceContext,
+    Constraint, ContentHash, EscalationContext, Feedback, GovernanceScope, GovernanceTransition,
+    GovernanceTransitionRejection, IdentityValidationError, MessageId, MessageTraceContext,
+    RemoteMessageTraceContext, Reward, RunId, SnapshotId, StateHandoffTraceContext, TaskFailure,
+    TenantId, TickId, TraceEventId, TraceId, TraceIdentityContext, VerificationResult, WorkOrderId,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -124,10 +124,10 @@ fn governance_scope_for_kind(kind: &TraceEventKind) -> Option<&GovernanceScope> 
         | TraceEventKind::InterventionCancelled { transition }
         | TraceEventKind::InterventionExpired { transition }
         | TraceEventKind::InterventionRevoked { transition }
-        | TraceEventKind::CircuitBreakerTripped { transition }
-        | TraceEventKind::CircuitBreakerCleared { transition }
-        | TraceEventKind::CircuitBreakerExpired { transition }
-        | TraceEventKind::CircuitBreakerRevoked { transition }
+        | TraceEventKind::GovernanceCircuitBreakerTripped { transition }
+        | TraceEventKind::GovernanceCircuitBreakerCleared { transition }
+        | TraceEventKind::GovernanceCircuitBreakerExpired { transition }
+        | TraceEventKind::GovernanceCircuitBreakerRevoked { transition }
         | TraceEventKind::KillSwitchActivated { transition }
         | TraceEventKind::KillSwitchCleared { transition }
         | TraceEventKind::KillSwitchExpired { transition }
@@ -192,10 +192,10 @@ fn apply_kind_identity(
         | TraceEventKind::InterventionCancelled { transition }
         | TraceEventKind::InterventionExpired { transition }
         | TraceEventKind::InterventionRevoked { transition }
-        | TraceEventKind::CircuitBreakerTripped { transition }
-        | TraceEventKind::CircuitBreakerCleared { transition }
-        | TraceEventKind::CircuitBreakerExpired { transition }
-        | TraceEventKind::CircuitBreakerRevoked { transition }
+        | TraceEventKind::GovernanceCircuitBreakerTripped { transition }
+        | TraceEventKind::GovernanceCircuitBreakerCleared { transition }
+        | TraceEventKind::GovernanceCircuitBreakerExpired { transition }
+        | TraceEventKind::GovernanceCircuitBreakerRevoked { transition }
         | TraceEventKind::KillSwitchActivated { transition }
         | TraceEventKind::KillSwitchCleared { transition }
         | TraceEventKind::KillSwitchExpired { transition }
@@ -319,6 +319,16 @@ pub enum TraceEventKind {
         endpoint: String,
         /// Caller attribution validated at the daemon boundary.
         audit: AuditAttribution,
+    },
+    /// Records an explicit breaker trip/change into blocking state.
+    CircuitBreakerTripped {
+        /// Breaker identity, scope, reason, and authority context.
+        breaker: CircuitBreakerTraceContext,
+    },
+    /// Records an explicit breaker clear/reset event.
+    CircuitBreakerCleared {
+        /// Breaker identity, scope, reason, and authority context.
+        breaker: CircuitBreakerTraceContext,
     },
     /// Marks the start of a loop tick.
     LoopTickStarted {
@@ -676,23 +686,23 @@ pub enum TraceEventKind {
         /// Trace-ready governance transition context.
         transition: GovernanceTransition,
     },
-    /// Records a circuit breaker being tripped/activated in state.
-    CircuitBreakerTripped {
+    /// Records a governance circuit breaker being tripped/activated in state.
+    GovernanceCircuitBreakerTripped {
         /// Trace-ready governance transition context.
         transition: GovernanceTransition,
     },
-    /// Records a circuit breaker being cleared in state.
-    CircuitBreakerCleared {
+    /// Records a governance circuit breaker being cleared in state.
+    GovernanceCircuitBreakerCleared {
         /// Trace-ready governance transition context.
         transition: GovernanceTransition,
     },
-    /// Records explicit circuit-breaker expiry.
-    CircuitBreakerExpired {
+    /// Records explicit governance circuit-breaker expiry.
+    GovernanceCircuitBreakerExpired {
         /// Trace-ready governance transition context.
         transition: GovernanceTransition,
     },
-    /// Records explicit circuit-breaker revocation.
-    CircuitBreakerRevoked {
+    /// Records explicit governance circuit-breaker revocation.
+    GovernanceCircuitBreakerRevoked {
         /// Trace-ready governance transition context.
         transition: GovernanceTransition,
     },

@@ -17,13 +17,17 @@
 - Added the 0.04-S3 escalation engine with versioned escalation policy rules,
   deterministic threshold evaluation, `NeedsIntervention` action outcomes,
   escalation trace events, and inspect-only replay reconstruction.
+- Added 0.04-S4 circuit-breaker schemas, scoped gateway enforcement, local
+  `splendorctl run` config support, trip/clear trace event variants, and
+  inspect-only replay output for breaker-denied actions.
 
 ### Explicitly not included
 
 - No approval UI, enterprise IAM integration, broad workflow language, ticketing
-  integration, notification platform, circuit-breaker registry/enforcement,
-  central policy distribution, kill-switch propagation, external control-plane
-  adapter, or side-effect path outside the Action Gateway.
+  integration, notification platform, approval workflow engine, escalation
+  automation, central policy distribution, kill-switch propagation, external
+  control-plane adapter, monitoring platform, UI dashboard, or side-effect path
+  outside the Action Gateway.
 
 ## 0.03-dev — Resident nodes + fleet execution foundation
 

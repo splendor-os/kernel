@@ -102,6 +102,18 @@ uncertain approval decisions also stop before adapter execution.
 gateway invariant: uncertain verifier results must not silently allow adapter
 execution.
 
+0.04-S4 adds a circuit-breaker verifier step. After the gateway resolves the
+registered adapter ID and before policy/quota checks or adapter execution, it
+evaluates configured tripped circuit breakers. A matching breaker returns
+`ActionStatus::Denied` with reason `circuit_breaker_tripped`; missing
+fleet/node/instance identity for a tripped runtime-scoped breaker fails closed
+with `circuit_breaker_scope_unknown`. Adapter execution is skipped for all
+breaker denials.
+
+`VerifiedActionGateway::verify_runtime_admission()` can be used by local config
+or management paths to reject new work for global, fleet, node, or instance
+breakers before local agents are registered.
+
 ## ActionGateway
 
 Synchronous gateway interface:

@@ -108,6 +108,8 @@ trace and do not authorize adapter execution outside the gateway.
 - `RunStopped { reason: Option<String> }`
 - `PerceptsAppended { count: usize, schemas: Vec<String> }`
 - `DaemonAudit { endpoint: String, audit: AuditAttribution }`
+- `CircuitBreakerTripped { breaker: CircuitBreakerTraceContext }`
+- `CircuitBreakerCleared { breaker: CircuitBreakerTraceContext }`
 - `LoopTickStarted { tick_id }`
 - `PerceptsReceived { percepts: Vec<Percept> }`
 - `StateLoaded { state_hash: Option<ContentHash> }`
@@ -333,6 +335,20 @@ All approval lifecycle events carry `ApprovalTraceContext`, which includes
 metadata where available, expiry, and revocation state. Replay reconstructs these
 events as approval facts only; it does not call approval services, verifiers,
 gateways, or adapters.
+
+## Circuit-breaker events
+
+0.04-S4 adds circuit-breaker state-change events:
+
+| Rust variant | Canonical event class | Purpose |
+| --- | --- | --- |
+| `CircuitBreakerTripped` | `circuit_breaker.tripped` | A breaker entered blocking state. |
+| `CircuitBreakerCleared` | `circuit_breaker.cleared` | A breaker was explicitly reset/cleared. |
+
+Both variants carry `CircuitBreakerTraceContext`: `breaker_id`, `scope`,
+`state`, `reason`, `authorized_by`, and `recorded_at`. Matching action denials
+remain ordinary `ActionDenied` events with `circuit_breaker_tripped` verification
+reasons and scoped breaker artifacts.
 
 ## Work-order Events
 

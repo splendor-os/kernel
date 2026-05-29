@@ -1,6 +1,7 @@
 use super::*;
 use splendor_types::{
-    AgentId, ApprovalDecision, ApprovalEvidence, ApprovalId, ApprovalPolicy, QuotaUsage, RunId,
+    AgentId, ApprovalDecision, ApprovalEvidence, ApprovalId, ApprovalPolicy, CircuitBreaker,
+    CircuitBreakerId, CircuitBreakerScope, NodeId, QuotaUsage, RunId, RuntimeIdentityContext,
     SideEffectClass, TenantId,
 };
 use std::future::Future;
@@ -688,6 +689,129 @@ fn approval_verifier_uncertainty_needs_intervention_without_adapter_execution() 
 
     assert!(matches!(outcome.status, ActionStatus::NeedsIntervention));
     assert_eq!(*adapter.calls.lock().expect("calls lock"), 0);
+}
+
+#[test]
+fn tripped_adapter_breaker_denies_before_adapter_execution() {
+    let tenant_access = Arc::new(TestTenantAccess {
+        policy: VerificationResult::allow(),
+        quota: VerificationResult::allow(),
+    });
+    let mut gateway = VerifiedActionGateway::new(tenant_access);
+    let adapter = Arc::new(CountingAdapter::default());
+    gateway.register_adapter("noop", "adapter", adapter.clone());
+    let breaker = CircuitBreaker::tripped(
+        CircuitBreakerId::try_new("cb_adapter").expect("id"),
+        CircuitBreakerScope::Adapter("adapter".to_string()),
+        "adapter disabled",
+        OffsetDateTime::now_utc(),
+    )
+    .expect("breaker");
+    gateway
+        .set_circuit_breaker_evaluator(Arc::new(StaticCircuitBreakerEvaluator::new(vec![breaker])));
+
+    let outcome = gateway.submit(base_request()).expect("outcome");
+
+    assert!(matches!(outcome.status, ActionStatus::Denied));
+    assert!(outcome
+        .verification
+        .reasons
+        .contains(&"circuit_breaker_tripped".to_string()));
+    assert_eq!(*adapter.calls.lock().expect("calls lock"), 0);
+    assert_eq!(
+        outcome.verification.artifacts["circuit_breaker"]["circuit_breaker"]["scope"].as_str(),
+        Some("adapter")
+    );
+}
+
+#[test]
+fn tenant_breaker_denies_only_matching_tenant() {
+    let denied_tenant = TenantId::new();
+    let allowed_tenant = TenantId::new();
+    let tenant_access = Arc::new(TestTenantAccess {
+        policy: VerificationResult::allow(),
+        quota: VerificationResult::allow(),
+    });
+    let mut gateway = VerifiedActionGateway::new(tenant_access);
+    let adapter = Arc::new(CountingAdapter::default());
+    gateway.register_adapter("noop", "adapter", adapter.clone());
+    let breaker = CircuitBreaker::tripped(
+        CircuitBreakerId::try_new("cb_tenant").expect("id"),
+        CircuitBreakerScope::Tenant(denied_tenant.clone()),
+        "tenant hold",
+        OffsetDateTime::now_utc(),
+    )
+    .expect("breaker");
+    gateway
+        .set_circuit_breaker_evaluator(Arc::new(StaticCircuitBreakerEvaluator::new(vec![breaker])));
+
+    let mut denied = base_request();
+    denied.tenant_id = denied_tenant;
+    let denied_outcome = gateway.submit(denied).expect("denied outcome");
+    assert!(matches!(denied_outcome.status, ActionStatus::Denied));
+
+    let mut allowed = base_request();
+    allowed.tenant_id = allowed_tenant;
+    let allowed_outcome = gateway.submit(allowed).expect("allowed outcome");
+    assert!(matches!(allowed_outcome.status, ActionStatus::Executed));
+    assert_eq!(*adapter.calls.lock().expect("calls lock"), 1);
+}
+
+#[test]
+fn action_class_breaker_uses_effective_adapter_side_effect_class() {
+    let tenant_access = Arc::new(TestTenantAccess {
+        policy: VerificationResult::allow(),
+        quota: VerificationResult::allow(),
+    });
+    let mut gateway = VerifiedActionGateway::new(tenant_access);
+    let adapter = Arc::new(CountingAdapter::default());
+    gateway.register_adapter("noop", "filesystem", adapter.clone());
+    let breaker = CircuitBreaker::tripped(
+        CircuitBreakerId::try_new("cb_filesystem_effective").expect("id"),
+        CircuitBreakerScope::ActionClass(SideEffectClass::Filesystem),
+        "filesystem disabled",
+        OffsetDateTime::now_utc(),
+    )
+    .expect("breaker");
+    gateway
+        .set_circuit_breaker_evaluator(Arc::new(StaticCircuitBreakerEvaluator::new(vec![breaker])));
+
+    let mut request = base_request();
+    request.action.side_effect_class = SideEffectClass::ReadOnly;
+    request.adapter = Some("filesystem".to_string());
+    let outcome = gateway.submit(request).expect("outcome");
+
+    assert!(matches!(outcome.status, ActionStatus::Denied));
+    assert!(outcome
+        .verification
+        .reasons
+        .contains(&"circuit_breaker_tripped".to_string()));
+    assert_eq!(*adapter.calls.lock().expect("calls lock"), 0);
+}
+
+#[test]
+fn runtime_admission_fails_closed_when_node_scope_identity_is_missing() {
+    let tenant_access = Arc::new(TestTenantAccess {
+        policy: VerificationResult::allow(),
+        quota: VerificationResult::allow(),
+    });
+    let mut gateway = VerifiedActionGateway::new(tenant_access);
+    let breaker = CircuitBreaker::tripped(
+        CircuitBreakerId::try_new("cb_node").expect("id"),
+        CircuitBreakerScope::Node(NodeId::new()),
+        "node disabled",
+        OffsetDateTime::now_utc(),
+    )
+    .expect("breaker");
+    gateway
+        .set_circuit_breaker_evaluator(Arc::new(StaticCircuitBreakerEvaluator::new(vec![breaker])));
+    gateway.set_runtime_identity(RuntimeIdentityContext::default());
+
+    let admission = gateway.verify_runtime_admission();
+    assert!(!admission.allowed);
+    assert!(admission
+        .reasons
+        .contains(&"circuit_breaker_scope_unknown".to_string()));
 }
 
 #[test]

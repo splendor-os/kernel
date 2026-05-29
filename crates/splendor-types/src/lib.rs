@@ -75,11 +75,13 @@ pub use fleet_telemetry::{
 };
 pub use governance::{
     ApprovalDenial, ApprovalGrant, ApprovalRequest, ApprovalStatus, CircuitBreaker,
-    CircuitBreakerStatus, Escalation, EscalationStatus, GovernanceExtensions, GovernanceIssuer,
-    GovernanceObjectKind, GovernanceObjectRef, GovernanceRevocation, GovernanceScope,
-    GovernanceState, GovernanceTraceLink, GovernanceTransition, GovernanceTransitionError,
+    CircuitBreakerMatch, CircuitBreakerScope, CircuitBreakerState, CircuitBreakerStatus,
+    CircuitBreakerTraceContext, CircuitBreakerValidationError, Escalation, EscalationStatus,
+    GovernanceCircuitBreaker, GovernanceExtensions, GovernanceIssuer, GovernanceObjectKind,
+    GovernanceObjectRef, GovernanceRevocation, GovernanceScope, GovernanceState,
+    GovernanceTraceLink, GovernanceTransition, GovernanceTransitionError,
     GovernanceTransitionRejection, GovernanceValidationError, Intervention, InterventionStatus,
-    KillSwitch, KillSwitchStatus, GOVERNANCE_STATE_SCHEMA_VERSION,
+    KillSwitch, KillSwitchStatus, CIRCUIT_BREAKER_SCHEMA_VERSION, GOVERNANCE_STATE_SCHEMA_VERSION,
 };
 pub use hash::{ContentHash, HashAlgorithm};
 pub use ids::{

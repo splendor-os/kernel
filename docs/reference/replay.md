@@ -19,8 +19,8 @@ Replay emits JSON Lines:
 - `tick`: reconstructed policy name, percepts, candidate actions, verification
   result, action statuses, message lifecycle events, local parent/child run
   links, approval lifecycle facts, replay-visible isolation denials,
-  escalation decisions, outcome payload, feedback/reward, state hash, and
-  snapshot metadata.
+  escalation decisions, circuit-breaker denials, outcome payload,
+  feedback/reward, state hash, and snapshot metadata.
 - `approval_event`: approval request, grant, denial, expiry, or revocation facts
   reconstructed from `Approval*` trace events when present.
 - `causal_graph`: inspectable local multi-agent graph built from trace events.
@@ -80,6 +80,11 @@ Escalation events are replayed as trace facts only. Replay reports
 `escalation.triggered` contexts and `action.needs_intervention` statuses with
 `side_effects_replayed: false`; it does not retry adapters, request approvals,
 open tickets, notify operators, or install circuit breakers.
+
+Circuit-breaker denials are replayed from stored `ActionDenied` verification
+artifacts only. Replay reports the breaker ID, scope, scope value, and reason in
+`circuit_breaker_denials`; it does not re-evaluate breaker state, clear breakers,
+or execute the denied action.
 
 ## Failure modes
 
