@@ -13,23 +13,25 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use splendor_gateway::{
     ActionAdapter, ActionGateway, ActionId, ActionOutcome, ActionRequest, ActionStatus,
-    AdapterError, AdapterResult, VerifiedActionGateway,
+    AdapterError, AdapterResult, PolicyApprovalVerifier, VerifiedActionGateway,
 };
 use splendor_kernel::{
     Action, ActionCandidate, AgentContext, AgentRuntimeConfig, LoopEngine, LoopError, Percept,
-    Perceptor, Policy, PolicyDecision, QuotaPolicy, RunId, Scheduler, SchedulerConfig,
-    SchedulerError, SnapshotPolicy, StateGraph, TenantContext, TenantPolicy, TenantRegistry,
-    TraceEventKind,
+    Perceptor, Policy, PolicyCache, PolicyCacheConfig, PolicyDecision, PolicyDistributionGateway,
+    QuotaPolicy, RunId, RunTraceContext, Scheduler, SchedulerConfig, SchedulerError,
+    SnapshotPolicy, StateGraph, TenantContext, TenantPolicy, TenantRegistry, TraceEventKind,
 };
 use splendor_store::{
     InMemoryStateStore, InMemoryTraceStore, StateData, StateNodeId, StateStore, TraceRecord,
     TraceStore, TraceStoreError,
 };
 use splendor_types::{
+    validate_policy_bundle, ApprovalEvidence, ApprovalPolicy, ApprovalTraceContext,
     AuditAttribution, CallerCredential, CredentialAudience, DaemonEndpoint, DaemonSecurityDecision,
     DaemonSecurityError, DaemonSecurityRequest, GatewayVerificationState, InsecureDevMode,
-    LocalTransportBinding, PerceptProvenance, TenantId, TraceEvent, TraceId,
-    WorkOrderAuthorization,
+    LocalTransportBinding, PerceptProvenance, PolicyBundleEnvelope, PolicyBundleKeyring,
+    PolicyBundleTraceContext, PolicyBundleValidationContext, PolicyBundleValidationError, TenantId,
+    TraceEvent, TraceId, WorkOrderAuthorization,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -46,6 +48,7 @@ struct DaemonInner {
     runs: Mutex<HashMap<RunId, RunSlot>>,
     expected_audience: CredentialAudience,
     insecure_dev_mode: Option<InsecureDevMode>,
+    policy_bundle_keyring: PolicyBundleKeyring,
     runtime_available: AtomicBool,
 }
 
@@ -67,6 +70,7 @@ impl DaemonState {
                 runs: Mutex::new(HashMap::new()),
                 expected_audience: config.expected_audience,
                 insecure_dev_mode: config.insecure_dev_mode,
+                policy_bundle_keyring: config.policy_bundle_keyring,
                 runtime_available: AtomicBool::new(true),
             }),
         }
@@ -118,11 +122,17 @@ pub struct DaemonConfig {
     pub expected_audience: CredentialAudience,
     /// Explicit local-only insecure development mode, if enabled.
     pub insecure_dev_mode: Option<InsecureDevMode>,
+    /// Verification keys for centrally distributed policy bundles.
+    pub policy_bundle_keyring: PolicyBundleKeyring,
 }
 
 impl DaemonConfig {
     /// Local loopback development configuration with an explicit warning marker.
     pub fn local_dev() -> Self {
+        let mut policy_bundle_keyring = PolicyBundleKeyring::new();
+        policy_bundle_keyring
+            .insert_shared_secret("policy-local-key", b"splendor-local-policy-secret")
+            .expect("local policy keyring");
         Self {
             expected_audience: CredentialAudience::Daemon {
                 daemon_id: "daemon_local".to_string(),
@@ -135,6 +145,7 @@ impl DaemonConfig {
                 },
                 warning_issued: true,
             }),
+            policy_bundle_keyring,
         }
     }
 }
@@ -149,6 +160,7 @@ pub fn router(state: DaemonState) -> Router {
         .route("/runs/:run_id/resume", post(resume_run))
         .route("/runs/:run_id/stop", post(stop_run))
         .route("/runs/:run_id/percepts", post(append_percept))
+        .route("/runs/:run_id/policies/sync", post(sync_policy))
         .route("/runs/:run_id/state-head", get(state_head))
         .route("/runs/:run_id/traces", get(traces))
         .route("/runs/:run_id/replay", post(replay_run))
@@ -163,7 +175,10 @@ pub fn router(state: DaemonState) -> Router {
 pub enum RunStatus {
     Created,
     Running,
+    WaitingForApproval,
     Paused,
+    Denied,
+    Expired,
     Stopped,
     Failed,
 }
@@ -177,14 +192,41 @@ struct RunSlot {
     state_store: Arc<dyn StateStore>,
     trace_store: Arc<dyn TraceStore>,
     gateway: Arc<dyn ActionGateway>,
+    policy_cache: PolicyCache,
     percept_queue: PerceptQueue,
     allowed_percept_schemas: Vec<String>,
     allowed_percept_sources: Vec<String>,
     state_head: Option<StateNodeId>,
     adapter_executions: Arc<AtomicU64>,
+    approval_evidence: ApprovalEvidenceSlot,
+    pending_approval: Option<ApprovalTraceContext>,
     tick_count: u64,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
+}
+
+#[derive(Clone, Default)]
+struct ApprovalEvidenceSlot {
+    inner: Arc<Mutex<Option<ApprovalEvidence>>>,
+}
+
+impl ApprovalEvidenceSlot {
+    fn set(&self, evidence: ApprovalEvidence) -> Result<(), LoopError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| LoopError::Policy("approval evidence slot poisoned".to_string()))?;
+        *guard = Some(evidence);
+        Ok(())
+    }
+
+    fn take(&self) -> Result<Option<ApprovalEvidence>, LoopError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| LoopError::Policy("approval evidence slot poisoned".to_string()))?;
+        Ok(guard.take())
+    }
 }
 
 #[derive(Clone, Default)]
@@ -223,6 +265,7 @@ impl Perceptor for QueuedPerceptor {
 
 struct StaticDaemonPolicy {
     actions: Vec<ActionCandidate>,
+    approval_evidence: ApprovalEvidenceSlot,
 }
 
 impl Policy for StaticDaemonPolicy {
@@ -238,8 +281,18 @@ impl Policy for StaticDaemonPolicy {
         });
         let bytes =
             serde_json::to_vec(&payload).map_err(|error| LoopError::Policy(error.to_string()))?;
+        let approval_evidence = self.approval_evidence.take()?;
+        let actions = self
+            .actions
+            .clone()
+            .into_iter()
+            .map(|candidate| match approval_evidence.clone() {
+                Some(evidence) => candidate.with_approval_evidence(evidence),
+                None => candidate,
+            })
+            .collect();
         Ok(PolicyDecision::new(
-            self.actions.clone(),
+            actions,
             StateData {
                 bytes,
                 content_type: Some("application/json".to_string()),
@@ -306,7 +359,13 @@ pub struct CreateRunRequest {
     #[serde(default)]
     pub policy_actions: Vec<DaemonActionCandidate>,
     #[serde(default)]
+    pub policy_bundle_required: bool,
+    #[serde(default)]
+    pub policy_bundle: Option<PolicyBundleEnvelope>,
+    #[serde(default)]
     pub registered_actions: Vec<RegisteredAction>,
+    #[serde(default)]
+    pub approval_policies: Vec<ApprovalPolicy>,
     #[serde(default)]
     pub allowed_percept_schemas: Vec<String>,
     #[serde(default)]
@@ -362,6 +421,8 @@ pub struct LifecycleRequest {
     pub work_order: Option<WorkOrderAuthorization>,
     pub audit_attribution: Option<AuditAttribution>,
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_evidence: Option<ApprovalEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -374,6 +435,7 @@ pub struct RunInspectResponse {
     pub state_head: Option<String>,
     pub ticks: u64,
     pub adapter_executions: u64,
+    pub policy_bundle: Option<PolicyBundleTraceContext>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -401,6 +463,36 @@ pub struct AppendPerceptRequest {
 pub struct AppendPerceptResponse {
     pub run_id: RunId,
     pub accepted: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PolicySyncRequest {
+    pub credential: Option<CallerCredential>,
+    pub audit_attribution: Option<AuditAttribution>,
+    #[serde(default)]
+    pub policy_bundle: Option<PolicyBundleEnvelope>,
+    pub sync_error: Option<String>,
+    pub disconnected: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PolicyCacheStatusResponse {
+    pub enforcement_required: bool,
+    pub disconnected: bool,
+    pub policy_bundle: Option<PolicyBundleTraceContext>,
+    pub revoked_reason: Option<String>,
+    pub last_sync_failure: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PolicySyncResponse {
+    pub run_id: RunId,
+    pub accepted: bool,
+    pub policy_bundle: Option<PolicyBundleTraceContext>,
+    pub cache_status: PolicyCacheStatusResponse,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -443,6 +535,17 @@ pub struct ReplayResponse {
     pub mode: String,
     pub event_count: usize,
     pub action_event_count: usize,
+    pub approval_events: Vec<ApprovalReplayEvent>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ApprovalReplayEvent {
+    pub lifecycle: String,
+    pub approval: ApprovalTraceContext,
+    pub reason: Option<String>,
+    pub trace_event_id: TraceId,
+    pub sequence: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -459,6 +562,8 @@ pub struct SubmitActionRequest {
     pub quota_usage: Option<splendor_types::QuotaUsage>,
     #[serde(default)]
     pub satisfied_preconditions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_evidence: Option<ApprovalEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -530,6 +635,16 @@ impl From<SchedulerError> for ApiError {
     }
 }
 
+impl From<LoopError> for ApiError {
+    fn from(error: LoopError) -> Self {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "loop_error",
+            error.to_string(),
+        )
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.status, Json(self.body)).into_response()
@@ -575,6 +690,11 @@ async fn create_run(
 
     let adapter_executions = Arc::new(AtomicU64::new(0));
     let mut gateway = VerifiedActionGateway::new(Arc::new(tenant_registry.clone()));
+    if !request.approval_policies.is_empty() {
+        gateway.set_approval_verifier(Arc::new(PolicyApprovalVerifier::new(
+            request.approval_policies.clone(),
+        )));
+    }
     let registrations = registrations_for_request(&request);
     for registration in registrations {
         gateway.register_adapter(
@@ -585,7 +705,42 @@ async fn create_run(
             }),
         );
     }
-    let gateway: Arc<dyn ActionGateway> = Arc::new(gateway);
+
+    if request.policy_bundle_required && request.policy_bundle.is_none() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "missing_policy_bundle",
+            "missing_policy_bundle",
+        ));
+    }
+
+    let policy_cache = PolicyCache::new(PolicyCacheConfig {
+        enforcement_required: request.policy_bundle_required || request.policy_bundle.is_some(),
+    });
+    let policy_bundle = match request.policy_bundle.as_ref() {
+        Some(envelope) => {
+            let validated = validate_policy_bundle(
+                envelope,
+                &PolicyBundleValidationContext {
+                    tenant_id: request.tenant_id.clone(),
+                    agent_id: Some(request.agent_id.clone()),
+                    now: OffsetDateTime::now_utc(),
+                },
+                &state.inner.policy_bundle_keyring,
+            )
+            .map_err(policy_bundle_error)?;
+            Some(
+                policy_cache
+                    .install_validated(validated.into_policy_bundle(), OffsetDateTime::now_utc()),
+            )
+        }
+        None => None,
+    };
+    let verified_gateway: Arc<dyn ActionGateway> = Arc::new(gateway);
+    let gateway: Arc<dyn ActionGateway> = Arc::new(PolicyDistributionGateway::new(
+        verified_gateway,
+        Arc::new(policy_cache.clone()),
+    ));
 
     let state_graph = StateGraph::new(
         Arc::clone(&state_store),
@@ -600,22 +755,28 @@ async fn create_run(
         .into_iter()
         .map(DaemonActionCandidate::into_candidate)
         .collect();
+    let approval_evidence = ApprovalEvidenceSlot::default();
     let policy = Box::new(StaticDaemonPolicy {
         actions: policy_actions,
+        approval_evidence: approval_evidence.clone(),
     });
     let agent = AgentContext::new(
         request.agent_id.clone(),
         request.tenant_id.clone(),
         AgentRuntimeConfig::default(),
     );
-    let mut engine = LoopEngine::with_trace_store(
+    let mut run_context = RunTraceContext::new(Some(run_id.clone()));
+    if let Some(policy_bundle) = policy_bundle.clone() {
+        run_context = run_context.with_policy_bundle(policy_bundle);
+    }
+    let mut engine = LoopEngine::with_trace_store_and_work_order(
         agent,
         state_graph,
         initial_state,
         policy,
         Arc::clone(&gateway),
         Arc::clone(&trace_store),
-        Some(run_id.clone()),
+        run_context,
     )
     .map_err(|error| {
         ApiError::new(
@@ -628,6 +789,9 @@ async fn create_run(
     engine.add_perceptor(QueuedPerceptor {
         queue: percept_queue.clone(),
     });
+    if policy_cache.snapshot().enforcement_required {
+        engine.set_policy_runtime_authority(Arc::new(policy_cache.clone()));
+    }
     let mut scheduler = Scheduler::with_registry(SchedulerConfig::default(), tenant_registry);
     scheduler.add_agent(engine);
 
@@ -640,11 +804,14 @@ async fn create_run(
         state_store,
         trace_store,
         gateway,
+        policy_cache,
         percept_queue,
         allowed_percept_schemas: request.allowed_percept_schemas,
         allowed_percept_sources: request.allowed_percept_sources,
         state_head: None,
         adapter_executions,
+        approval_evidence,
+        pending_approval: None,
         tick_count: 0,
         created_at: OffsetDateTime::now_utc(),
         updated_at: OffsetDateTime::now_utc(),
@@ -823,6 +990,130 @@ async fn append_percept(
     }))
 }
 
+async fn sync_policy(
+    Path(run_id): Path<RunId>,
+    State(state): State<DaemonState>,
+    Json(request): Json<PolicySyncRequest>,
+) -> Result<Json<PolicySyncResponse>, ApiError> {
+    state.ensure_runtime_available()?;
+    let mut runs = state.inner.runs.lock().map_err(|_| lock_error())?;
+    let slot = runs.get_mut(&run_id).ok_or_else(|| invalid_run(&run_id))?;
+    let security = state.validate_security(
+        DaemonEndpoint::PolicySync {
+            tenant_id: slot.tenant_id.clone(),
+            run_id: run_id.clone(),
+        },
+        request.credential,
+        None,
+        request.audit_attribution,
+    )?;
+    record_daemon_audit(slot, "splendor.policies.sync", security.audit_attribution)?;
+
+    if let Some(disconnected) = request.disconnected {
+        slot.policy_cache.set_disconnected(disconnected);
+    }
+
+    let now = OffsetDateTime::now_utc();
+    if let Some(sync_error) = request.sync_error.filter(|value| !value.trim().is_empty()) {
+        let failure = slot.policy_cache.record_sync_failure(sync_error, now);
+        let snapshot = slot.policy_cache.snapshot();
+        record_run_event(
+            slot,
+            TraceEventKind::PolicySyncFailed {
+                policy_bundle_id: snapshot
+                    .bundle
+                    .as_ref()
+                    .map(|bundle| bundle.policy_bundle_id.clone()),
+                version: snapshot
+                    .bundle
+                    .as_ref()
+                    .map(|bundle| bundle.version.clone()),
+                reason: failure.reason,
+            },
+        )?;
+        return Ok(Json(PolicySyncResponse {
+            run_id,
+            accepted: false,
+            policy_bundle: snapshot.bundle.clone(),
+            cache_status: policy_cache_response(&slot.policy_cache),
+        }));
+    }
+
+    let envelope = request.policy_bundle.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "missing_policy_bundle",
+            "policy sync requires a policy bundle or sync_error",
+        )
+    })?;
+    let policy_bundle_id = Some(envelope.bundle.policy_bundle_id.clone());
+    let version = Some(envelope.bundle.version.clone());
+    let validation = validate_policy_bundle(
+        &envelope,
+        &PolicyBundleValidationContext {
+            tenant_id: slot.tenant_id.clone(),
+            agent_id: Some(slot.agent_id.clone()),
+            now,
+        },
+        &state.inner.policy_bundle_keyring,
+    );
+
+    match validation {
+        Ok(validated) => {
+            let trace_context = slot
+                .policy_cache
+                .install_validated(validated.into_policy_bundle(), now);
+            record_run_event(
+                slot,
+                TraceEventKind::PolicyBundleAccepted {
+                    bundle: trace_context.clone(),
+                },
+            )?;
+            slot.updated_at = OffsetDateTime::now_utc();
+            Ok(Json(PolicySyncResponse {
+                run_id,
+                accepted: true,
+                policy_bundle: Some(trace_context),
+                cache_status: policy_cache_response(&slot.policy_cache),
+            }))
+        }
+        Err(error) => {
+            let reason = error.reason_code().to_string();
+            record_run_event(
+                slot,
+                TraceEventKind::PolicyBundleRejected {
+                    policy_bundle_id: policy_bundle_id.clone(),
+                    version: version.clone(),
+                    reason: reason.clone(),
+                },
+            )?;
+            slot.policy_cache.record_sync_failure(reason.clone(), now);
+            record_run_event(
+                slot,
+                TraceEventKind::PolicySyncFailed {
+                    policy_bundle_id: policy_bundle_id.clone(),
+                    version: version.clone(),
+                    reason: reason.clone(),
+                },
+            )?;
+            if let PolicyBundleValidationError::Revoked { reason } = &error {
+                let sanitized_reason = sanitize_policy_reason(reason);
+                if let Some(bundle) = slot.policy_cache.revoke_current(sanitized_reason.clone()) {
+                    record_run_event(
+                        slot,
+                        TraceEventKind::PolicyRevoked {
+                            policy_bundle_id: bundle.policy_bundle_id,
+                            version: bundle.version,
+                            reason: sanitized_reason,
+                        },
+                    )?;
+                }
+            }
+            Err(policy_bundle_error(error))
+        }
+    }
+}
+
 async fn state_head(
     Path(run_id): Path<RunId>,
     State(state): State<DaemonState>,
@@ -920,18 +1211,28 @@ async fn replay_run(
                         event.kind,
                         TraceEventKind::ActionExecuted { .. }
                             | TraceEventKind::ActionDenied { .. }
+                            | TraceEventKind::ActionNeedsApproval { .. }
                             | TraceEventKind::ActionFailed { .. }
                     )
                 })
                 .unwrap_or(false)
         })
         .count();
+    let approval_events = records
+        .iter()
+        .filter_map(|record| {
+            serde_json::from_value::<TraceEvent>(record.payload.clone())
+                .ok()
+                .and_then(approval_replay_event)
+        })
+        .collect();
     Ok(Json(ReplayResponse {
         replay_id: format!("replay-{run_id}"),
         run_id,
         mode: "inspect_only".to_string(),
         event_count: records.len(),
         action_event_count,
+        approval_events,
     }))
 }
 
@@ -982,6 +1283,7 @@ async fn submit_action(
             .unwrap_or_else(splendor_types::QuotaUsage::single_action),
         satisfied_preconditions: request.satisfied_preconditions,
         requested_at: OffsetDateTime::now_utc(),
+        approval_evidence: request.approval_evidence,
     };
     let outcome = slot.gateway.submit(action_request).map_err(|error| {
         ApiError::new(
@@ -998,20 +1300,61 @@ async fn submit_action(
         },
     )?;
     match outcome.status {
-        ActionStatus::Executed => record_run_event(
-            slot,
-            TraceEventKind::ActionExecuted {
-                action: request.action.clone(),
-                outcome: outcome.output.clone().unwrap_or(serde_json::Value::Null),
-            },
-        ),
-        ActionStatus::Denied => record_run_event(
-            slot,
-            TraceEventKind::ActionDenied {
-                action: request.action.clone(),
-                result: outcome.verification.clone(),
-            },
-        ),
+        ActionStatus::Executed => {
+            record_approval_event_if_present(slot, &outcome)?;
+            record_run_event(
+                slot,
+                TraceEventKind::ActionExecuted {
+                    action: request.action.clone(),
+                    outcome: outcome.output.clone().unwrap_or(serde_json::Value::Null),
+                },
+            )
+        }
+        ActionStatus::Denied => {
+            record_approval_event_if_present(slot, &outcome)?;
+            update_status_for_approval_denial(slot, &outcome);
+            record_run_event(
+                slot,
+                TraceEventKind::ActionDenied {
+                    action: request.action.clone(),
+                    result: outcome.verification.clone(),
+                },
+            )
+        }
+        ActionStatus::NeedsApproval => {
+            if let Some(approval) =
+                approval_artifact(&outcome.verification).map(|(_, approval)| approval)
+            {
+                slot.pending_approval = Some(approval);
+            }
+            record_approval_event_if_present(slot, &outcome)?;
+            record_run_event(
+                slot,
+                TraceEventKind::ActionNeedsApproval {
+                    action: request.action.clone(),
+                    result: outcome.verification.clone(),
+                },
+            )?;
+            record_run_event(
+                slot,
+                TraceEventKind::RunPaused {
+                    reason: Some("waiting_for_approval".to_string()),
+                },
+            )?;
+            slot.status = RunStatus::WaitingForApproval;
+            Ok(())
+        }
+        ActionStatus::NeedsIntervention => {
+            record_approval_event_if_present(slot, &outcome)?;
+            slot.status = RunStatus::Failed;
+            record_run_event(
+                slot,
+                TraceEventKind::ActionNeedsIntervention {
+                    action: request.action.clone(),
+                    result: outcome.verification.clone(),
+                },
+            )
+        }
         ActionStatus::Failed => record_run_event(
             slot,
             TraceEventKind::ActionFailed {
@@ -1074,6 +1417,7 @@ async fn capabilities(
             "POST /runs/{run_id}/resume".to_string(),
             "POST /runs/{run_id}/stop".to_string(),
             "POST /runs/{run_id}/percepts".to_string(),
+            "POST /runs/{run_id}/policies/sync".to_string(),
             "GET /runs/{run_id}/state-head".to_string(),
             "GET /runs/{run_id}/traces".to_string(),
             "POST /runs/{run_id}/replay".to_string(),
@@ -1129,18 +1473,36 @@ async fn run_lifecycle_tick(
             "resume work order agent does not match the run agent",
         ));
     }
-    if matches!(kind, LifecycleKind::Resume) && slot.status != RunStatus::Paused {
+    if matches!(kind, LifecycleKind::Resume)
+        && !matches!(
+            slot.status,
+            RunStatus::Paused | RunStatus::WaitingForApproval
+        )
+    {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "invalid_run_state",
-            "run must be paused before resume",
+            "run must be paused or waiting for approval before resume",
         ));
     }
-    if matches!(slot.status, RunStatus::Stopped | RunStatus::Failed) {
+    if matches!(kind, LifecycleKind::Resume)
+        && slot.status == RunStatus::WaitingForApproval
+        && request.approval_evidence.is_none()
+    {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "approval_required",
+            "resume from waiting_for_approval requires approval evidence",
+        ));
+    }
+    if matches!(
+        slot.status,
+        RunStatus::Stopped | RunStatus::Failed | RunStatus::Denied | RunStatus::Expired
+    ) {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "invalid_run_state",
-            "stopped or failed runs cannot be started",
+            "terminal runs cannot be started",
         ));
     }
     let endpoint = match kind {
@@ -1156,6 +1518,11 @@ async fn run_lifecycle_tick(
             },
         )?;
     }
+    if let Some(evidence) = request.approval_evidence {
+        slot.approval_evidence
+            .set(evidence)
+            .map_err(ApiError::from)?;
+    }
     let step = match slot.scheduler.run_once() {
         Ok(step) => step,
         Err(error) => {
@@ -1166,7 +1533,31 @@ async fn run_lifecycle_tick(
     };
     slot.state_head = Some(step.outcome.state_commit.node_id.clone());
     slot.tick_count = slot.tick_count.saturating_add(1);
-    slot.status = success_status;
+    if let Some(outcome) = step
+        .outcome
+        .action_outcomes
+        .iter()
+        .find(|outcome| outcome.status == ActionStatus::NeedsApproval)
+    {
+        slot.pending_approval =
+            approval_artifact(&outcome.verification).map(|(_, approval)| approval);
+        record_run_event(
+            slot,
+            TraceEventKind::RunPaused {
+                reason: Some("waiting_for_approval".to_string()),
+            },
+        )?;
+        slot.status = RunStatus::WaitingForApproval;
+    } else if let Some(outcome) = step.outcome.action_outcomes.iter().find(|outcome| {
+        outcome.status == ActionStatus::Denied && approval_artifact(&outcome.verification).is_some()
+    }) {
+        update_status_for_approval_denial(slot, outcome);
+    } else if step.outcome.needs_intervention {
+        slot.status = RunStatus::Failed;
+    } else {
+        slot.pending_approval = None;
+        slot.status = success_status;
+    }
     slot.updated_at = OffsetDateTime::now_utc();
     Ok(Json(TickResponse {
         run_id,
@@ -1233,8 +1624,20 @@ fn inspect_response(slot: &RunSlot) -> RunInspectResponse {
         state_head: slot.state_head.as_ref().map(ToString::to_string),
         ticks: slot.tick_count,
         adapter_executions: slot.adapter_executions.load(Ordering::SeqCst),
+        policy_bundle: slot.policy_cache.snapshot().bundle,
         created_at: slot.created_at,
         updated_at: slot.updated_at,
+    }
+}
+
+fn policy_cache_response(cache: &PolicyCache) -> PolicyCacheStatusResponse {
+    let snapshot = cache.snapshot();
+    PolicyCacheStatusResponse {
+        enforcement_required: snapshot.enforcement_required,
+        disconnected: snapshot.disconnected,
+        policy_bundle: snapshot.bundle,
+        revoked_reason: snapshot.revoked_reason,
+        last_sync_failure: snapshot.last_sync_failure.map(|failure| failure.reason),
     }
 }
 
@@ -1249,6 +1652,100 @@ fn record_run_event(slot: &RunSlot, kind: TraceEventKind) -> Result<(), ApiError
                 error.to_string(),
             )
         })
+}
+
+fn record_approval_event_if_present(
+    slot: &RunSlot,
+    outcome: &ActionOutcome,
+) -> Result<(), ApiError> {
+    let Some((status, approval)) = approval_artifact(&outcome.verification) else {
+        return Ok(());
+    };
+    record_run_event(slot, approval_trace_kind(status.as_str(), approval))
+}
+
+fn update_status_for_approval_denial(slot: &mut RunSlot, outcome: &ActionOutcome) {
+    let Some((status, _approval)) = approval_artifact(&outcome.verification) else {
+        return;
+    };
+    slot.status = match status.as_str() {
+        "expired" => RunStatus::Expired,
+        "denied" | "revoked" => RunStatus::Denied,
+        _ => slot.status.clone(),
+    };
+}
+
+fn approval_artifact(
+    result: &splendor_types::VerificationResult,
+) -> Option<(String, ApprovalTraceContext)> {
+    let artifact = result
+        .artifacts
+        .get("approval")
+        .or_else(|| result.artifacts.get("approval_context"))?;
+    let (status, approval_value) = if artifact.get("approval").is_some() {
+        (
+            artifact
+                .get("approval_status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+            artifact.get("approval")?,
+        )
+    } else {
+        (
+            result
+                .artifacts
+                .get("approval_status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+            artifact,
+        )
+    };
+    serde_json::from_value::<ApprovalTraceContext>(approval_value.clone())
+        .ok()
+        .map(|approval| (status, approval))
+}
+
+fn approval_trace_kind(status: &str, approval: ApprovalTraceContext) -> TraceEventKind {
+    match status {
+        "required" => TraceEventKind::ApprovalRequested { approval },
+        "granted" => TraceEventKind::ApprovalGranted { approval },
+        "expired" => TraceEventKind::ApprovalExpired {
+            approval,
+            reason: "approval_expired".to_string(),
+        },
+        "revoked" => TraceEventKind::ApprovalRevoked {
+            approval,
+            reason: "approval_revoked".to_string(),
+        },
+        "intervention_required" => TraceEventKind::ApprovalDenied {
+            approval,
+            reason: "approval_policy_expired".to_string(),
+        },
+        _ => TraceEventKind::ApprovalDenied {
+            approval,
+            reason: "approval_denied".to_string(),
+        },
+    }
+}
+
+fn approval_replay_event(event: TraceEvent) -> Option<ApprovalReplayEvent> {
+    let (lifecycle, approval, reason) = match event.kind {
+        TraceEventKind::ApprovalRequested { approval } => ("requested", approval, None),
+        TraceEventKind::ApprovalGranted { approval } => ("granted", approval, None),
+        TraceEventKind::ApprovalDenied { approval, reason } => ("denied", approval, Some(reason)),
+        TraceEventKind::ApprovalExpired { approval, reason } => ("expired", approval, Some(reason)),
+        TraceEventKind::ApprovalRevoked { approval, reason } => ("revoked", approval, Some(reason)),
+        _ => return None,
+    };
+    Some(ApprovalReplayEvent {
+        lifecycle: lifecycle.to_string(),
+        approval,
+        reason,
+        trace_event_id: event.trace_event_id,
+        sequence: event.sequence,
+    })
 }
 
 fn record_daemon_audit(
@@ -1311,6 +1808,51 @@ fn lock_error() -> ApiError {
         "runtime_lock_error",
         "local runtime lock is unavailable",
     )
+}
+
+fn policy_bundle_error(error: PolicyBundleValidationError) -> ApiError {
+    let status = match &error {
+        PolicyBundleValidationError::Expired | PolicyBundleValidationError::Revoked { .. } => {
+            StatusCode::FORBIDDEN
+        }
+        PolicyBundleValidationError::Unsigned
+        | PolicyBundleValidationError::UnknownKey { .. }
+        | PolicyBundleValidationError::BadSignature
+        | PolicyBundleValidationError::Malformed { .. }
+        | PolicyBundleValidationError::Incompatible { .. } => StatusCode::BAD_REQUEST,
+    };
+    ApiError::new(status, error.reason_code(), error.reason_code())
+}
+
+fn sanitize_policy_reason(reason: &str) -> String {
+    let trimmed = reason.trim();
+    if trimmed.is_empty() {
+        return "policy_reason_unspecified".to_string();
+    }
+    let lowercase = trimmed.to_ascii_lowercase();
+    let sensitive_markers = [
+        "secret",
+        "signature",
+        "token",
+        "credential",
+        "password",
+        "bearer",
+        "apikey",
+        "api_key",
+        "key=",
+    ];
+    let safe_code = trimmed.len() <= 80
+        && trimmed.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
+        });
+    if !safe_code
+        || sensitive_markers
+            .iter()
+            .any(|marker| lowercase.contains(marker))
+    {
+        return "policy_reason_redacted".to_string();
+    }
+    trimmed.to_string()
 }
 
 fn daemon_security_code(error: &DaemonSecurityError) -> &'static str {
@@ -1465,6 +2007,63 @@ mod tests {
     }
 
     #[test]
+    fn approval_trace_and_replay_helpers_cover_all_lifecycles() {
+        let run_id = RunId::new();
+        let approval = ApprovalTraceContext {
+            approval_id: splendor_types::ApprovalId::new(),
+            tenant_id: TenantId::new(),
+            agent_id: splendor_types::AgentId::new(),
+            run_id: run_id.clone(),
+            action_id: Some(ActionId::new()),
+            action_name: "artifact.publish".to_string(),
+            adapter: Some("artifact-store".to_string()),
+            decision: Some(splendor_types::ApprovalDecision::Granted),
+            reason: Some("operator decision".to_string()),
+            policy_id: Some("publish_policy".to_string()),
+            risk_level: Some("external".to_string()),
+            issued_at: Some(OffsetDateTime::now_utc()),
+            expires_at: Some(OffsetDateTime::now_utc() + time::Duration::minutes(10)),
+            revoked: false,
+        };
+
+        for (sequence, (status, replay_lifecycle, expected_reason)) in [
+            ("required", "requested", None),
+            ("granted", "granted", None),
+            ("expired", "expired", Some("approval_expired")),
+            ("revoked", "revoked", Some("approval_revoked")),
+            (
+                "intervention_required",
+                "denied",
+                Some("approval_policy_expired"),
+            ),
+            ("denied", "denied", Some("approval_denied")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let kind = approval_trace_kind(status, approval.clone());
+            let event = TraceEvent::new(
+                run_id.clone(),
+                sequence as u64,
+                OffsetDateTime::now_utc(),
+                kind,
+            );
+            let replay = approval_replay_event(event).expect("approval replay event");
+            assert_eq!(replay.lifecycle, replay_lifecycle);
+            assert_eq!(replay.reason.as_deref(), expected_reason);
+            assert_eq!(replay.sequence, sequence as u64);
+        }
+
+        let non_approval = TraceEvent::new(
+            run_id,
+            99,
+            OffsetDateTime::now_utc(),
+            TraceEventKind::RunStarted,
+        );
+        assert!(approval_replay_event(non_approval).is_none());
+    }
+
+    #[test]
     fn registration_defaults_and_trace_recording_fail_closed_paths_are_stable() {
         let tenant_id = TenantId::new();
         let agent_id = splendor_types::AgentId::new();
@@ -1503,7 +2102,10 @@ mod tests {
                 quota_usage: None,
                 satisfied_preconditions: Vec::new(),
             }],
+            policy_bundle_required: false,
+            policy_bundle: None,
             registered_actions: Vec::new(),
+            approval_policies: Vec::new(),
             allowed_percept_schemas: Vec::new(),
             allowed_percept_sources: Vec::new(),
             initial_state: None,
@@ -1527,11 +2129,14 @@ mod tests {
             state_store: Arc::new(InMemoryStateStore::default()),
             trace_store: Arc::new(InMemoryTraceStore::default()),
             gateway: Arc::new(splendor_gateway::UnimplementedGateway),
+            policy_cache: PolicyCache::new(PolicyCacheConfig::default()),
             percept_queue: PerceptQueue::default(),
             allowed_percept_schemas: Vec::new(),
             allowed_percept_sources: Vec::new(),
             state_head: None,
             adapter_executions: Arc::new(AtomicU64::new(0)),
+            approval_evidence: ApprovalEvidenceSlot::default(),
+            pending_approval: None,
             tick_count: 0,
             created_at: OffsetDateTime::now_utc(),
             updated_at: OffsetDateTime::now_utc(),
@@ -1539,6 +2144,7 @@ mod tests {
         let response = inspect_response(&slot);
         assert_eq!(response.agent_id, agent_id);
         assert!(response.state_head.is_none());
+        assert!(response.policy_bundle.is_none());
 
         let error = record_run_event(
             &slot,

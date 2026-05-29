@@ -14,7 +14,8 @@
 
 - No approval workflow engine.
 - No escalation policy engine.
-- No circuit breakers.
+- Circuit breakers are limited to the 0.04-S4 local config/gateway reference path;
+  there is no monitoring automation or UI dashboard.
 - No kill-switch propagation.
 - No policy bundle TTL/revocation distribution.
 

@@ -1,11 +1,16 @@
 use super::*;
 use crate::{
-    AgentId, AuditAttribution, ClientPrincipal, DelegatedAuthority, EndpointScope,
-    LocalDelegationTraceContext, Message, MessageEnvelope, MessageId, MessageTraceContext, Percept,
-    PerceptProvenance, RemoteMessageEnvelope, RemoteMessageRetryPolicy, RemoteMessageTraceContext,
-    RevocationStatus, SideEffectClass, SnapshotId, StateHandoffTraceContext, StateReferenceMode,
-    TaskFailure, TaskRequest, TenantId, TraceId, WorkOrderAuthorization, WorkOrderSignature,
-    TASK_REQUEST_SCHEMA,
+    ActionId, AgentId, ApprovalDecision, ApprovalId, AuditAttribution, CircuitBreaker,
+    CircuitBreakerId, CircuitBreakerScope, CircuitBreakerState, ClientPrincipal,
+    DelegatedAuthority, EndpointScope, EscalationContext, EscalationDecision, EscalationId,
+    EscalationScope, EscalationTrigger, FleetId, GovernanceExtensions, GovernanceIssuer,
+    GovernanceObjectRef, GovernanceScope, GovernanceState, GovernanceTraceLink,
+    GovernanceTransition, GovernanceTransitionError, InstanceId, InterventionId, KillSwitchId,
+    LocalDelegationTraceContext, Message, MessageEnvelope, MessageId, MessageTraceContext, NodeId,
+    Percept, PerceptProvenance, RemoteMessageEnvelope, RemoteMessageRetryPolicy,
+    RemoteMessageTraceContext, RevocationStatus, SideEffectClass, SnapshotId,
+    StateHandoffTraceContext, StateReferenceMode, TaskFailure, TaskRequest, TenantId, TraceId,
+    WorkOrderAuthorization, WorkOrderSignature, TASK_REQUEST_SCHEMA,
 };
 
 #[test]
@@ -72,6 +77,60 @@ fn trace_event_round_trip() {
     let payload = serde_json::to_vec(&percept_event).expect("serialize");
     let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
     assert_eq!(decoded, percept_event);
+}
+
+#[test]
+fn approval_trace_events_round_trip_and_set_identity() {
+    let run_id = RunId::new();
+    let approval = ApprovalTraceContext {
+        approval_id: ApprovalId::new(),
+        tenant_id: TenantId::new(),
+        agent_id: AgentId::new(),
+        run_id: run_id.clone(),
+        action_id: Some(ActionId::new()),
+        action_name: "artifact.publish".to_string(),
+        adapter: Some("artifact-store".to_string()),
+        decision: Some(ApprovalDecision::Granted),
+        reason: Some("operator grant".to_string()),
+        policy_id: Some("publish_policy".to_string()),
+        risk_level: Some("external".to_string()),
+        issued_at: Some(OffsetDateTime::now_utc()),
+        expires_at: Some(OffsetDateTime::now_utc() + time::Duration::minutes(10)),
+        revoked: false,
+    };
+    let events = vec![
+        TraceEventKind::ApprovalRequested {
+            approval: approval.clone(),
+        },
+        TraceEventKind::ApprovalGranted {
+            approval: approval.clone(),
+        },
+        TraceEventKind::ApprovalDenied {
+            approval: approval.clone(),
+            reason: "wrong_scope".to_string(),
+        },
+        TraceEventKind::ApprovalExpired {
+            approval: approval.clone(),
+            reason: "expired".to_string(),
+        },
+        TraceEventKind::ApprovalRevoked {
+            approval,
+            reason: "revoked".to_string(),
+        },
+    ];
+
+    for (sequence, kind) in events.into_iter().enumerate() {
+        let event = TraceEvent::new(
+            run_id.clone(),
+            sequence as u64,
+            OffsetDateTime::now_utc(),
+            kind,
+        );
+        assert!(event.identity.approval_id.is_some());
+        let payload = serde_json::to_vec(&event).expect("serialize");
+        let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+        assert_eq!(decoded, event);
+    }
 }
 
 #[test]
@@ -337,6 +396,52 @@ fn state_handoff_trace_events_round_trip_with_previous_head() {
 }
 
 #[test]
+fn escalation_trace_event_round_trips_with_action_identity() {
+    let run_id = RunId::new();
+    let action_id = ActionId::new();
+    let escalation = EscalationContext {
+        trigger: EscalationTrigger::QuotaPressure,
+        threshold: 1,
+        observed_count: 1,
+        scope: EscalationScope::Action,
+        decision: EscalationDecision::Pause,
+        tenant_id: TenantId::new(),
+        agent_id: AgentId::new(),
+        run_id: run_id.clone(),
+        action_id: Some(action_id.clone()),
+        action_name: Some("quota".to_string()),
+        adapter: Some("stub".to_string()),
+        reason: "quota pressure".to_string(),
+        evidence: serde_json::json!({"quota": "max_actions_per_tick"}),
+        decided_at: OffsetDateTime::now_utc(),
+    };
+    let event = TraceEvent::new(
+        run_id,
+        5,
+        OffsetDateTime::now_utc(),
+        TraceEventKind::EscalationTriggered {
+            escalation: escalation.clone(),
+        },
+    );
+    assert_eq!(event.identity.action_id.as_ref(), Some(&action_id));
+
+    let payload = serde_json::to_vec(&event).expect("serialize");
+    let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+    assert_eq!(decoded, event);
+    match decoded.kind {
+        TraceEventKind::EscalationTriggered {
+            escalation: decoded,
+        } => {
+            assert_eq!(decoded.trigger, EscalationTrigger::QuotaPressure);
+            assert_eq!(decoded.threshold, 1);
+            assert_eq!(decoded.scope, EscalationScope::Action);
+            assert_eq!(decoded.action_id, Some(action_id));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
 fn local_delegation_trace_events_round_trip() {
     let parent_run_id = RunId::new();
     let child_run_id = RunId::new();
@@ -468,5 +573,540 @@ fn daemon_audit_trace_event_preserves_caller_attribution() {
             assert_eq!(decoded_audit, audit);
         }
         other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn governance_trace_events_round_trip_and_apply_scope_identity() {
+    let run_id = RunId::new();
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let action_id = ActionId::new();
+    let now = OffsetDateTime::now_utc();
+    let scope = GovernanceScope::Action {
+        tenant_id: tenant_id.clone(),
+        agent_id: agent_id.clone(),
+        run_id: run_id.clone(),
+        action_id: action_id.clone(),
+    };
+    let issuer = GovernanceIssuer::new("operator", "daemon").expect("issuer");
+    let trace = GovernanceTraceLink::new(
+        TraceEventId::from_run_sequence(&run_id, 20),
+        Some(run_id.clone()),
+    );
+    let transition = |object, from, to, sequence| {
+        GovernanceTransition::try_new(
+            object,
+            scope.clone(),
+            from,
+            to,
+            now,
+            "governance transition",
+            issuer.clone(),
+            GovernanceTraceLink::new(
+                TraceEventId::from_run_sequence(&run_id, sequence),
+                Some(run_id.clone()),
+            ),
+            GovernanceExtensions::new(),
+        )
+        .expect("transition")
+    };
+
+    let invalid = GovernanceTransition::try_new(
+        GovernanceObjectRef::Approval {
+            approval_id: ApprovalId::new(),
+        },
+        scope.clone(),
+        Some(GovernanceState::Denied),
+        GovernanceState::Granted,
+        now,
+        "invalid transition",
+        issuer.clone(),
+        trace,
+        GovernanceExtensions::new(),
+    )
+    .expect_err("invalid transition");
+    let GovernanceTransitionError::Rejected(rejection) = invalid else {
+        panic!("expected transition rejection");
+    };
+
+    let events = vec![
+        TraceEventKind::GovernanceApprovalRequested {
+            transition: transition(
+                GovernanceObjectRef::Approval {
+                    approval_id: ApprovalId::new(),
+                },
+                None,
+                GovernanceState::Requested,
+                21,
+            ),
+        },
+        TraceEventKind::GovernanceApprovalGranted {
+            transition: transition(
+                GovernanceObjectRef::Approval {
+                    approval_id: ApprovalId::new(),
+                },
+                Some(GovernanceState::Requested),
+                GovernanceState::Granted,
+                22,
+            ),
+        },
+        TraceEventKind::GovernanceApprovalDenied {
+            transition: transition(
+                GovernanceObjectRef::Approval {
+                    approval_id: ApprovalId::new(),
+                },
+                Some(GovernanceState::Requested),
+                GovernanceState::Denied,
+                23,
+            ),
+        },
+        TraceEventKind::GovernanceApprovalExpired {
+            transition: transition(
+                GovernanceObjectRef::Approval {
+                    approval_id: ApprovalId::new(),
+                },
+                Some(GovernanceState::Requested),
+                GovernanceState::Expired,
+                24,
+            ),
+        },
+        TraceEventKind::GovernanceApprovalRevoked {
+            transition: transition(
+                GovernanceObjectRef::Approval {
+                    approval_id: ApprovalId::new(),
+                },
+                Some(GovernanceState::Requested),
+                GovernanceState::Revoked,
+                25,
+            ),
+        },
+        TraceEventKind::EscalationOpened {
+            transition: transition(
+                GovernanceObjectRef::Escalation {
+                    escalation_id: EscalationId::new(),
+                },
+                None,
+                GovernanceState::Open,
+                26,
+            ),
+        },
+        TraceEventKind::EscalationResolved {
+            transition: transition(
+                GovernanceObjectRef::Escalation {
+                    escalation_id: EscalationId::new(),
+                },
+                Some(GovernanceState::Open),
+                GovernanceState::Resolved,
+                27,
+            ),
+        },
+        TraceEventKind::EscalationExpired {
+            transition: transition(
+                GovernanceObjectRef::Escalation {
+                    escalation_id: EscalationId::new(),
+                },
+                Some(GovernanceState::Open),
+                GovernanceState::Expired,
+                28,
+            ),
+        },
+        TraceEventKind::EscalationRevoked {
+            transition: transition(
+                GovernanceObjectRef::Escalation {
+                    escalation_id: EscalationId::new(),
+                },
+                Some(GovernanceState::Open),
+                GovernanceState::Revoked,
+                29,
+            ),
+        },
+        TraceEventKind::InterventionRequested {
+            transition: transition(
+                GovernanceObjectRef::Intervention {
+                    intervention_id: InterventionId::new(),
+                },
+                None,
+                GovernanceState::Requested,
+                30,
+            ),
+        },
+        TraceEventKind::InterventionResolved {
+            transition: transition(
+                GovernanceObjectRef::Intervention {
+                    intervention_id: InterventionId::new(),
+                },
+                Some(GovernanceState::Requested),
+                GovernanceState::Resolved,
+                31,
+            ),
+        },
+        TraceEventKind::InterventionCancelled {
+            transition: transition(
+                GovernanceObjectRef::Intervention {
+                    intervention_id: InterventionId::new(),
+                },
+                Some(GovernanceState::Requested),
+                GovernanceState::Cancelled,
+                32,
+            ),
+        },
+        TraceEventKind::InterventionExpired {
+            transition: transition(
+                GovernanceObjectRef::Intervention {
+                    intervention_id: InterventionId::new(),
+                },
+                Some(GovernanceState::Requested),
+                GovernanceState::Expired,
+                33,
+            ),
+        },
+        TraceEventKind::InterventionRevoked {
+            transition: transition(
+                GovernanceObjectRef::Intervention {
+                    intervention_id: InterventionId::new(),
+                },
+                Some(GovernanceState::Requested),
+                GovernanceState::Revoked,
+                34,
+            ),
+        },
+        TraceEventKind::GovernanceCircuitBreakerTripped {
+            transition: transition(
+                GovernanceObjectRef::CircuitBreaker {
+                    circuit_breaker_id: CircuitBreakerId::new(),
+                },
+                None,
+                GovernanceState::Active,
+                35,
+            ),
+        },
+        TraceEventKind::GovernanceCircuitBreakerCleared {
+            transition: transition(
+                GovernanceObjectRef::CircuitBreaker {
+                    circuit_breaker_id: CircuitBreakerId::new(),
+                },
+                Some(GovernanceState::Active),
+                GovernanceState::Cleared,
+                36,
+            ),
+        },
+        TraceEventKind::GovernanceCircuitBreakerExpired {
+            transition: transition(
+                GovernanceObjectRef::CircuitBreaker {
+                    circuit_breaker_id: CircuitBreakerId::new(),
+                },
+                Some(GovernanceState::Active),
+                GovernanceState::Expired,
+                37,
+            ),
+        },
+        TraceEventKind::GovernanceCircuitBreakerRevoked {
+            transition: transition(
+                GovernanceObjectRef::CircuitBreaker {
+                    circuit_breaker_id: CircuitBreakerId::new(),
+                },
+                Some(GovernanceState::Active),
+                GovernanceState::Revoked,
+                38,
+            ),
+        },
+        TraceEventKind::KillSwitchActivated {
+            transition: transition(
+                GovernanceObjectRef::KillSwitch {
+                    kill_switch_id: KillSwitchId::new(),
+                },
+                None,
+                GovernanceState::Active,
+                39,
+            ),
+        },
+        TraceEventKind::KillSwitchCleared {
+            transition: transition(
+                GovernanceObjectRef::KillSwitch {
+                    kill_switch_id: KillSwitchId::new(),
+                },
+                Some(GovernanceState::Active),
+                GovernanceState::Cleared,
+                40,
+            ),
+        },
+        TraceEventKind::KillSwitchExpired {
+            transition: transition(
+                GovernanceObjectRef::KillSwitch {
+                    kill_switch_id: KillSwitchId::new(),
+                },
+                Some(GovernanceState::Active),
+                GovernanceState::Expired,
+                41,
+            ),
+        },
+        TraceEventKind::KillSwitchRevoked {
+            transition: transition(
+                GovernanceObjectRef::KillSwitch {
+                    kill_switch_id: KillSwitchId::new(),
+                },
+                Some(GovernanceState::Active),
+                GovernanceState::Revoked,
+                42,
+            ),
+        },
+        TraceEventKind::GovernanceTransitionRejected {
+            rejection: *rejection,
+        },
+    ];
+
+    for (offset, kind) in events.into_iter().enumerate() {
+        let event = TraceEvent::new(run_id.clone(), 50 + offset as u64, now, kind);
+        assert_eq!(event.identity.tenant_id, Some(tenant_id.clone()));
+        assert_eq!(event.identity.agent_id, Some(agent_id.clone()));
+        assert_eq!(event.identity.action_id, Some(action_id.clone()));
+        let payload = serde_json::to_vec(&event).expect("serialize");
+        let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+        assert_eq!(decoded, event);
+    }
+}
+
+#[test]
+fn governance_trace_event_rejects_scope_run_mismatch_with_explicit_identity() {
+    let trace_run_id = RunId::new();
+    let scoped_run_id = RunId::new();
+    let now = OffsetDateTime::now_utc();
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let transition = GovernanceTransition::try_new(
+        GovernanceObjectRef::CircuitBreaker {
+            circuit_breaker_id: CircuitBreakerId::new(),
+        },
+        GovernanceScope::Run {
+            tenant_id,
+            agent_id,
+            run_id: scoped_run_id.clone(),
+        },
+        None,
+        GovernanceState::Active,
+        now,
+        "run scoped breaker",
+        GovernanceIssuer::new("operator", "daemon").expect("issuer"),
+        GovernanceTraceLink::new(
+            TraceEventId::from_run_sequence(&scoped_run_id, 1),
+            Some(scoped_run_id.clone()),
+        ),
+        GovernanceExtensions::new(),
+    )
+    .expect("transition");
+
+    let result = TraceEvent::try_new_with_identity(
+        TraceIdentityContext::new(trace_run_id.clone()),
+        1,
+        now,
+        TraceEventKind::GovernanceCircuitBreakerTripped { transition },
+    );
+
+    assert!(matches!(
+        result,
+        Err(IdentityValidationError::Mismatch {
+            field: "governance_scope.run_id",
+            expected,
+            actual,
+        }) if expected == trace_run_id.to_string() && actual == scoped_run_id.to_string()
+    ));
+}
+
+#[test]
+fn circuit_breaker_trace_events_round_trip() {
+    let run_id = RunId::new();
+    let now = OffsetDateTime::now_utc();
+    let breaker = CircuitBreaker::tripped(
+        CircuitBreakerId::try_new("cb_global").expect("id"),
+        CircuitBreakerScope::Global,
+        "global hold",
+        now,
+    )
+    .expect("breaker");
+    let tripped = breaker
+        .trip_trace_context("operator:alice", now)
+        .expect("trip context");
+    let (_cleared, cleared) = breaker
+        .clear_with_authority("incident resolved", "operator:alice", now)
+        .expect("clear context");
+    let events = vec![
+        TraceEventKind::CircuitBreakerTripped { breaker: tripped },
+        TraceEventKind::CircuitBreakerCleared { breaker: cleared },
+    ];
+
+    for (sequence, kind) in events.into_iter().enumerate() {
+        let event = TraceEvent::new(run_id.clone(), sequence as u64, now, kind);
+        let payload = serde_json::to_vec(&event).expect("serialize");
+        let decoded: TraceEvent = serde_json::from_slice(&payload).expect("deserialize");
+        assert_eq!(decoded, event);
+        match decoded.kind {
+            TraceEventKind::CircuitBreakerTripped { breaker }
+            | TraceEventKind::CircuitBreakerCleared { breaker } => {
+                assert_eq!(breaker.authorized_by, "operator:alice");
+                assert!(matches!(
+                    breaker.state,
+                    CircuitBreakerState::Tripped | CircuitBreakerState::Cleared
+                ));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn governance_scope_identity_application_covers_all_scope_shapes() {
+    let run_id = RunId::new();
+    let now = OffsetDateTime::now_utc();
+    let tenant_id = TenantId::new();
+    let agent_id = AgentId::new();
+    let action_id = ActionId::new();
+    let fleet_id = FleetId::new();
+    let node_id = NodeId::new();
+    let instance_id = InstanceId::new();
+    let cases = vec![
+        (GovernanceScope::Global, None, None, None, None, None, None),
+        (
+            GovernanceScope::Fleet {
+                fleet_id: fleet_id.clone(),
+            },
+            Some(fleet_id.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+        (
+            GovernanceScope::Node {
+                node_id: node_id.clone(),
+            },
+            None,
+            Some(node_id.clone()),
+            None,
+            None,
+            None,
+            None,
+        ),
+        (
+            GovernanceScope::Instance {
+                instance_id: instance_id.clone(),
+            },
+            None,
+            None,
+            Some(instance_id.clone()),
+            None,
+            None,
+            None,
+        ),
+        (
+            GovernanceScope::Tenant {
+                tenant_id: tenant_id.clone(),
+            },
+            None,
+            None,
+            None,
+            Some(tenant_id.clone()),
+            None,
+            None,
+        ),
+        (
+            GovernanceScope::Agent {
+                tenant_id: tenant_id.clone(),
+                agent_id: agent_id.clone(),
+            },
+            None,
+            None,
+            None,
+            Some(tenant_id.clone()),
+            Some(agent_id.clone()),
+            None,
+        ),
+        (
+            GovernanceScope::Run {
+                tenant_id: tenant_id.clone(),
+                agent_id: agent_id.clone(),
+                run_id: run_id.clone(),
+            },
+            None,
+            None,
+            None,
+            Some(tenant_id.clone()),
+            Some(agent_id.clone()),
+            None,
+        ),
+        (
+            GovernanceScope::Action {
+                tenant_id: tenant_id.clone(),
+                agent_id: agent_id.clone(),
+                run_id: run_id.clone(),
+                action_id: action_id.clone(),
+            },
+            None,
+            None,
+            None,
+            Some(tenant_id.clone()),
+            Some(agent_id.clone()),
+            Some(action_id.clone()),
+        ),
+        (
+            GovernanceScope::Adapter {
+                tenant_id: Some(tenant_id.clone()),
+                adapter: "filesystem".to_string(),
+            },
+            None,
+            None,
+            None,
+            Some(tenant_id.clone()),
+            None,
+            None,
+        ),
+        (
+            GovernanceScope::Adapter {
+                tenant_id: None,
+                adapter: "http".to_string(),
+            },
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+    ];
+
+    for (idx, (scope, fleet, node, instance, tenant, agent, action)) in
+        cases.into_iter().enumerate()
+    {
+        let transition = GovernanceTransition::try_new(
+            GovernanceObjectRef::CircuitBreaker {
+                circuit_breaker_id: CircuitBreakerId::new(),
+            },
+            scope,
+            None,
+            GovernanceState::Active,
+            now,
+            "scope identity",
+            GovernanceIssuer::new("operator", "daemon").expect("issuer"),
+            GovernanceTraceLink::new(
+                TraceEventId::from_run_sequence(&run_id, 60 + idx as u64),
+                Some(run_id.clone()),
+            ),
+            GovernanceExtensions::new(),
+        )
+        .expect("transition");
+        let event = TraceEvent::new(
+            run_id.clone(),
+            60 + idx as u64,
+            now,
+            TraceEventKind::GovernanceCircuitBreakerTripped { transition },
+        );
+
+        assert_eq!(event.identity.fleet_id, fleet);
+        assert_eq!(event.identity.node_id, node);
+        assert_eq!(event.identity.instance_id, instance);
+        assert_eq!(event.identity.tenant_id, tenant);
+        assert_eq!(event.identity.agent_id, agent);
+        assert_eq!(event.identity.action_id, action);
     }
 }

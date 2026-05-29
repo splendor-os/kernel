@@ -30,19 +30,27 @@
 //! assert_eq!(action.name, "http_get");
 //! ```
 
+mod approval;
 mod capabilities;
 mod daemon_security;
+mod escalation;
 mod fleet_telemetry;
+mod governance;
 mod hash;
 mod ids;
 mod message;
 mod node_registry;
 mod placement;
+mod policy_distribution;
 mod primitives;
 mod state_handoff;
 mod trace;
 mod work_order;
 
+pub use approval::{
+    ApprovalActionScope, ApprovalDecision, ApprovalEvidence, ApprovalPolicy, ApprovalTraceContext,
+    APPROVAL_EVIDENCE_SCHEMA_VERSION, APPROVAL_POLICY_SCHEMA_VERSION,
+};
 pub use capabilities::{
     is_valid_capability_name, CapabilityDocument, CapabilityValidationError,
     CAPABILITY_DOCUMENT_SCHEMA,
@@ -55,15 +63,31 @@ pub use daemon_security::{
     InsecureDevMode, LocalTransportBinding, RevocationStatus, WorkOrderAuthorization,
     WorkOrderSignature,
 };
+pub use escalation::{
+    EscalationContext, EscalationDecision, EscalationObservation, EscalationPolicy,
+    EscalationPolicyError, EscalationRule, EscalationScope, EscalationTrigger,
+    ESCALATION_POLICY_SCHEMA_VERSION,
+};
 pub use fleet_telemetry::{
     DenialSignal, FailureCategory, FailureSignal, FleetTelemetrySnapshot, InstanceTelemetry,
     NodeOnlineState, NodeTelemetry, QueueTelemetry, QuotaSignal, RunStatus, RunStatusCount,
     RunStatusCounts, RunTelemetry, RuntimeMode as TelemetryRuntimeMode, TelemetryAuthority,
     TraceSyncFailure, TraceSyncTelemetry, FLEET_TELEMETRY_SCHEMA_VERSION,
 };
+pub use governance::{
+    ApprovalDenial, ApprovalGrant, ApprovalRequest, ApprovalStatus, CircuitBreaker,
+    CircuitBreakerMatch, CircuitBreakerScope, CircuitBreakerState, CircuitBreakerStatus,
+    CircuitBreakerTraceContext, CircuitBreakerValidationError, Escalation, EscalationStatus,
+    GovernanceCircuitBreaker, GovernanceExtensions, GovernanceIssuer, GovernanceObjectKind,
+    GovernanceObjectRef, GovernanceRevocation, GovernanceScope, GovernanceState,
+    GovernanceTraceLink, GovernanceTransition, GovernanceTransitionError,
+    GovernanceTransitionRejection, GovernanceValidationError, Intervention, InterventionStatus,
+    KillSwitch, KillSwitchStatus, CIRCUIT_BREAKER_SCHEMA_VERSION, GOVERNANCE_STATE_SCHEMA_VERSION,
+};
 pub use hash::{ContentHash, HashAlgorithm};
 pub use ids::{
-    ActionId, AgentId, FleetId, IdentityValidationError, InstanceId, MessageId, NodeId, RunId,
+    ActionId, AgentId, ApprovalId, CircuitBreakerId, EscalationId, FleetId,
+    IdentityValidationError, InstanceId, InterventionId, KillSwitchId, MessageId, NodeId, RunId,
     RuntimeIdentityContext, SnapshotId, StateNodeId, TenantId, TickId, TraceEventId, TraceId,
     TraceIdentityContext, WorkOrderId, WorkOrderIdError,
 };
@@ -84,6 +108,12 @@ pub use placement::{
     PlacementDecision, PlacementDecisionStatus, PlacementExecutionMode, PlacementExplain,
     PlacementRejectionReason, PlacementRequest, PlacementTarget, PlacementTraceAudit,
     PLACEMENT_DECISION_SCHEMA,
+};
+pub use policy_distribution::{
+    validate_policy_bundle, PolicyBundle, PolicyBundleEnvelope, PolicyBundleId,
+    PolicyBundleIdError, PolicyBundleKeyring, PolicyBundleTraceContext,
+    PolicyBundleValidationContext, PolicyBundleValidationError, PolicyDegradedMode,
+    ValidatedPolicyBundle, POLICY_BUNDLE_SCHEMA_VERSION, POLICY_BUNDLE_SIGNATURE_ALGORITHM,
 };
 pub use primitives::{
     Action, Constraint, ConstraintKind, ConstraintScope, CostEstimate, Feedback, Percept,

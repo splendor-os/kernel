@@ -86,6 +86,8 @@ pub enum EndpointScope {
     HealthRead,
     /// Read daemon capabilities.
     CapabilitiesRead,
+    /// Sync a centrally distributed policy bundle into a local run cache.
+    PoliciesSync,
     /// Register a resident or ephemeral node.
     NodesRegister,
     /// Register a Splendor runtime instance under a node.
@@ -114,6 +116,7 @@ impl EndpointScope {
             Self::MessagesSend => "splendor.messages.send",
             Self::HealthRead => "splendor.health.read",
             Self::CapabilitiesRead => "splendor.capabilities.read",
+            Self::PoliciesSync => "splendor.policies.sync",
             Self::NodesRegister => "splendor.nodes.register",
             Self::InstancesRegister => "splendor.instances.register",
             Self::NodesHeartbeat => "splendor.nodes.heartbeat",
@@ -346,6 +349,8 @@ pub enum DaemonEndpoint {
     Health,
     /// `GET /capabilities`.
     Capabilities,
+    /// `POST /runs/:run_id/policies/sync`.
+    PolicySync { tenant_id: TenantId, run_id: RunId },
     /// `POST /nodes/register`.
     NodeRegister { scope: RegistryScope },
     /// `POST /instances/register`.
@@ -383,6 +388,7 @@ impl DaemonEndpoint {
             Self::ActionSubmit { .. } => EndpointScope::ActionsSubmit,
             Self::Health => EndpointScope::HealthRead,
             Self::Capabilities => EndpointScope::CapabilitiesRead,
+            Self::PolicySync { .. } => EndpointScope::PoliciesSync,
             Self::NodeRegister { .. } => EndpointScope::NodesRegister,
             Self::InstanceRegister { .. } => EndpointScope::InstancesRegister,
             Self::NodeHeartbeat { .. } => EndpointScope::NodesHeartbeat,
@@ -402,7 +408,8 @@ impl DaemonEndpoint {
             | Self::TraceRead { tenant_id, .. }
             | Self::StateHeadRead { tenant_id, .. }
             | Self::ReplayCreate { tenant_id, .. }
-            | Self::ActionSubmit { tenant_id, .. } => Some(tenant_id),
+            | Self::ActionSubmit { tenant_id, .. }
+            | Self::PolicySync { tenant_id, .. } => Some(tenant_id),
             Self::Health
             | Self::Capabilities
             | Self::NodeRegister { .. }
@@ -429,6 +436,7 @@ impl DaemonEndpoint {
             | Self::StateHeadRead { .. }
             | Self::ReplayCreate { .. }
             | Self::ActionSubmit { .. }
+            | Self::PolicySync { .. }
             | Self::Health
             | Self::Capabilities => None,
         }
@@ -444,6 +452,7 @@ impl DaemonEndpoint {
                 | Self::RunStop { .. }
                 | Self::PerceptAppend { .. }
                 | Self::ActionSubmit { .. }
+                | Self::PolicySync { .. }
                 | Self::NodeRegister { .. }
                 | Self::InstanceRegister { .. }
                 | Self::NodeHeartbeat { .. }
@@ -818,6 +827,7 @@ fn validate_endpoint_contract(endpoint: &DaemonEndpoint) -> Result<(), DaemonSec
         | DaemonEndpoint::RunStop { .. }
         | DaemonEndpoint::StateHeadRead { .. }
         | DaemonEndpoint::ReplayCreate { .. }
+        | DaemonEndpoint::PolicySync { .. }
         | DaemonEndpoint::Health
         | DaemonEndpoint::Capabilities => Ok(()),
     }

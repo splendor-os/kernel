@@ -708,10 +708,13 @@ async fn run_daemon_boundary(artifacts: &Path) -> TestResult<DaemonEvidence> {
             quota_usage: Some(QuotaUsage::single_action()),
             satisfied_preconditions: Vec::new(),
         }],
+        policy_bundle_required: false,
+        policy_bundle: None,
         registered_actions: vec![RegisteredAction {
             name: "denied_action".to_string(),
             adapter: "daemon.local".to_string(),
         }],
+        approval_policies: Vec::new(),
         allowed_percept_schemas: vec!["splendor.percept.kernel_e2e.v1".to_string()],
         allowed_percept_sources: vec!["kernel-e2e-daemon".to_string()],
         initial_state: Some(json!({"seed": true})),
@@ -746,6 +749,7 @@ async fn run_daemon_boundary(artifacts: &Path) -> TestResult<DaemonEvidence> {
         work_order: None,
         audit_attribution: Some(attribution(false)),
         reason: Some("kernel-e2e".to_string()),
+        approval_evidence: None,
     };
     let (status, tick): (StatusCode, TickResponse) = call_json(
         app.clone(),
@@ -783,6 +787,7 @@ async fn run_daemon_boundary(artifacts: &Path) -> TestResult<DaemonEvidence> {
         adapter: Some("daemon.local".to_string()),
         quota_usage: Some(QuotaUsage::single_action()),
         satisfied_preconditions: Vec::new(),
+        approval_evidence: None,
     };
     let (status, unlinked_error): (StatusCode, ApiErrorBody) = call_json(
         app.clone(),
@@ -805,6 +810,7 @@ async fn run_daemon_boundary(artifacts: &Path) -> TestResult<DaemonEvidence> {
         adapter: Some("daemon.local".to_string()),
         quota_usage: Some(QuotaUsage::single_action()),
         satisfied_preconditions: Vec::new(),
+        approval_evidence: None,
     };
     let (status, denied_outcome): (StatusCode, splendor_gateway::ActionOutcome) = call_json(
         app.clone(),
@@ -829,6 +835,7 @@ async fn run_daemon_boundary(artifacts: &Path) -> TestResult<DaemonEvidence> {
         adapter: Some("daemon.local".to_string()),
         quota_usage: Some(QuotaUsage::single_action()),
         satisfied_preconditions: Vec::new(),
+        approval_evidence: None,
     };
     let (status, failed_outcome): (StatusCode, splendor_gateway::ActionOutcome) = call_json(
         app.clone(),
@@ -895,6 +902,7 @@ async fn run_daemon_boundary(artifacts: &Path) -> TestResult<DaemonEvidence> {
             daemon_id: "daemon_local".to_string(),
         },
         insecure_dev_mode: None,
+        policy_bundle_keyring: splendor_types::PolicyBundleKeyring::new(),
     }));
     let locked_tenant = TenantId::parse("00000000-0000-0000-0000-000000000211")?;
     let locked_agent = AgentId::parse("00000000-0000-0000-0000-000000000212")?;
@@ -916,7 +924,10 @@ async fn run_daemon_boundary(artifacts: &Path) -> TestResult<DaemonEvidence> {
         allowed_adapters: Vec::new(),
         allowed_permissions: Vec::new(),
         policy_actions: Vec::new(),
+        policy_bundle_required: false,
+        policy_bundle: None,
         registered_actions: Vec::new(),
+        approval_policies: Vec::new(),
         allowed_percept_schemas: Vec::new(),
         allowed_percept_sources: Vec::new(),
         initial_state: Some(json!({"non_dev": true})),
@@ -2812,10 +2823,19 @@ fn validate_openapi_contract(artifacts: &Path) -> TestResult<OpenApiEvidence> {
         .unwrap_or_default();
     assert_eq!(
         run_status_enum,
-        ["created", "running", "paused", "stopped", "failed"]
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
+        [
+            "created",
+            "running",
+            "waiting_for_approval",
+            "paused",
+            "denied",
+            "expired",
+            "stopped",
+            "failed"
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
     );
     let endpoint_scope_enum = schemas
         .get(serde_yaml::Value::String("EndpointScope".to_string()))
@@ -2854,10 +2874,16 @@ fn validate_openapi_contract(artifacts: &Path) -> TestResult<OpenApiEvidence> {
         .unwrap_or_default();
     assert_eq!(
         action_status_enum,
-        ["Executed", "Denied", "Failed"]
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
+        [
+            "Executed",
+            "Denied",
+            "NeedsApproval",
+            "NeedsIntervention",
+            "Failed"
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
     );
     let create_run_required = assert_required_fields(
         schemas,
@@ -2944,10 +2970,13 @@ fn validate_openapi_contract(artifacts: &Path) -> TestResult<OpenApiEvidence> {
             quota_usage: Some(QuotaUsage::single_action()),
             satisfied_preconditions: Vec::new(),
         }],
+        policy_bundle_required: false,
+        policy_bundle: None,
         registered_actions: vec![RegisteredAction {
             name: "fixture.allowed".to_string(),
             adapter: "fixture".to_string(),
         }],
+        approval_policies: Vec::new(),
         allowed_percept_schemas: vec!["splendor.percept.e2e.v1".to_string()],
         allowed_percept_sources: vec!["kernel-e2e".to_string()],
         initial_state: Some(json!({"openapi": "request-shape"})),
@@ -2974,6 +3003,7 @@ fn validate_openapi_contract(artifacts: &Path) -> TestResult<OpenApiEvidence> {
             "mode",
             "event_count",
             "action_event_count",
+            "approval_events",
         ],
     )?;
     let replay_shape = serde_json::to_value(ReplayResponse {
@@ -2982,6 +3012,7 @@ fn validate_openapi_contract(artifacts: &Path) -> TestResult<OpenApiEvidence> {
         mode: "inspect_only".to_string(),
         event_count: 1,
         action_event_count: 0,
+        approval_events: Vec::new(),
     })?;
     assert_json_has_keys(&replay_shape, &replay_response_required, "ReplayResponse");
     let package_json: Value =

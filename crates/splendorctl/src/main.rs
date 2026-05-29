@@ -10,7 +10,10 @@
 use serde::{Deserialize, Serialize};
 use splendor_adapter_filesystem::{FilesystemAdapter, FilesystemAdapterConfig};
 use splendor_adapter_http::{HttpAdapter, HttpAdapterConfig, HttpMethod};
-use splendor_gateway::{ActionAdapter, ActionGateway, VerifiedActionGateway};
+use splendor_gateway::{
+    ActionAdapter, ActionGateway, CircuitBreakerEvaluator, StaticCircuitBreakerEvaluator,
+    VerifiedActionGateway,
+};
 use splendor_kernel::{
     ActionCandidate, AdapterQuota, AgentContext, AgentIsolationPolicy, AgentRuntimeConfig,
     LoopEngine, Perceptor, Policy, PolicyDecision, QuotaPolicy, RunTraceContext, Scheduler,
@@ -20,10 +23,12 @@ use splendor_store::{
     SqliteStateStore, SqliteTraceStore, StateStore, TraceRecord, TraceStore, TraceStoreError,
 };
 use splendor_types::{
-    validate_work_order, Action, AgentId, ContentHash, HashAlgorithm, MessageId, Percept,
-    PerceptProvenance, QuotaUsage, RunId, SideEffectClass, SnapshotId, StateHandoffTraceContext,
-    TenantId, TraceEvent, TraceEventId, TraceEventKind, TraceId, WorkOrder, WorkOrderEnvelope,
-    WorkOrderId, WorkOrderKeyring, WorkOrderValidationContext, WorkOrderValidationError,
+    validate_work_order, Action, AgentId, CircuitBreaker, CircuitBreakerId, CircuitBreakerScope,
+    CircuitBreakerState, CircuitBreakerTraceContext, ContentHash, FleetId, HashAlgorithm,
+    InstanceId, MessageId, NodeId, Percept, PerceptProvenance, QuotaUsage, RunId,
+    RuntimeIdentityContext, SideEffectClass, SnapshotId, StateHandoffTraceContext, TenantId,
+    TraceEvent, TraceEventId, TraceEventKind, TraceId, WorkOrder, WorkOrderEnvelope, WorkOrderId,
+    WorkOrderKeyring, WorkOrderValidationContext, WorkOrderValidationError,
 };
 use std::env;
 use std::fs;
@@ -420,12 +425,14 @@ enum ReplayOutput {
         feedback: Box<Option<splendor_types::Feedback>>,
         reward: Box<Option<splendor_types::Reward>>,
         state_hash: Option<ContentHash>,
-        snapshot_id: Option<SnapshotId>,
+        snapshot_id: Box<Option<SnapshotId>>,
         snapshot_bytes_len: Option<usize>,
         snapshot_bytes: Box<Option<Vec<u8>>>,
         messages: Vec<ReplayMessageEvent>,
         parent_child_runs: Vec<ReplayParentChildRun>,
         isolation_denials: Vec<ReplayIsolationDenial>,
+        escalations: Vec<ReplayEscalation>,
+        circuit_breaker_denials: Vec<ReplayCircuitBreakerDenial>,
     },
     CausalGraph {
         run_id: String,
@@ -434,6 +441,7 @@ enum ReplayOutput {
         messages: Vec<ReplayMessageEvent>,
         parent_child_runs: Vec<ReplayParentChildRun>,
         isolation_denials: Vec<ReplayIsolationDenial>,
+        circuit_breaker_denials: Vec<ReplayCircuitBreakerDenial>,
     },
     HandoffBoundary {
         event_kind: String,
@@ -488,6 +496,25 @@ struct ReplayIsolationDenial {
     ledger_reason: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct ReplayEscalation {
+    trace_event_id: TraceEventId,
+    escalation: splendor_types::EscalationContext,
+    side_effects_replayed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct ReplayCircuitBreakerDenial {
+    trace_event_id: TraceEventId,
+    action: splendor_types::Action,
+    reasons: Vec<String>,
+    breaker_id: Option<String>,
+    scope: Option<String>,
+    scope_value: Option<String>,
+    reason: Option<String>,
+    artifacts: serde_json::Value,
+}
+
 #[derive(Default)]
 struct ReplayTick {
     tick_id: u64,
@@ -506,6 +533,8 @@ struct ReplayTick {
     messages: Vec<ReplayMessageEvent>,
     parent_child_runs: Vec<ReplayParentChildRun>,
     isolation_denials: Vec<ReplayIsolationDenial>,
+    escalations: Vec<ReplayEscalation>,
+    circuit_breaker_denials: Vec<ReplayCircuitBreakerDenial>,
 }
 
 #[derive(Default)]
@@ -513,6 +542,7 @@ struct ReplayCausalGraph {
     messages: Vec<ReplayMessageEvent>,
     parent_child_runs: Vec<ReplayParentChildRun>,
     isolation_denials: Vec<ReplayIsolationDenial>,
+    circuit_breaker_denials: Vec<ReplayCircuitBreakerDenial>,
 }
 
 /// Replays a run by reconstructing tick-by-tick outputs from trace + snapshots.
@@ -660,12 +690,14 @@ fn collect_replay_outputs(
                         feedback: Box::new(tick.feedback),
                         reward: Box::new(tick.reward),
                         state_hash: tick.state_hash,
-                        snapshot_id: tick.snapshot_id,
+                        snapshot_id: Box::new(tick.snapshot_id),
                         snapshot_bytes_len: tick.snapshot_bytes_len,
                         snapshot_bytes: Box::new(tick.snapshot_bytes),
                         messages: tick.messages,
                         parent_child_runs: tick.parent_child_runs,
                         isolation_denials: tick.isolation_denials,
+                        escalations: tick.escalations,
+                        circuit_breaker_denials: tick.circuit_breaker_denials,
                     });
                 }
             }
@@ -679,6 +711,7 @@ fn collect_replay_outputs(
                 let message_event = replay_message_event(event)?;
                 let parent_child_run = replay_parent_child_run(event)?;
                 let isolation_denial = replay_isolation_denial(event);
+                let circuit_breaker_denial = replay_circuit_breaker_denial(event);
 
                 if let Some(tick) = current_tick.as_mut() {
                     apply_event_to_tick(tick, event, state_store, include_state)?;
@@ -687,6 +720,9 @@ fn collect_replay_outputs(
                     }
                     if let Some(isolation_denial) = isolation_denial.clone() {
                         tick.isolation_denials.push(isolation_denial);
+                    }
+                    if let Some(circuit_breaker_denial) = circuit_breaker_denial.clone() {
+                        tick.circuit_breaker_denials.push(circuit_breaker_denial);
                     }
                 }
 
@@ -699,6 +735,11 @@ fn collect_replay_outputs(
                 if let Some(isolation_denial) = isolation_denial {
                     causal_graph.isolation_denials.push(isolation_denial);
                 }
+                if let Some(circuit_breaker_denial) = circuit_breaker_denial {
+                    causal_graph
+                        .circuit_breaker_denials
+                        .push(circuit_breaker_denial);
+                }
             }
         }
     }
@@ -709,6 +750,7 @@ fn collect_replay_outputs(
         messages: causal_graph.messages,
         parent_child_runs: causal_graph.parent_child_runs,
         isolation_denials: causal_graph.isolation_denials,
+        circuit_breaker_denials: causal_graph.circuit_breaker_denials,
     });
     Ok(outputs)
 }
@@ -846,6 +888,40 @@ fn replay_isolation_denial(event: &TraceEvent) -> Option<ReplayIsolationDenial> 
     None
 }
 
+fn replay_circuit_breaker_denial(event: &TraceEvent) -> Option<ReplayCircuitBreakerDenial> {
+    if let TraceEventKind::ActionDenied { action, result } = &event.kind {
+        if !is_circuit_breaker_denial(result) {
+            return None;
+        }
+        let breaker = circuit_breaker_artifact(&result.artifacts);
+        return Some(ReplayCircuitBreakerDenial {
+            trace_event_id: event.trace_event_id.clone(),
+            action: action.clone(),
+            reasons: result.reasons.clone(),
+            breaker_id: breaker.and_then(|value| string_artifact(value, "breaker_id")),
+            scope: breaker.and_then(|value| string_artifact(value, "scope")),
+            scope_value: breaker.and_then(|value| string_artifact(value, "scope_value")),
+            reason: breaker.and_then(|value| string_artifact(value, "reason")),
+            artifacts: result.artifacts.clone(),
+        });
+    }
+    None
+}
+
+fn is_circuit_breaker_denial(result: &splendor_types::VerificationResult) -> bool {
+    !result.allowed
+        && (result
+            .reasons
+            .iter()
+            .any(|reason| reason == "circuit_breaker_tripped")
+            || circuit_breaker_artifact(&result.artifacts).is_some())
+}
+
+fn circuit_breaker_artifact(artifacts: &serde_json::Value) -> Option<&serde_json::Value> {
+    let value = artifacts.get("circuit_breaker")?;
+    Some(value.get("circuit_breaker").unwrap_or(value))
+}
+
 fn is_permission_laundering_denial(result: &splendor_types::VerificationResult) -> bool {
     if result.allowed {
         return false;
@@ -904,6 +980,27 @@ fn apply_event_to_tick(
                 status: "failed".to_string(),
                 outcome: None,
                 result: Some(result.clone()),
+            });
+        }
+        TraceEventKind::ActionNeedsIntervention { action, result } => {
+            tick.actions.push(ReplayAction {
+                action: action.clone(),
+                status: "needs_intervention".to_string(),
+                outcome: None,
+                result: Some(result.clone()),
+            });
+        }
+        TraceEventKind::EscalationTriggered { escalation } => {
+            if escalation.run_id != event.run_id {
+                return Err(format!(
+                    "Escalation trace run mismatch at sequence {}: event run '{}' but escalation run '{}'",
+                    event.sequence, event.run_id, escalation.run_id
+                ));
+            }
+            tick.escalations.push(ReplayEscalation {
+                trace_event_id: event.trace_event_id.clone(),
+                escalation: escalation.clone(),
+                side_effects_replayed: false,
             });
         }
         TraceEventKind::MessageQueued { .. }
@@ -1005,6 +1102,8 @@ struct RunConfig {
     agents: Vec<AgentConfig>,
     adapters: Option<AdaptersConfig>,
     work_order: Option<WorkOrderConfig>,
+    runtime_identity: Option<RuntimeIdentityConfig>,
+    circuit_breakers: Option<Vec<CircuitBreakerConfig>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1013,6 +1112,23 @@ struct WorkOrderConfig {
     envelope: WorkOrderEnvelope,
     verification_secret: String,
     expected_placement_target: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeIdentityConfig {
+    fleet_id: Option<String>,
+    node_id: Option<String>,
+    instance_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CircuitBreakerConfig {
+    id: String,
+    scope: String,
+    value: Option<String>,
+    reason: String,
+    state: Option<String>,
+    authorized_by: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1163,7 +1279,8 @@ impl Policy for ConfigPolicy {
                 let candidates = actions
                     .iter()
                     .map(|action| build_action_candidate(action, None))
-                    .collect();
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(splendor_kernel::LoopError::Policy)?;
                 let next_state = next_state.as_deref().unwrap_or("").as_bytes().to_vec();
                 Ok(PolicyDecision::new(
                     candidates,
@@ -1179,7 +1296,10 @@ impl Policy for ConfigPolicy {
                 let candidates = action
                     .as_ref()
                     .as_ref()
-                    .map(|config| vec![build_action_candidate(config, Some(counter as u64))])
+                    .map(|config| build_action_candidate(config, Some(counter as u64)))
+                    .transpose()
+                    .map_err(splendor_kernel::LoopError::Policy)?
+                    .map(|candidate| vec![candidate])
                     .unwrap_or_default();
                 Ok(PolicyDecision::new(
                     candidates,
@@ -1231,6 +1351,8 @@ fn run_from_config(
     );
 
     let registry = build_registry_with_work_order(&config, work_order.as_ref())?;
+    let circuit_breaker_trace_contexts =
+        build_circuit_breaker_trace_contexts(config.circuit_breakers.as_deref())?;
     let mut scheduler = Scheduler::with_registry(
         SchedulerConfig {
             tick_budget: config.tick_budget_ms.map(std::time::Duration::from_millis),
@@ -1308,6 +1430,8 @@ fn run_from_config(
             )
             .map_err(|error| format!("Failed to create engine: {error}"))?
         };
+
+        emit_configured_circuit_breaker_events(&engine, &circuit_breaker_trace_contexts)?;
 
         if let Some(percepts) = agent_config.percepts.clone() {
             engine.add_perceptor(StaticPerceptor { percepts });
@@ -1641,6 +1765,18 @@ fn build_gateway(
     config: &RunConfig,
 ) -> Result<Arc<dyn ActionGateway>, String> {
     let mut gateway = VerifiedActionGateway::new(Arc::new(registry.clone()));
+    let runtime_identity = build_runtime_identity(config.runtime_identity.as_ref())?;
+    let circuit_breakers = build_circuit_breakers(config.circuit_breakers.as_deref())?;
+    gateway.set_runtime_identity(runtime_identity.clone());
+    let evaluator = Arc::new(StaticCircuitBreakerEvaluator::new(circuit_breakers));
+    let admission = evaluator.verify_runtime_admission(&runtime_identity);
+    if !admission.allowed {
+        return Err(format!(
+            "Circuit breaker denied new work: {}",
+            denial_reason(&admission)
+        ));
+    }
+    gateway.set_circuit_breaker_evaluator(evaluator);
     let actions = collect_action_configs(config)?;
     for action in actions {
         let adapter_id = action
@@ -1655,6 +1791,150 @@ fn build_gateway(
     Ok(Arc::new(gateway))
 }
 
+fn build_runtime_identity(
+    config: Option<&RuntimeIdentityConfig>,
+) -> Result<RuntimeIdentityContext, String> {
+    let Some(config) = config else {
+        return Ok(RuntimeIdentityContext::default());
+    };
+    Ok(RuntimeIdentityContext {
+        fleet_id: config.fleet_id.as_deref().map(parse_fleet_id).transpose()?,
+        node_id: config.node_id.as_deref().map(parse_node_id).transpose()?,
+        instance_id: config
+            .instance_id
+            .as_deref()
+            .map(parse_instance_id)
+            .transpose()?,
+        tenant_id: None,
+        agent_id: None,
+    })
+}
+
+fn build_circuit_breakers(
+    config: Option<&[CircuitBreakerConfig]>,
+) -> Result<Vec<CircuitBreaker>, String> {
+    Ok(build_circuit_breaker_controls(config)?.0)
+}
+
+fn build_circuit_breaker_trace_contexts(
+    config: Option<&[CircuitBreakerConfig]>,
+) -> Result<Vec<CircuitBreakerTraceContext>, String> {
+    Ok(build_circuit_breaker_controls(config)?.1)
+}
+
+fn build_circuit_breaker_controls(
+    config: Option<&[CircuitBreakerConfig]>,
+) -> Result<(Vec<CircuitBreaker>, Vec<CircuitBreakerTraceContext>), String> {
+    let mut breakers = Vec::new();
+    let mut trace_contexts = Vec::new();
+    for breaker in config.unwrap_or(&[]) {
+        let state = breaker.state.as_deref().unwrap_or("tripped");
+        if state != "tripped" && state != "cleared" {
+            return Err(format!("Unsupported circuit breaker state: {state}"));
+        }
+        let scope = parse_circuit_breaker_scope(breaker)?;
+        let id =
+            CircuitBreakerId::try_new(breaker.id.clone()).map_err(|error| error.to_string())?;
+        let mut control =
+            CircuitBreaker::tripped(id, scope, breaker.reason.clone(), OffsetDateTime::now_utc())
+                .map_err(|error| error.to_string())?;
+        let trace_context = if state == "cleared" {
+            let authorized_by = breaker.authorized_by.as_deref().ok_or_else(|| {
+                format!(
+                    "circuit breaker '{}' in cleared state requires authorized_by",
+                    breaker.id
+                )
+            })?;
+            let (cleared, trace_context) = control
+                .clear_with_authority(
+                    breaker.reason.clone(),
+                    authorized_by,
+                    OffsetDateTime::now_utc(),
+                )
+                .map_err(|error| error.to_string())?;
+            control = cleared;
+            trace_context
+        } else {
+            let authorized_by = breaker
+                .authorized_by
+                .as_deref()
+                .unwrap_or("local-config:circuit-breakers");
+            control
+                .trip_trace_context(authorized_by, OffsetDateTime::now_utc())
+                .map_err(|error| error.to_string())?
+        };
+        breakers.push(control);
+        trace_contexts.push(trace_context);
+    }
+    Ok((breakers, trace_contexts))
+}
+
+fn emit_configured_circuit_breaker_events(
+    engine: &LoopEngine,
+    trace_contexts: &[CircuitBreakerTraceContext],
+) -> Result<(), String> {
+    for context in trace_contexts {
+        let kind = match context.state {
+            CircuitBreakerState::Tripped => TraceEventKind::CircuitBreakerTripped {
+                breaker: context.clone(),
+            },
+            CircuitBreakerState::Cleared => TraceEventKind::CircuitBreakerCleared {
+                breaker: context.clone(),
+            },
+        };
+        engine
+            .record_runtime_event(kind)
+            .map_err(|error| format!("Failed to record circuit-breaker trace event: {error}"))?;
+    }
+    Ok(())
+}
+
+fn parse_circuit_breaker_scope(
+    config: &CircuitBreakerConfig,
+) -> Result<CircuitBreakerScope, String> {
+    let value = config.value.as_deref();
+    match config.scope.as_str() {
+        "global" => Ok(CircuitBreakerScope::Global),
+        "fleet" => Ok(CircuitBreakerScope::Fleet(parse_fleet_id(
+            required_scope_value("fleet", value)?,
+        )?)),
+        "node" => Ok(CircuitBreakerScope::Node(parse_node_id(
+            required_scope_value("node", value)?,
+        )?)),
+        "instance" => Ok(CircuitBreakerScope::Instance(parse_instance_id(
+            required_scope_value("instance", value)?,
+        )?)),
+        "tenant" => Ok(CircuitBreakerScope::Tenant(parse_tenant_id(
+            required_scope_value("tenant", value)?,
+        )?)),
+        "agent" => Ok(CircuitBreakerScope::Agent(parse_agent_id(
+            required_scope_value("agent", value)?,
+        )?)),
+        "adapter" => Ok(CircuitBreakerScope::Adapter(
+            required_scope_value("adapter", value)?.to_string(),
+        )),
+        "action" => Ok(CircuitBreakerScope::Action(
+            required_scope_value("action", value)?.to_string(),
+        )),
+        "action_class" => Ok(CircuitBreakerScope::ActionClass(parse_action_class_value(
+            required_scope_value("action_class", value)?,
+        )?)),
+        other => Err(format!("Unsupported circuit breaker scope: {other}")),
+    }
+}
+
+fn required_scope_value<'a>(scope: &str, value: Option<&'a str>) -> Result<&'a str, String> {
+    value.ok_or_else(|| format!("circuit breaker scope '{scope}' requires value"))
+}
+
+fn denial_reason(result: &splendor_types::VerificationResult) -> String {
+    if result.reasons.is_empty() {
+        "verification denied".to_string()
+    } else {
+        result.reasons.join(", ")
+    }
+}
+
 fn collect_action_configs(config: &RunConfig) -> Result<Vec<ActionConfig>, String> {
     let mut actions = Vec::new();
     for agent in &config.agents {
@@ -1667,20 +1947,22 @@ fn collect_action_configs(config: &RunConfig) -> Result<Vec<ActionConfig>, Strin
             }
         }
     }
+    for action in &actions {
+        validated_side_effect_class(action)?;
+    }
     Ok(actions)
 }
 
-fn build_action_candidate(config: &ActionConfig, counter: Option<u64>) -> ActionCandidate {
+fn build_action_candidate(
+    config: &ActionConfig,
+    counter: Option<u64>,
+) -> Result<ActionCandidate, String> {
     let params = if let Some(counter) = counter {
         substitute_counter(&config.params, counter)
     } else {
         config.params.clone()
     };
-    let side_effect_class = config
-        .side_effect_class
-        .as_deref()
-        .map(parse_side_effect_class)
-        .unwrap_or(SideEffectClass::ReadOnly);
+    let side_effect_class = validated_side_effect_class(config)?;
     let action = Action {
         name: config.name.clone(),
         params,
@@ -1710,7 +1992,37 @@ fn build_action_candidate(config: &ActionConfig, counter: Option<u64>) -> Action
     if let Some(preconditions) = &config.satisfied_preconditions {
         candidate = candidate.with_satisfied_preconditions(preconditions.clone());
     }
-    candidate
+    Ok(candidate)
+}
+
+fn validated_side_effect_class(config: &ActionConfig) -> Result<SideEffectClass, String> {
+    let declared = config
+        .side_effect_class
+        .as_deref()
+        .map(parse_side_effect_class)
+        .transpose()?;
+    let adapter_derived = trusted_adapter_side_effect_class(config.adapter.as_deref());
+    if let (Some(declared), Some(derived)) = (&declared, &adapter_derived) {
+        if declared != derived {
+            return Err(format!(
+                "side_effect_class '{}' conflicts with adapter-derived class '{}' for action '{}'",
+                side_effect_class_name(declared),
+                side_effect_class_name(derived),
+                config.name
+            ));
+        }
+    }
+    Ok(adapter_derived
+        .or(declared)
+        .unwrap_or(SideEffectClass::ReadOnly))
+}
+
+fn trusted_adapter_side_effect_class(adapter: Option<&str>) -> Option<SideEffectClass> {
+    match adapter {
+        Some("filesystem") => Some(SideEffectClass::Filesystem),
+        Some("http") => Some(SideEffectClass::Network),
+        _ => None,
+    }
 }
 
 fn substitute_counter(value: &serde_json::Value, counter: u64) -> serde_json::Value {
@@ -1735,14 +2047,37 @@ fn substitute_counter(value: &serde_json::Value, counter: u64) -> serde_json::Va
     }
 }
 
-fn parse_side_effect_class(value: &str) -> SideEffectClass {
+fn parse_side_effect_class(value: &str) -> Result<SideEffectClass, String> {
     match value {
-        "filesystem" => SideEffectClass::Filesystem,
-        "network" => SideEffectClass::Network,
-        "read_only" => SideEffectClass::ReadOnly,
-        "external" => SideEffectClass::External,
-        _ => SideEffectClass::ReadOnly,
+        "filesystem" => Ok(SideEffectClass::Filesystem),
+        "network" => Ok(SideEffectClass::Network),
+        "read_only" => Ok(SideEffectClass::ReadOnly),
+        "external" => Ok(SideEffectClass::External),
+        other
+            if other
+                .strip_prefix("custom:")
+                .is_some_and(|value| !value.is_empty()) =>
+        {
+            Ok(SideEffectClass::Custom(
+                other.trim_start_matches("custom:").to_string(),
+            ))
+        }
+        other => Err(format!("Unsupported side_effect_class: {other}")),
     }
+}
+
+fn side_effect_class_name(value: &SideEffectClass) -> String {
+    match value {
+        SideEffectClass::ReadOnly => "read_only".to_string(),
+        SideEffectClass::Filesystem => "filesystem".to_string(),
+        SideEffectClass::Network => "network".to_string(),
+        SideEffectClass::External => "external".to_string(),
+        SideEffectClass::Custom(value) => format!("custom:{value}"),
+    }
+}
+
+fn parse_action_class_value(value: &str) -> Result<SideEffectClass, String> {
+    parse_side_effect_class(value).map_err(|_| format!("Unsupported action_class: {value}"))
 }
 
 fn parse_http_method(value: String) -> Result<HttpMethod, String> {
@@ -1751,6 +2086,21 @@ fn parse_http_method(value: String) -> Result<HttpMethod, String> {
         "POST" | "post" => Ok(HttpMethod::Post),
         other => Err(format!("Unsupported HTTP method: {other}")),
     }
+}
+
+fn parse_fleet_id(value: &str) -> Result<FleetId, String> {
+    let uuid = uuid::Uuid::parse_str(value).map_err(|_| format!("Invalid fleet id: {value}"))?;
+    Ok(uuid.into())
+}
+
+fn parse_node_id(value: &str) -> Result<NodeId, String> {
+    let uuid = uuid::Uuid::parse_str(value).map_err(|_| format!("Invalid node id: {value}"))?;
+    Ok(uuid.into())
+}
+
+fn parse_instance_id(value: &str) -> Result<InstanceId, String> {
+    let uuid = uuid::Uuid::parse_str(value).map_err(|_| format!("Invalid instance id: {value}"))?;
+    Ok(uuid.into())
 }
 
 fn parse_tenant_id(value: &str) -> Result<splendor_types::TenantId, String> {

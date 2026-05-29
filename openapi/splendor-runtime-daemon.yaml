@@ -174,6 +174,31 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /runs/{run_id}/policies/sync:
+    post:
+      summary: Sync or record failure for a run policy bundle cache.
+      operationId: syncPolicy
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicySyncRequest'
+      responses:
+        '200':
+          description: Policy sync status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicySyncResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /runs/{run_id}/state-head:
     get:
       summary: Read the latest committed state node metadata.
@@ -355,7 +380,7 @@ components:
         details: true
     RunStatus:
       type: string
-      enum: [created, running, paused, stopped, failed]
+      enum: [created, running, waiting_for_approval, paused, denied, expired, stopped, failed]
     EndpointScope:
       type: string
       enum:
@@ -373,6 +398,7 @@ components:
         - messages_send
         - health_read
         - capabilities_read
+        - policies_sync
         - nodes_register
         - instances_register
         - nodes_heartbeat
@@ -549,6 +575,118 @@ components:
             type: string
         artifacts:
           $ref: '#/components/schemas/JsonValue'
+    ApprovalDecision:
+      type: string
+      enum: [Granted, Denied]
+    ApprovalPolicy:
+      type: object
+      required: [schema_version, policy_id, tenant_id, agent_id, action_name, adapter, required_permission, side_effect_class, risk_level, reason, expires_at]
+      properties:
+        schema_version:
+          type: string
+        policy_id:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: [string, 'null']
+          format: uuid
+        action_name:
+          type: [string, 'null']
+        adapter:
+          type: [string, 'null']
+        required_permission:
+          type: [string, 'null']
+        side_effect_class: true
+        risk_level:
+          type: [string, 'null']
+        reason:
+          type: string
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+    ApprovalEvidence:
+      type: object
+      required: [schema_version, approval_id, tenant_id, agent_id, run_id, action_id, action_name, adapter, decision, reason, issued_at, expires_at, revoked, trace_event_id]
+      properties:
+        schema_version:
+          type: string
+        approval_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        action_id:
+          type: [string, 'null']
+          format: uuid
+        action_name:
+          type: [string, 'null']
+        adapter:
+          type: [string, 'null']
+        decision:
+          $ref: '#/components/schemas/ApprovalDecision'
+        reason:
+          type: [string, 'null']
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        revoked:
+          type: boolean
+        trace_event_id:
+          type: [string, 'null']
+          format: uuid
+    ApprovalTraceContext:
+      type: object
+      required: [approval_id, tenant_id, agent_id, run_id, action_id, action_name, adapter, decision, reason, policy_id, risk_level, issued_at, expires_at, revoked]
+      properties:
+        approval_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        action_id:
+          type: [string, 'null']
+          format: uuid
+        action_name:
+          type: string
+        adapter:
+          type: [string, 'null']
+        decision:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/ApprovalDecision'
+        reason:
+          type: [string, 'null']
+        policy_id:
+          type: [string, 'null']
+        risk_level:
+          type: [string, 'null']
+        issued_at:
+          type: [string, 'null']
+          format: date-time
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+        revoked:
+          type: boolean
     ActionOutcome:
       type: object
       required: [action_id, status, verification, post_verification, output, error, completed_at]
@@ -558,7 +696,7 @@ components:
           format: uuid
         status:
           type: string
-          enum: [Executed, Denied, Failed]
+          enum: [Executed, Denied, NeedsApproval, NeedsIntervention, Failed]
         verification:
           $ref: '#/components/schemas/VerificationResult'
         post_verification:
@@ -612,6 +750,73 @@ components:
           format: date-time
         event_hash: true
         prev_event_hash: true
+    PolicyDegradedMode:
+      type: object
+      required: [allow_low_risk_cached]
+      properties:
+        allow_low_risk_cached:
+          type: boolean
+    PolicyBundle:
+      type: object
+      required: [schema_version, policy_bundle_id, version, tenant_id, agent_id, issued_at, expires_at, revocation, degraded_mode]
+      properties:
+        schema_version:
+          type: string
+        policy_bundle_id:
+          type: string
+        version:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: [string, 'null']
+          format: uuid
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        revocation:
+          $ref: '#/components/schemas/RevocationStatus'
+        degraded_mode:
+          $ref: '#/components/schemas/PolicyDegradedMode'
+    PolicyBundleEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/PolicyBundle'
+        - type: object
+          required: [signature]
+          properties:
+            signature:
+              oneOf:
+                - type: 'null'
+                - type: object
+                  required: [key_id, signature]
+                  properties:
+                    key_id:
+                      type: string
+                    signature:
+                      type: string
+    PolicyBundleTraceContext:
+      type: object
+      required: [policy_bundle_id, version, tenant_id, agent_id, expires_at, degraded_mode]
+      properties:
+        policy_bundle_id:
+          type: string
+        version:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: [string, 'null']
+          format: uuid
+        expires_at:
+          type: string
+          format: date-time
+        degraded_mode:
+          $ref: '#/components/schemas/PolicyDegradedMode'
     CreateRunRequest:
       type: object
       required:
@@ -624,7 +829,10 @@ components:
         - allowed_adapters
         - allowed_permissions
         - policy_actions
+        - policy_bundle_required
+        - policy_bundle
         - registered_actions
+        - approval_policies
         - allowed_percept_schemas
         - allowed_percept_sources
         - initial_state
@@ -662,10 +870,20 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DaemonActionCandidate'
+        policy_bundle_required:
+          type: boolean
+        policy_bundle:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/PolicyBundleEnvelope'
         registered_actions:
           type: array
           items:
             $ref: '#/components/schemas/RegisteredAction'
+        approval_policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApprovalPolicy'
         allowed_percept_schemas:
           type: array
           items:
@@ -690,7 +908,7 @@ components:
           $ref: '#/components/schemas/RunStatus'
     LifecycleRequest:
       type: object
-      required: [credential, work_order, audit_attribution, reason]
+      required: [credential, work_order, audit_attribution, reason, approval_evidence]
       properties:
         credential:
           oneOf:
@@ -706,9 +924,13 @@ components:
             - $ref: '#/components/schemas/AuditAttribution'
         reason:
           type: [string, 'null']
+        approval_evidence:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/ApprovalEvidence'
     RunInspectResponse:
       type: object
-      required: [run_id, tenant_id, agent_id, status, state_head, ticks, adapter_executions, created_at, updated_at]
+      required: [run_id, tenant_id, agent_id, status, state_head, ticks, adapter_executions, policy_bundle, created_at, updated_at]
       properties:
         run_id:
           type: string
@@ -729,6 +951,10 @@ components:
         adapter_executions:
           type: integer
           minimum: 0
+        policy_bundle:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/PolicyBundleTraceContext'
         created_at:
           type: string
           format: date-time
@@ -779,6 +1005,57 @@ components:
         accepted:
           type: integer
           minimum: 0
+    PolicySyncRequest:
+      type: object
+      required: [credential, audit_attribution, policy_bundle, sync_error, disconnected]
+      properties:
+        credential:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/CallerCredential'
+        audit_attribution:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/AuditAttribution'
+        policy_bundle:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/PolicyBundleEnvelope'
+        sync_error:
+          type: [string, 'null']
+        disconnected:
+          type: [boolean, 'null']
+    PolicyCacheStatusResponse:
+      type: object
+      required: [enforcement_required, disconnected, policy_bundle, revoked_reason, last_sync_failure]
+      properties:
+        enforcement_required:
+          type: boolean
+        disconnected:
+          type: boolean
+        policy_bundle:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/PolicyBundleTraceContext'
+        revoked_reason:
+          type: [string, 'null']
+        last_sync_failure:
+          type: [string, 'null']
+    PolicySyncResponse:
+      type: object
+      required: [run_id, accepted, policy_bundle, cache_status]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        accepted:
+          type: boolean
+        policy_bundle:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/PolicyBundleTraceContext'
+        cache_status:
+          $ref: '#/components/schemas/PolicyCacheStatusResponse'
     StateHeadResponse:
       type: object
       required: [run_id, state_node_id, parent_state_node_ids, data_hash, created_at, label]
@@ -820,7 +1097,7 @@ components:
             - $ref: '#/components/schemas/CallerCredential'
     ReplayResponse:
       type: object
-      required: [replay_id, run_id, mode, event_count, action_event_count]
+      required: [replay_id, run_id, mode, event_count, action_event_count, approval_events]
       properties:
         replay_id:
           type: string
@@ -836,9 +1113,30 @@ components:
         action_event_count:
           type: integer
           minimum: 0
+        approval_events:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApprovalReplayEvent'
+    ApprovalReplayEvent:
+      type: object
+      required: [lifecycle, approval, reason, trace_event_id, sequence]
+      properties:
+        lifecycle:
+          type: string
+          enum: [requested, granted, denied, expired, revoked]
+        approval:
+          $ref: '#/components/schemas/ApprovalTraceContext'
+        reason:
+          type: [string, 'null']
+        trace_event_id:
+          type: string
+          format: uuid
+        sequence:
+          type: integer
+          minimum: 0
     SubmitActionRequest:
       type: object
-      required: [run_id, tenant_id, agent_id, credential, audit_attribution, causal_trace_id, action, adapter, quota_usage, satisfied_preconditions]
+      required: [run_id, tenant_id, agent_id, credential, audit_attribution, causal_trace_id, action, adapter, quota_usage, satisfied_preconditions, approval_evidence]
       properties:
         run_id:
           type: string
@@ -872,6 +1170,10 @@ components:
           type: array
           items:
             type: string
+        approval_evidence:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/ApprovalEvidence'
     HealthResponse:
       type: object
       required: [status, local_only, runtime_available]
