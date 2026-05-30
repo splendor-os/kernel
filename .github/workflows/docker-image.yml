@@ -60,7 +60,7 @@ jobs:
           tags: splendor:publish-smoke
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            SPLENDOR_IMAGE_VERSION=${{ inputs.publish_0_02_dev == true && 'v0.02-dev' || github.ref_name }}
+            SPLENDOR_IMAGE_VERSION=${{ (inputs.publish_0_02_dev == true || inputs.publish_0_02_dev == 'true') && 'v0.02-dev' || github.ref_name }}
             VCS_REF=${{ github.sha }}
             BUILD_DATE=${{ steps.build-date.outputs.created }}
 
@@ -125,7 +125,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
-            SPLENDOR_IMAGE_VERSION=${{ inputs.publish_0_02_dev == true && 'v0.02-dev' || github.ref_name }}
+            SPLENDOR_IMAGE_VERSION=${{ (inputs.publish_0_02_dev == true || inputs.publish_0_02_dev == 'true') && 'v0.02-dev' || github.ref_name }}
             VCS_REF=${{ github.sha }}
             BUILD_DATE=${{ steps.build-date.outputs.created }}
 
@@ -173,8 +173,8 @@ jobs:
             type=ref,event=branch
             type=ref,event=tag
             type=raw,value=0.02-dev,enable=${{ startsWith(github.ref, 'refs/tags/v0.02') }}
-            type=raw,value=0.02-dev,enable=${{ inputs.publish_0_02_dev == true }}
-            type=raw,value=v0.02-dev,enable=${{ inputs.publish_0_02_dev == true }}
+            type=raw,value=0.02-dev,enable=${{ inputs.publish_0_02_dev == true || inputs.publish_0_02_dev == 'true' }}
+            type=raw,value=v0.02-dev,enable=${{ inputs.publish_0_02_dev == true || inputs.publish_0_02_dev == 'true' }}
             type=sha,prefix=sha-
 
       - name: Create and publish multi-arch manifest
