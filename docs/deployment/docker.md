@@ -22,7 +22,7 @@ machines that do not have the Rust, Python, or TypeScript toolchains installed.
 ## Pull the image
 
 After the GitHub Container Registry package is public, install the released image
-with Docker:
+with Docker. Published release images support `linux/amd64` and `linux/arm64`:
 
 ```bash
 docker pull ghcr.io/splendor-os/kernel:0.02-dev
@@ -104,6 +104,10 @@ The Docker publish workflow emits:
 
 Use an immutable `sha-<commit>` tag for reproducible automation and the milestone
 tag for human release smoke tests.
+
+Release image manifests are published for both `linux/amd64` and `linux/arm64` so
+Docker can select the native image on supported Intel/AMD and Apple Silicon/Linux
+ARM64 machines.
 
 ## GHCR package visibility
 

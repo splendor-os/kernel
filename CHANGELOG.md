@@ -94,6 +94,8 @@
   0.02-dev local runtime surface, including `splendorctl`, `splendor-daemon`, the
   Python SDK, OCI labels, a non-root runtime user, and GitHub Container Registry
   publish workflow support.
+- Added multi-architecture Docker publishing for `linux/amd64` and `linux/arm64`
+  release images.
 - Updated the visible Rust CLI and Python SDK milestone labels to
   `Splendor0.02-dev` while keeping package versions on the existing development
   `0.1.0` line.
