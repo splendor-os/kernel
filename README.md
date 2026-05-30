@@ -50,7 +50,8 @@ Current capabilities:
 ## Docker install
 
 Once the GitHub Container Registry package is public, install and verify the
-0.02-dev deployment image with:
+0.02-dev deployment image with Docker. Published release images support
+`linux/amd64` and `linux/arm64`:
 
 ```bash
 docker pull ghcr.io/splendor-os/kernel:0.02-dev
