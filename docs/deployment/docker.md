@@ -105,6 +105,10 @@ The Docker publish workflow emits:
 Use an immutable `sha-<commit>` tag for reproducible automation and the milestone
 tag for human release smoke tests.
 
+Release administrators can also rerun the Docker Image workflow manually with
+`publish_0_02_dev=true` to republish the `0.02-dev` and `v0.02-dev` image tags
+from the selected ref without moving the Git release tag.
+
 Release image manifests are published for both `linux/amd64` and `linux/arm64` so
 Docker can select the native image on supported Intel/AMD and Apple Silicon/Linux
 ARM64 machines.
